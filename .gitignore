@@ -1,0 +1,8 @@
+/target/
+
+# Runtime data lives under ~/.otto/ (override: $OTTO_HOME), not in the checkout, but a
+# stray local runs/ is still worth ignoring on principle: local work, never source.
+runs/
+test/captures/          # scratch; promoted panes live in test/fixtures/
+.tmp/
+.idea

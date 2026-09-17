@@ -1,0 +1,221 @@
+<title>otto Logo Preview</title>
+<style>
+  :root {
+    --paper: #f4f5f7;
+    --ink: #111318;
+    --panel: #ffffff;
+    --panel-dark: #1b1e24;
+    --ink-on-dark: #f2f3f5;
+    --border: rgba(17, 19, 24, 0.12);
+    --muted: #5b6270;
+    --accent: #d97706;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #101216;
+      --ink: #f2f3f5;
+      --border: rgba(242, 243, 245, 0.14);
+      --muted: #9aa1ac;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #101216;
+    --ink: #f2f3f5;
+    --border: rgba(242, 243, 245, 0.14);
+    --muted: #9aa1ac;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 64px 24px 80px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px; }
+
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+  header { display: flex; flex-direction: column; gap: 8px; }
+  .eyebrow {
+    font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+  }
+  h1 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; text-wrap: balance; }
+  .sub { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.55; max-width: 62ch; }
+
+  section { display: flex; flex-direction: column; gap: 14px; }
+  .section-label {
+    font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+  }
+
+  .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .swatch {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 40px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 140px;
+  }
+  .swatch.light { background: #ffffff; }
+  .swatch.dark { background: #1b1e24; }
+  .swatch-caption {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .swatch-caption code { font-size: 11.5px; }
+
+  .sizes {
+    display: flex;
+    align-items: flex-end;
+    gap: 28px;
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 32px 24px 20px;
+    background: #ffffff;
+  }
+  .size-item { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .size-item svg { display: block; }
+  .size-item .size-label { font-size: 11px; color: var(--muted); }
+
+  .crop-row { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .crop {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #ffffff;
+    width: 72px;
+    height: 72px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .crop-note { font-size: 13px; color: var(--muted); line-height: 1.5; max-width: 46ch; }
+
+  .rationale {
+    border-left: 2px solid var(--accent);
+    padding-left: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .rationale p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--ink); }
+  .rationale p b { font-weight: 650; }
+
+  footer { color: var(--muted); font-size: 12px; }
+  footer code { background: transparent; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">assets/logo.svg</span>
+    <h1>otto wordmark, forced light/dark</h1>
+    <p class="sub">
+      Two swatches below hardcode the ink color so the light and dark treatments show correctly
+      regardless of your OS theme right now. The real file in the repo does this automatically —
+      it carries its own <code class="mono">prefers-color-scheme</code> query and swaps ink without
+      a second asset.
+    </p>
+  </header>
+
+  <section>
+    <span class="section-label">On light / on dark</span>
+    <div class="swatches">
+      <div>
+        <div class="swatch light">
+          <svg viewBox="0 0 320 120" width="240" height="90" role="img" aria-label="otto">
+            <g fill="none" stroke="#111318" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+            </g>
+            <circle cx="46" cy="56" r="9" fill="#d97706" />
+            <text x="112" y="88" fill="#111318" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                  font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
+            <rect x="294" y="26" width="16" height="62" fill="#d97706" />
+          </svg>
+        </div>
+        <div class="swatch-caption"><span>#ffffff</span><code class="mono">ink #111318</code></div>
+      </div>
+      <div>
+        <div class="swatch dark">
+          <svg viewBox="0 0 320 120" width="240" height="90" role="img" aria-label="otto">
+            <g fill="none" stroke="#f2f3f5" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+            </g>
+            <circle cx="46" cy="56" r="9" fill="#d97706" />
+            <text x="112" y="88" fill="#f2f3f5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                  font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
+            <rect x="294" y="26" width="16" height="62" fill="#d97706" />
+          </svg>
+        </div>
+        <div class="swatch-caption"><span>#1b1e24</span><code class="mono">ink #f2f3f5</code></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="section-label">Down to favicon scale</span>
+    <div class="sizes">
+      <div class="size-item">
+        <svg viewBox="0 0 320 120" width="280" height="105">
+          <g fill="none" stroke="#111318" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+          </g>
+          <circle cx="46" cy="56" r="9" fill="#d97706" />
+          <text x="112" y="88" fill="#111318" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
+          <rect x="294" y="26" width="16" height="62" fill="#d97706" />
+        </svg>
+        <span class="size-label mono">320 × 120 — README header</span>
+      </div>
+      <div class="size-item">
+        <svg viewBox="0 0 320 120" width="160" height="60">
+          <g fill="none" stroke="#111318" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+          </g>
+          <circle cx="46" cy="56" r="9" fill="#d97706" />
+          <text x="112" y="88" fill="#111318" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+                font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
+          <rect x="294" y="26" width="16" height="62" fill="#d97706" />
+        </svg>
+        <span class="size-label mono">160 × 60 — inline mention</span>
+      </div>
+      <div class="crop-row">
+        <div class="crop">
+          <svg viewBox="0 0 92 110" width="40" height="48">
+            <g fill="none" stroke="#111318" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+            </g>
+            <circle cx="46" cy="56" r="9" fill="#d97706" />
+          </svg>
+        </div>
+        <p class="crop-note">
+          Icon alone, cropped to the gate mark — this is what survives at 16–32px:
+          terminal tab, favicon, tmux window title.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="rationale">
+    <span class="section-label">Why this mark</span>
+    <p><b>Gate + token.</b> Two pillars and a crossbar read as a wicket gate; the amber circle sits mid-transit
+      between them — one phase's output passing a checkpoint before the next begins. It's the same shape
+      whether you're picturing a human gate or `otto state check-authorized`.</p>
+    <p><b>Monospace wordmark.</b> Same face the binary prints in your terminal, so the logo doesn't look
+      like a different product from the tool.</p>
+    <p><b>Blinking cursor, not a period.</b> The block after <code class="mono">otto</code> blinks in the
+      real file — an idle composer, the thing a session manager reads as safe to re-prompt.</p>
+  </section>
+
+  <footer>Static crops above have hardcoded ink for comparison. <code class="mono">assets/logo.svg</code> is the one file that ships — it adapts on its own.</footer>
+</div>

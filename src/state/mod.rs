@@ -1,0 +1,805 @@
+//! The only writer of an otto run's durable state. Every mutation locks the run, rewrites
+//! `run.json` atomically, and appends to `journal.jsonl` — nothing else may touch `run.json`.
+
+pub mod authorize;
+pub mod commands;
+pub mod locks;
+pub mod ops;
+
+use crate::error::OttoError;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::io::Write as _;
+use std::path::Path;
+
+pub const SCHEMA_VERSION: u32 = 2;
+pub const TERMINAL: [Status; 3] = [Status::Done, Status::Failed, Status::Stopped];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "snake_case")]
+pub enum Status {
+    Running,
+    AwaitingHuman,
+    Sleeping,
+    Blocked,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl Status {
+    pub fn is_terminal(self) -> bool {
+        TERMINAL.contains(&self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "kebab-case")]
+pub enum WrapKind {
+    Skill,
+    Instructions,
+    GoalOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Wraps {
+    pub kind: WrapKind,
+    /// `ref` in JSON; `ref` is a Rust keyword.
+    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOutcome {
+    Complete,
+    // Covers a crash, a deadline kill, and a model that simply stopped talking — all of which
+    // mean the same thing to the next wake.
+    Incomplete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Wake {
+    pub n: u32,
+    #[serde(rename = "startedAt")]
+    pub started_at: crate::clock::Timestamp,
+    #[serde(rename = "deadlineAt")]
+    pub deadline_at: crate::clock::Timestamp,
+    pub launcher: LauncherKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<WakeOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "kebab-case")]
+// No `Bg` variant: `claude attach` on a re-adopted worker needs a process-identity probe that
+// execs the setuid `/bin/ps`, which macOS Seatbelt blocks unconditionally under yolo.
+pub enum Detach {
+    None,
+    Tmux,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+#[clap(rename_all = "kebab-case")]
+// Separate from `Detach` on purpose: this decides argv shape, how a skill is resolved, and
+// what the network posture is.
+pub enum LauncherKind {
+    Claude,
+    Yolo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "camelCase")]
+#[clap(rename_all = "kebab-case")]
+// A wake is unattended, so no permission prompt can ever be answered — `BypassPermissions` is
+// the only mode known to be safe for an unattended run; the others are for a supervised one.
+pub enum PermissionMode {
+    AcceptEdits,
+    Auto,
+    BypassPermissions,
+    Manual,
+    DontAsk,
+    Plan,
+}
+
+impl PermissionMode {
+    /// Exactly what `claude --permission-mode` expects.
+    pub fn as_claude_arg(self) -> &'static str {
+        match self {
+            PermissionMode::AcceptEdits => "acceptEdits",
+            PermissionMode::Auto => "auto",
+            PermissionMode::BypassPermissions => "bypassPermissions",
+            PermissionMode::Manual => "manual",
+            PermissionMode::DontAsk => "dontAsk",
+            PermissionMode::Plan => "plan",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Permission {
+    pub mode: PermissionMode,
+    #[serde(rename = "allowedTools", default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_tools: Vec<String>,
+    #[serde(rename = "disallowedTools", default, skip_serializing_if = "Vec::is_empty")]
+    pub disallowed_tools: Vec<String>,
+}
+
+fn default_detach() -> Detach {
+    Detach::Tmux
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Launcher {
+    pub kind: LauncherKind,
+    /// A run-level preference, deliberately not a field on `Wake`: a wake has no way to know
+    /// how it was started, so recording it per wake made the second wake read the first wake's
+    /// value instead of this one.
+    #[serde(default = "default_detach")]
+    pub detach: Detach,
+    /// Extra repos the wake may touch. Under yolo this grants both sandbox and tool access.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
+    /// Directories to load skills from. Required under yolo for `--skill` to resolve at
+    /// all, because the sandbox cannot see `~/.claude`.
+    #[serde(rename = "skillDirs", default, skip_serializing_if = "Vec::is_empty")]
+    pub skill_dirs: Vec<String>,
+}
+
+/// `wakes` and `hours` are the enforced dimensions. `usd`/`spent_usd` are vestigial — pricing a
+/// wake needed `-p --output-format json`, and print mode is gone (see `wake::launcher`) — kept
+/// only so a `run.json` written before that still deserializes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Budget {
+    #[serde(default)]
+    pub wakes: u32,
+    #[serde(default)]
+    pub hours: u32,
+    #[serde(default)]
+    pub usd: f64,
+    #[serde(rename = "spentWakes", default)]
+    pub spent_wakes: u32,
+    /// Never incremented — nothing can price a wake on a subscription.
+    #[serde(rename = "spentUsd", default)]
+    pub spent_usd: f64,
+}
+
+impl Budget {
+    /// Fraction of the tightest limit already spent, or `None` when nothing is capped.
+    /// `usd` is not considered — it would make the 80% warning read a number that's always
+    /// zero, so a hand-edited dollar budget would look healthy forever instead of unenforceable.
+    pub fn worst_fraction(&self, elapsed_hours: f64) -> Option<f64> {
+        let mut worst: Option<f64> = None;
+        let mut consider = |used: f64, limit: f64| {
+            if limit > 0.0 {
+                let fraction = used / limit;
+                worst = Some(worst.map_or(fraction, |w: f64| w.max(fraction)));
+            }
+        };
+        consider(self.spent_wakes as f64, self.wakes as f64);
+        consider(elapsed_hours, self.hours as f64);
+        worst
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum OutwardAction {
+    Push,
+    Merge,
+    Comment,
+    DeleteBranch,
+}
+
+/// There is only one kind of gate: a question with an answer. Waiting on a clock is a status
+/// (`Sleeping` + `next_wake_at`), not a gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Gate {
+    pub id: String,
+    pub slug: String,
+    pub file: String,
+    #[serde(rename = "askedAt")]
+    pub asked_at: crate::clock::Timestamp,
+    #[serde(rename = "answeredAt")]
+    pub answered_at: Option<crate::clock::Timestamp>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: Option<crate::clock::Timestamp>,
+}
+
+/// What an opt-in check script (DESIGN.md §8) reported. `Changed` and `Error` are handled
+/// identically by poke — both spawn a wake — but kept distinct in the journal so a person can
+/// tell "the PR moved" from "the script broke" in `otto logs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CheckResult {
+    NoChange,
+    Changed,
+    Error,
+}
+
+/// An opt-in accessory to a `Sleeping` run: a script poke runs directly, no LLM involved, on a
+/// tighter cadence than the sleep's own `nextWakeAt`. Absent for every run that doesn't set one
+/// via `arm-timer --check-script` — existing `sleeping` runs are unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Check {
+    /// Path relative to the run directory — same convention as `gates/NNN-*.md`.
+    pub script: String,
+    #[serde(rename = "everySeconds")]
+    pub every_seconds: i64,
+    #[serde(rename = "nextCheckAt")]
+    pub next_check_at: crate::clock::Timestamp,
+    #[serde(rename = "consecutiveNoChange", default)]
+    pub consecutive_no_change: u32,
+    #[serde(rename = "lastResult", default, skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<CheckResult>,
+}
+
+fn default_gate_stale_after_hours() -> u32 {
+    48
+}
+fn default_max_ticks_without_progress() -> i64 {
+    24
+}
+fn default_handoff_max_bytes() -> u64 {
+    commands::HANDOFF_MAX_BYTES as u64
+}
+fn default_max_wake_minutes() -> u64 {
+    45
+}
+fn default_max_incomplete_wakes() -> u32 {
+    5
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Policy {
+    #[serde(rename = "autoMergeWhenGreen", default)]
+    pub auto_merge_when_green: bool,
+    /// DESIGN.md §7: a gate open longer than this should escalate. Not enforced yet.
+    #[serde(rename = "gateStaleAfterHours", default = "default_gate_stale_after_hours")]
+    pub gate_stale_after_hours: u32,
+    #[serde(rename = "maxTicksWithoutProgress", default = "default_max_ticks_without_progress")]
+    pub max_ticks_without_progress: i64,
+    #[serde(rename = "handoffMaxBytes", default = "default_handoff_max_bytes")]
+    pub handoff_max_bytes: u64,
+    #[serde(rename = "maxWakeMinutes", default = "default_max_wake_minutes")]
+    pub max_wake_minutes: u64,
+    #[serde(rename = "maxIncompleteWakes", default = "default_max_incomplete_wakes")]
+    pub max_incomplete_wakes: u32,
+    #[serde(default)]
+    pub perpetual: bool,
+    /// Anything `--policy` set that isn't one of the fields above.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            auto_merge_when_green: false,
+            gate_stale_after_hours: default_gate_stale_after_hours(),
+            max_ticks_without_progress: default_max_ticks_without_progress(),
+            handoff_max_bytes: default_handoff_max_bytes(),
+            max_wake_minutes: default_max_wake_minutes(),
+            max_incomplete_wakes: default_max_incomplete_wakes(),
+            perpetual: false,
+            extra: Map::new(),
+        }
+    }
+}
+
+impl Policy {
+    pub fn set(&mut self, key: String, value: Value) {
+        match key.as_str() {
+            "autoMergeWhenGreen" => match value.as_bool() {
+                Some(b) => self.auto_merge_when_green = b,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "gateStaleAfterHours" => match value.as_u64() {
+                Some(n) => self.gate_stale_after_hours = n as u32,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "maxTicksWithoutProgress" => match value.as_i64() {
+                Some(n) => self.max_ticks_without_progress = n,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "handoffMaxBytes" => match value.as_u64() {
+                Some(n) => self.handoff_max_bytes = n,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "maxWakeMinutes" => match value.as_u64() {
+                Some(n) => self.max_wake_minutes = n,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "maxIncompleteWakes" => match value.as_u64() {
+                Some(n) => self.max_incomplete_wakes = n as u32,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "perpetual" => match value.as_bool() {
+                Some(b) => self.perpetual = b,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            _ => {
+                self.extra.insert(key, value);
+            }
+        }
+    }
+
+    pub fn is_true(&self, key: &str) -> bool {
+        match key {
+            "autoMergeWhenGreen" => self.auto_merge_when_green,
+            "perpetual" => self.perpetual,
+            _ => self.extra.get(key).and_then(Value::as_bool).unwrap_or(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunState {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: u32,
+    pub id: String,
+    pub wraps: Wraps,
+    /// Verbatim from `--goal` — the only field a wake must never rewrite.
+    pub goal: String,
+    /// Always serialized even when unset, so `run.json` shows the question exists with no
+    /// answer yet; skipping it made `otto state get --field doneCondition` fail with "no such
+    /// field" on exactly the runs where you most want to ask.
+    #[serde(rename = "doneCondition", default)]
+    pub done_condition: Option<String>,
+    pub status: Status,
+    /// A free-form label, for humans. The engine does not validate it — an arbitrary wrapped
+    /// skill has no phase table to validate against.
+    pub phase: String,
+    pub gate: Option<Gate>,
+    #[serde(rename = "nextWakeAt")]
+    pub next_wake_at: Option<crate::clock::Timestamp>,
+    /// The current or most recent wake. Liveness is the wake lock, never this — the `pid` here
+    /// is for reporting only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<Wake>,
+    /// Opt-in only — see `Check`. `arm-timer` clears this back to `None` whenever it's called
+    /// without `--check-script`, so a stale check never survives a plain re-arm.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<Check>,
+    #[serde(rename = "incompleteWakes", default)]
+    pub incomplete_wakes: u32,
+    /// Poke's own bookkeeping, kept out of `facts` deliberately: `facts` is the wake's scratch
+    /// space, and a wake that re-records what it read has been observed clobbering this with
+    /// otto's own `0`, silently corrupting the backoff.
+    #[serde(rename = "spawnAttempts", default)]
+    pub spawn_attempts: u32,
+    #[serde(rename = "lastSpawnedAt", default, skip_serializing_if = "Option::is_none")]
+    pub last_spawned_at: Option<crate::clock::Timestamp>,
+    #[serde(rename = "ticksWithoutProgress")]
+    pub ticks_without_progress: u32,
+    pub launcher: Launcher,
+    pub permission: Permission,
+    pub budget: Budget,
+    #[serde(default)]
+    pub policy: Policy,
+    pub facts: Map<String, Value>,
+    #[serde(rename = "createdAt")]
+    pub created_at: crate::clock::Timestamp,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: crate::clock::Timestamp,
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub authorizations: Map<String, Value>,
+}
+
+/// `k=v` pairs. Values are JSON when parseable (so `prNumber=42` is a number), else the literal
+/// string. A repeated key keeps its first position but takes the last value, matching Python
+/// dict-assignment semantics.
+pub fn parse_kv(pairs: &[String], what: &str) -> Result<Map<String, Value>, OttoError> {
+    let mut out = Map::new();
+    for pair in pairs {
+        let (key, raw) = pair
+            .split_once('=')
+            .ok_or_else(|| OttoError::usage(format!("{what} must be key=value, got: {pair}")))?;
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(OttoError::usage(format!("{what} has an empty key: {pair}")));
+        }
+        let value = serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+        out.insert(key.to_string(), value);
+    }
+    Ok(out)
+}
+
+/// Reads exactly one of an inline value, a file, or stdin.
+pub fn read_text_arg(
+    inline: Option<&str>,
+    file: Option<&str>,
+    use_stdin: bool,
+    what: &str,
+) -> Result<String, OttoError> {
+    let given = [inline.is_some(), file.is_some(), use_stdin].iter().filter(|b| **b).count();
+    if given != 1 {
+        return Err(OttoError::usage(format!("give exactly one of --{what}, --{what}-file, --stdin")));
+    }
+    if let Some(text) = inline {
+        return Ok(text.to_string());
+    }
+    if let Some(path) = file {
+        return std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")));
+    }
+    let mut buf = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+    Ok(buf)
+}
+
+/// Reads a dotted path, e.g. `facts.branch` or `gate.file`, out of a generic JSON value.
+pub fn dig(value: &Value, dotted: &str) -> Result<Value, OttoError> {
+    let mut node = value.clone();
+    for part in dotted.split('.') {
+        match node {
+            Value::Object(mut map) => {
+                node = map
+                    .remove(part)
+                    .ok_or_else(|| OttoError::conflict(format!("no such field: {dotted}")))?;
+            }
+            _ => return Err(OttoError::conflict(format!("no such field: {dotted}"))),
+        }
+    }
+    Ok(node)
+}
+
+/// Prints a bare string unquoted, everything else as pretty JSON — matches the Python
+/// `emit()` so `get --field status` prints `running`, not `"running"`.
+pub fn emit(value: &Value) {
+    match value {
+        Value::String(s) => println!("{s}"),
+        other => println!("{}", serde_json::to_string_pretty(other).expect("Value always serializes")),
+    }
+}
+
+/// Write via temp file in the same directory, then rename. A rename within a directory
+/// is atomic, so a reader never observes a half-written file, whatever happens mid-write.
+pub fn write_atomic(path: &Path, text: &str) -> Result<(), OttoError> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{filename}."))
+        .suffix(".tmp")
+        .tempfile_in(dir)?;
+    tmp.write_all(text.as_bytes())?;
+    tmp.flush()?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| OttoError::usage(e.to_string()))?;
+    Ok(())
+}
+
+/// Serializes writers for one run (blocking exclusive flock on `<run>/.lock`), released
+/// on drop. Mirrors `fcntl.flock(LOCK_EX)` exactly, including the footgun: flock is
+/// per-open-fd, so acquiring it twice from nested calls in the same process deadlocks
+/// just as it would in Python. Every mutation must go through `transaction()` exactly
+/// once — no "reentrant-safe" cleverness here.
+pub struct RunLock {
+    file: std::fs::File,
+}
+
+impl RunLock {
+    pub fn acquire(run_path: &Path) -> Result<Self, OttoError> {
+        std::fs::create_dir_all(run_path)?;
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(run_path.join(".lock"))?;
+        fs4::fs_std::FileExt::lock_exclusive(&file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        let _ = fs4::fs_std::FileExt::unlock(&self.file);
+    }
+}
+
+fn read_state(path: &Path) -> Result<RunState, OttoError> {
+    let run_json = path.join("run.json");
+    let text = match std::fs::read_to_string(&run_json) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(OttoError::not_found(format!("{}/run.json is missing", path.display())));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // Check the version before deserializing into RunState, so a run written by another
+    // version says so plainly instead of failing with whichever field serde noticed first.
+    // v1 wrote `schemaVersion` and nothing ever read it; that is the gap this closes.
+    let probe: Value = serde_json::from_str(&text)
+        .map_err(|e| OttoError::conflict(format!("{}/run.json is not valid JSON: {e}", path.display())))?;
+    match probe.get("schemaVersion").and_then(Value::as_u64) {
+        Some(found) if found == SCHEMA_VERSION as u64 => {}
+        Some(found) => {
+            return Err(OttoError::conflict(format!(
+                "{}/run.json is schemaVersion {found}, this otto speaks {SCHEMA_VERSION} — \
+                 not migrating it, because guessing at a shape is how a run gets corrupted three days later",
+                path.display()
+            )))
+        }
+        None => {
+            return Err(OttoError::conflict(format!(
+                "{}/run.json has no schemaVersion",
+                path.display()
+            )))
+        }
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| OttoError::conflict(format!("{}/run.json is not valid JSON: {e}", path.display())))
+}
+
+fn write_state(path: &Path, state: &mut RunState) -> Result<(), OttoError> {
+    state.updated_at = crate::clock::Timestamp::now();
+    let text = serde_json::to_string_pretty(state)? + "\n";
+    write_atomic(&path.join("run.json"), &text)
+}
+
+/// Lock, hand out `(path, state)` for mutation, then write state back atomically. On
+/// error from the closure, the lock is still released (via `RunLock`'s `Drop`) but
+/// nothing is written — matching the Python contextmanager, which only reaches
+/// `write_state` if the caller's block completes without raising.
+pub fn transaction<F, R>(run_id: &str, f: F) -> Result<R, OttoError>
+where
+    F: FnOnce(&Path, &mut RunState) -> Result<R, OttoError>,
+{
+    let path = crate::paths::run_dir(run_id)?;
+    let _lock = RunLock::acquire(&path)?;
+    let mut state = read_state(&path)?;
+    let result = f(&path, &mut state)?;
+    write_state(&path, &mut state)?;
+    Ok(result)
+}
+
+/// Reads `run.json` without locking — fine for read-only commands (`get`, `list`, `due`),
+/// never for a mutation.
+pub fn read_run(run_id: &str) -> Result<RunState, OttoError> {
+    let path = crate::paths::run_dir(run_id)?;
+    read_state(&path)
+}
+
+/// Appends one already-built JSON line to `journal.jsonl`. Shared by the untyped `journal()`
+/// below and by `event::record`, so the file I/O — and the fsync a durable audit trail needs —
+/// lives in exactly one place.
+pub(crate) fn append_journal_line(path: &Path, value: &Value) -> Result<(), OttoError> {
+    let line = serde_json::to_string(value)? + "\n";
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.join("journal.jsonl"))?;
+    file.write_all(line.as_bytes())?;
+    file.flush()?;
+    file.sync_all()?;
+    Ok(())
+}
+
+/// Appends one journal line. `ts`/`event` in `fields` are dropped (the frame always
+/// wins), and `null`-valued fields are omitted — matching the Python's reserved-field and
+/// omit-null handling.
+///
+/// This is the free-form escape hatch: `otto state log` and anything a wrapped skill journals
+/// under a name otto never declared. Otto's own control-flow events are typed — see `event::Event`
+/// and `log_event`, called via `event::record` once the caller already holds the run's lock.
+pub fn journal(path: &Path, event: &str, fields: Value) -> Result<(), OttoError> {
+    let mut entry = Map::new();
+    entry.insert("ts".to_string(), Value::String(crate::clock::now_iso()));
+    entry.insert("event".to_string(), Value::String(event.to_string()));
+    if let Value::Object(map) = fields {
+        for (k, v) in map {
+            if k == "ts" || k == "event" || v.is_null() {
+                continue;
+            }
+            entry.insert(k, v);
+        }
+    }
+    append_journal_line(path, &Value::Object(entry))
+}
+
+/// Journal one of otto's own typed events, taking the run's lock for the write — the typed
+/// counterpart to `commands::log`, for callers (poke, mainly) that have no other reason to open
+/// a transaction. `event::record` itself assumes the lock is already held.
+pub fn log_event(run_id: &str, event: crate::event::Event) -> Result<(), OttoError> {
+    let path = crate::paths::run_dir(run_id)?;
+    let _lock = RunLock::acquire(&path)?;
+    crate::event::record(&path, &event)
+}
+
+/// A run whose `run.json` cannot be understood — bad JSON, or the wrong `schemaVersion` — is a
+/// real, distinct case (DESIGN.md §9: "a person needs to look"), so it stays a variant here
+/// rather than being smuggled into a `RunState` with fabricated defaults.
+#[derive(Debug, Clone)]
+pub enum RunEntry {
+    Readable(RunState),
+    Unreadable { id: String },
+}
+
+impl RunEntry {
+    pub fn id(&self) -> &str {
+        match self {
+            RunEntry::Readable(state) => &state.id,
+            RunEntry::Unreadable { id } => id,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            RunEntry::Readable(state) => serde_json::to_value(state).unwrap_or(Value::Null),
+            RunEntry::Unreadable { id } => serde_json::json!({"id": id, "unreadable": true}),
+        }
+    }
+}
+
+pub fn read_all_runs() -> Result<Vec<RunEntry>, OttoError> {
+    let root = crate::paths::runs_dir();
+    let mut out = Vec::new();
+    if !root.is_dir() {
+        return Ok(out);
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&root)?.filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        if !dir.join("run.json").is_file() {
+            continue;
+        }
+        let id = dir.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+        match read_state(&dir) {
+            Ok(state) => out.push(RunEntry::Readable(state)),
+            Err(_) => out.push(RunEntry::Unreadable { id }),
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn test_run_state(id: &str) -> RunState {
+    let now = crate::clock::Timestamp::now();
+    RunState {
+        schema_version: SCHEMA_VERSION,
+        id: id.to_string(),
+        wraps: Wraps { kind: WrapKind::GoalOnly, reference: None },
+        goal: "a goal".to_string(),
+        done_condition: None,
+        status: Status::Running,
+        phase: "start".to_string(),
+        gate: None,
+        next_wake_at: None,
+        wake: None,
+        check: None,
+        incomplete_wakes: 0,
+        spawn_attempts: 0,
+        last_spawned_at: None,
+        ticks_without_progress: 0,
+        launcher: Launcher { kind: LauncherKind::Claude, detach: Detach::Tmux, repos: vec![], skill_dirs: vec![] },
+        permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
+        budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, spent_usd: 0.0 },
+        policy: Policy::default(),
+        facts: Map::new(),
+        created_at: now,
+        updated_at: now,
+        authorizations: Map::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::test_support::TempHome;
+    use std::sync::Arc;
+
+    #[test]
+    fn read_all_runs_surfaces_a_malformed_timestamp_as_unreadable() {
+        let _home = TempHome::new();
+        commands::test_init("bad-ts", "a goal").unwrap();
+        let run_json = crate::paths::run_dir("bad-ts").unwrap().join("run.json");
+        let mut value: Value = serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap();
+        value["nextWakeAt"] = Value::String("tomorrow-ish".to_string());
+        write_atomic(&run_json, &serde_json::to_string_pretty(&value).unwrap()).unwrap();
+
+        let entries = read_all_runs().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(&entries[0], RunEntry::Unreadable { id } if id == "bad-ts"));
+    }
+
+    #[test]
+    fn write_atomic_leaves_no_stray_temp_files() {
+        let home = TempHome::new();
+        let dir = home.path().join("scratch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("run.json");
+        for i in 0..20 {
+            write_atomic(&target, &format!("payload {i}")).unwrap();
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "run.json")
+            .collect();
+        assert!(leftovers.is_empty(), "stray files left behind: {leftovers:?}");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "payload 19");
+    }
+
+    #[test]
+    fn concurrent_reads_never_see_a_partial_write() {
+        let home = TempHome::new();
+        let dir = Arc::new(home.path().join("scratch"));
+        std::fs::create_dir_all(dir.as_ref()).unwrap();
+        let target = dir.join("run.json");
+        write_atomic(&target, &"x".repeat(500)).unwrap();
+
+        let writer_target = target.clone();
+        let writer = std::thread::spawn(move || {
+            for i in 0..200 {
+                let filler = if i % 2 == 0 { "a" } else { "b" };
+                write_atomic(&writer_target, &filler.repeat(500)).unwrap();
+            }
+        });
+        let reader_target = target.clone();
+        let reader = std::thread::spawn(move || {
+            for _ in 0..200 {
+                let text = std::fs::read_to_string(&reader_target).unwrap();
+                assert!(
+                    text.chars().all(|c| c == 'a') || text.chars().all(|c| c == 'b') || text.chars().all(|c| c == 'x'),
+                    "observed a torn write: {text:?}"
+                );
+            }
+        });
+        writer.join().unwrap();
+        reader.join().unwrap();
+    }
+
+    #[test]
+    fn run_lock_serializes_a_read_increment_write_race() {
+        let home = TempHome::new();
+        let run_path = home.path().join("runs").join("locked-run");
+        std::fs::create_dir_all(&run_path).unwrap();
+        let counter_path = run_path.join("counter.txt");
+        std::fs::write(&counter_path, "0").unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let run_path = run_path.clone();
+            let counter_path = counter_path.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..25 {
+                    let _lock = RunLock::acquire(&run_path).unwrap();
+                    let current: u32 = std::fs::read_to_string(&counter_path).unwrap().trim().parse().unwrap();
+                    std::fs::write(&counter_path, (current + 1).to_string()).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let total: u32 = std::fs::read_to_string(&counter_path).unwrap().trim().parse().unwrap();
+        assert_eq!(total, 8 * 25, "run_lock must serialize every increment — lost updates mean it didn't");
+    }
+}

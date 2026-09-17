@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120" role="img" aria-label="otto">
+  <style>
+    .ink { stroke: #111318; }
+    .word { fill: #111318; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #f2f3f5; }
+      .word { fill: #f2f3f5; }
+    }
+  </style>
+  <!-- gate: a token (the circle) mid-transit through a gate, otto's core unit of work -->
+  <g class="ink" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+  </g>
+  <circle cx="46" cy="56" r="9" fill="#d97706" />
+  <text x="112" y="88" class="word" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
+  <rect x="294" y="26" width="16" height="62" fill="#d97706">
+    <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.45;0.5;0.95;1" dur="1.6s" repeatCount="indefinite" />
+  </rect>
+</svg>

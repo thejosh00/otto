@@ -1,0 +1,229 @@
+//! `otto agent start` / `otto agent stop` — manage the launchd agent that runs `otto poke` on a
+//! schedule (the reviver, ~ every 5 minutes). Unlike the old `launchd/*.plist` checked
+//! into the repo, the plist is generated here so it always points at whichever `otto`
+//! binary is actually installed, not wherever the source checkout happens to sit.
+//!
+//! `otto agent start` is idempotent and self-installing: it always rewrites the plist (cheap,
+//! and self-healing if the binary moved) and always does a fresh
+//! bootout-then-bootstrap, rather than trying to detect "is it already loaded" — that
+//! detection is exactly the kind of `launchctl print` output-parsing that has drifted
+//! across macOS versions before.
+
+use crate::error::OttoError;
+use std::path::{Path, PathBuf};
+
+const LABEL: &str = "com.joshuahill.otto-poke";
+
+fn launch_agents_dir() -> PathBuf {
+    crate::paths::home_dir().join("Library").join("LaunchAgents")
+}
+
+fn plist_path() -> PathBuf {
+    launch_agents_dir().join(format!("{LABEL}.plist"))
+}
+
+fn path_env() -> String {
+    let local_bin = crate::paths::home_dir().join(".local").join("bin");
+    format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{}", local_bin.display())
+}
+
+/// The plist content `otto agent start` writes. Mirrors the fields of the old static
+/// `launchd/com.joshuahill.otto-poke.plist` (`StartInterval` 300s, `RunAtLoad`,
+/// `LowPriorityIO`, `Nice` 5) but with the binary path, working directory, and log path
+/// resolved fresh from wherever otto is actually installed and where its data actually
+/// lives — never a path baked in at some earlier point in time.
+fn generate_plist(binary: &Path, otto_home: &Path, log_path: &Path) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>{LABEL}</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{binary}</string>
+		<string>poke</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>300</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>{path_env}</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>{otto_home}</string>
+	<key>StandardOutPath</key>
+	<string>{log_path}</string>
+	<key>StandardErrorPath</key>
+	<string>{log_path}</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>Nice</key>
+	<integer>5</integer>
+</dict>
+</plist>
+"#,
+        binary = binary.display(),
+        path_env = path_env(),
+        otto_home = otto_home.display(),
+        log_path = log_path.display(),
+    )
+}
+
+fn gui_domain() -> Result<String, OttoError> {
+    let output = std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .map_err(|e| OttoError::usage(format!("cannot determine your uid: {e}")))?;
+    if !output.status.success() {
+        return Err(OttoError::usage("cannot determine your uid: `id -u` failed"));
+    }
+    let uid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(format!("gui/{uid}"))
+}
+
+/// Write (or rewrite) the plist and ensure the launchd agent is registered and running.
+/// Installs it from scratch if it isn't there yet.
+pub fn start() -> Result<(), OttoError> {
+    let binary = crate::paths::current_exe()?;
+    let otto_home = crate::paths::otto_home();
+    let log_path = crate::paths::poke_log_path()?;
+    std::fs::create_dir_all(launch_agents_dir())?;
+    let plist = generate_plist(&binary, &otto_home, &log_path);
+    crate::state::write_atomic(&plist_path(), &plist)?;
+
+    let domain = gui_domain()?;
+    let target = format!("{domain}/{LABEL}");
+    // Idempotent by construction: unload first (fine if it wasn't loaded), then load
+    // fresh from the plist we just wrote.
+    let _ = std::process::Command::new("launchctl").args(["bootout", &target]).output();
+    let bootstrap = std::process::Command::new("launchctl")
+        .args(["bootstrap", &domain, &plist_path().display().to_string()])
+        .output()
+        .map_err(|e| OttoError::usage(format!("cannot run launchctl: {e}")))?;
+    if !bootstrap.status.success() {
+        return Err(OttoError::usage(format!(
+            "launchctl bootstrap failed: {}",
+            String::from_utf8_lossy(&bootstrap.stderr).trim()
+        )));
+    }
+    let _ = std::process::Command::new("launchctl").args(["enable", &target]).output();
+
+    println!("otto: the reviver is running ({target})");
+    println!("  binary: {}", binary.display());
+    println!("  plist:  {}", plist_path().display());
+    println!("  log:    {}", log_path.display());
+    Ok(())
+}
+
+/// Is the reviver currently loaded? `None` means we could not tell (`launchctl`/`id` itself
+/// failed) — callers must treat that as "don't know", never as "not loaded", or a broken
+/// `launchctl` would print a false warning every time.
+///
+/// A plain exit-code check, deliberately not the `launchctl print` output-parsing this module's
+/// own doc comment warns off elsewhere: that warning is about *deciding* whether to bootstrap
+/// (where `start` sidesteps the question entirely by always doing a fresh bootout-then-bootstrap),
+/// not about *answering* a read-only "is it loaded" question, which an exit code settles fine.
+pub fn is_loaded() -> Option<bool> {
+    let domain = gui_domain().ok()?;
+    let target = format!("{domain}/{LABEL}");
+    let output = std::process::Command::new("launchctl").args(["print", &target]).output().ok()?;
+    Some(output.status.success())
+}
+
+/// The timestamp leading the last non-empty line of `poke.log` — every line poke prints starts
+/// with one (`poke::poke_run`'s `stamp`). `None` with no log yet, or a log poke has never
+/// written a normal line to.
+fn last_poke() -> Option<crate::clock::Timestamp> {
+    let path = crate::paths::poke_log_path().ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    let stamp = last.split_whitespace().next()?;
+    crate::clock::Timestamp::parse(stamp).ok()
+}
+
+/// `otto agent status` — is the reviver loaded, and when did it last actually run? The README
+/// says a sleeping run never wakes without it; this is how to find out it stopped being true
+/// before a run has been silently stuck for days.
+pub fn status() -> Result<(), OttoError> {
+    match is_loaded() {
+        Some(true) => println!("otto: the reviver is loaded"),
+        Some(false) => {
+            println!("otto: the reviver is NOT loaded — sleeping runs will never wake on their own");
+            println!("  `otto agent start` to fix");
+        }
+        None => println!("otto: could not tell whether the reviver is loaded (launchctl or id failed)"),
+    }
+    match last_poke() {
+        Some(at) => println!("  last poke: {} ({})", crate::clock::relative(at), at),
+        None => println!("  last poke: never (no log yet)"),
+    }
+    println!("  plist:     {}", plist_path().display());
+    println!("  log:       {}", crate::paths::poke_log_path()?.display());
+    Ok(())
+}
+
+/// Unregister the launchd agent. Safe to call whether or not it was running.
+pub fn stop() -> Result<(), OttoError> {
+    let domain = gui_domain()?;
+    let target = format!("{domain}/{LABEL}");
+    let output = std::process::Command::new("launchctl")
+        .args(["bootout", &target])
+        .output()
+        .map_err(|e| OttoError::usage(format!("cannot run launchctl: {e}")))?;
+    if output.status.success() {
+        println!("otto: stopped the reviver ({target})");
+    } else {
+        println!("otto: the reviver was not running ({target})");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::test_support::TempHome;
+
+    #[test]
+    fn last_poke_reads_the_trailing_timestamp_from_the_log() {
+        let _h = TempHome::new();
+        let path = crate::paths::poke_log_path().unwrap();
+        std::fs::write(
+            &path,
+            "2026-09-12T14:00:00Z nothing due (1 run(s) checked)\n2026-09-12T14:05:00Z spawn r1 stranded\n",
+        )
+        .unwrap();
+        assert_eq!(last_poke().unwrap().to_string(), "2026-09-12T14:05:00Z");
+    }
+
+    #[test]
+    fn last_poke_is_none_with_no_log_yet() {
+        let _h = TempHome::new();
+        assert!(last_poke().is_none());
+    }
+
+    #[test]
+    fn last_poke_ignores_a_trailing_blank_line() {
+        let _h = TempHome::new();
+        let path = crate::paths::poke_log_path().unwrap();
+        std::fs::write(&path, "2026-09-12T14:00:00Z nothing due (1 run(s) checked)\n\n").unwrap();
+        assert_eq!(last_poke().unwrap().to_string(), "2026-09-12T14:00:00Z");
+    }
+
+    #[test]
+    fn generated_plist_carries_the_real_binary_and_log_paths() {
+        let plist = generate_plist(Path::new("/opt/otto/bin/otto"), Path::new("/home/x/.otto"), Path::new("/home/x/.otto/logs/poke.log"));
+        assert!(plist.contains("<string>com.joshuahill.otto-poke</string>"));
+        assert!(plist.contains("<string>/opt/otto/bin/otto</string>"));
+        assert!(plist.contains("<string>poke</string>"));
+        assert!(plist.contains("<string>/home/x/.otto</string>"));
+        assert!(plist.contains("<string>/home/x/.otto/logs/poke.log</string>"));
+        assert!(plist.contains("<integer>300</integer>"));
+        assert!(plist.contains("<key>RunAtLoad</key>\n\t<true/>"));
+        assert!(plist.contains("<integer>5</integer>"));
+    }
+}
