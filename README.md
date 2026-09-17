@@ -78,7 +78,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto ls` | Every live run and what each waits on, plus a `needs you:` summary of copy-pasteable answer commands. `--all` includes finished |
 | `otto show [id]` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option. With no id: the one run waiting on you, or the only live run |
 | `otto answer [id]` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing; Enter takes the gate's stated default. With no id: the one run waiting on you |
-| `otto logs <id>` | The journal, readably. `-f`/`--follow` to keep following, like `tail -f`; `-n`/`--lines` for how many, like `tail -n` |
+| `otto logs <id>` | The journal, readably: a status line on top, local times, a rule per day, token counts rounded. `-f` to keep following, `-n` for how many (like `tail`), `--since 2h`/`--since 2026-09-15`, `--event gate-opened,gate-closed`, `--decisions` for just the turning points |
 | `otto attach <id>` | Watch the wake running right now |
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
 | `otto wake <id>` | Force one wake now, backgrounded the way the run asks for. `--watch` keeps it in your terminal, `--detach` overrides the run for this wake, `--dry-run` prints the command it would run |

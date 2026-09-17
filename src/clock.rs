@@ -109,6 +109,24 @@ impl<'de> Deserialize<'de> for Timestamp {
     }
 }
 
+/// The machine's UTC offset, for showing a person times in their own clock. Falls back to UTC
+/// when the platform will not say — `time` refuses on Unix once a process has more than one
+/// thread, which is why this is cached on first use and `otto logs` asks before it does anything
+/// else. Everything otto *stores* stays UTC; this is display only.
+pub fn local_offset() -> UtcOffset {
+    static OFFSET: std::sync::OnceLock<UtcOffset> = std::sync::OnceLock::new();
+    *OFFSET.get_or_init(|| UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC))
+}
+
+/// `UTC`, or `UTC-07:00`: how an offset is named in a header.
+pub fn offset_label(offset: UtcOffset) -> String {
+    if offset.is_utc() {
+        return "UTC".to_string();
+    }
+    let (h, m, _) = offset.as_hms();
+    format!("UTC{h:+03}:{:02}", m.abs())
+}
+
 /// "in 24m" / "12m ago", relative to now. Absolute timestamps make you do arithmetic to answer
 /// "is it late?" — used by `otto ls`/`otto show`'s timers and by `otto agent status`'s last-poke
 /// time.

@@ -204,6 +204,16 @@ fn blocking(state: &RunState, wake_running: bool) -> String {
     }
 }
 
+/// The status as a person should read it. `blocked` on its own sends them to the logs; the
+/// cause says whether that is even the right place to look.
+fn status_label(state: &RunState) -> String {
+    if state.status == Status::Blocked {
+        format!("blocked ({})", blocked_record(state).0.cause.label())
+    } else {
+        crate::state::commands::status_str(state.status).to_string()
+    }
+}
+
 struct LsRow {
     id: String,
     short: String,
@@ -266,17 +276,10 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             spent.to_string()
         };
         let short = short_id_among(&state.id, &all_ids);
-        // `blocked` on its own sends a person to the logs; the cause says whether that is even
-        // the right place to look.
-        let status = if state.status == Status::Blocked {
-            format!("blocked ({})", blocked_record(&state).0.cause.label())
-        } else {
-            crate::state::commands::status_str(state.status).to_string()
-        };
         rows.push(LsRow {
             id: state.id.clone(),
             short,
-            status,
+            status: status_label(&state),
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
             wakes,
@@ -698,55 +701,238 @@ fn detach_of(id: &str) -> Detach {
 
 #[derive(clap::Args, Debug)]
 pub struct LogsArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
-    /// Trailing lines to show, like `tail -n`
-    #[arg(long, short = 'n', default_value_t = 40)]
-    pub lines: usize,
+    /// Trailing lines to show, like `tail -n` [default: 40, or everything with --since]
+    #[arg(long, short = 'n')]
+    pub lines: Option<usize>,
+    /// Only lines from this long ago (`45m`, `2h`, `3d`) or since a date/time (`2026-09-15`,
+    /// `2026-09-15T07:00Z`)
+    #[arg(long, value_name = "AGE|WHEN")]
+    pub since: Option<String>,
+    /// Only these events, comma-separated (`gate-opened,gate-closed`)
+    #[arg(long, value_name = "NAMES", value_delimiter = ',')]
+    pub event: Vec<String>,
+    /// Only the turning points: gates, status and phase changes, budgets, wakes that failed
+    #[arg(long)]
+    pub decisions: bool,
     /// Keep printing as the run writes more, like `tail -f`
     #[arg(long, short)]
     pub follow: bool,
 }
 
-/// One journal line, readable. The journal is JSON because a wake writes it; this is for reading.
-fn format_event(line: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let ts = value.get("ts").and_then(Value::as_str).unwrap_or("");
-    let time = ts.get(11..19).unwrap_or(ts);
-    let event = value.get("event").and_then(Value::as_str).unwrap_or("?");
-    let mut rest: Vec<String> = Vec::new();
-    if let Value::Object(map) = &value {
-        for (key, val) in map {
-            if key == "ts" || key == "event" {
-                continue;
-            }
-            let shown = match val {
-                Value::String(s) => {
-                    // Long prose (a goal, a verbatim answer) makes the log unreadable as a
-                    // sequence; `otto show` is where full text belongs.
-                    if s.len() > 80 {
-                        format!("{}…", &s[..77])
-                    } else {
-                        s.clone()
-                    }
-                }
-                other => other.to_string(),
+/// What `--decisions` keeps: the lines that changed what the run is doing, as opposed to the
+/// wake-started/spent/complete rhythm that surrounds every one of them.
+const DECISION_EVENTS: &[&str] = &[
+    "run-created",
+    "phase-changed",
+    "status-changed",
+    "gate-opened",
+    "gate-closed",
+    "gate-expired",
+    "budget-warning",
+    "budget-exhausted",
+    "wake-incomplete",
+    "wake-killed",
+    "spawn-abandoned",
+    "authorized",
+    "lock-broken",
+    "lock-lost",
+];
+
+/// The `wake-spent` counters. Six-digit cache reads are the norm and nobody compares them to
+/// the token; `359k` is what a person actually reads off the line.
+const TOKEN_KEYS: &[&str] = &["inputTokens", "outputTokens", "cacheRead", "cacheCreation"];
+
+fn humanise(n: u64) -> String {
+    match n {
+        n if n < 10_000 => n.to_string(),
+        n if n < 1_000_000 => format!("{}k", (n as f64 / 1_000.0).round() as u64),
+        n => format!("{:.1}M", n as f64 / 1_000_000.0),
+    }
+}
+
+/// `--since`: an age (`45m`, `2h`, `3d`), a date (midnight, local), or a full timestamp.
+fn parse_since(text: &str, offset: time::UtcOffset) -> Result<time::OffsetDateTime, OttoError> {
+    let text = text.trim();
+    if let Some((digits, unit)) = text.char_indices().last().map(|(i, c)| (&text[..i], c)) {
+        if let Ok(n) = digits.parse::<i64>() {
+            let ago = match unit {
+                'm' => Some(time::Duration::minutes(n)),
+                'h' => Some(time::Duration::hours(n)),
+                'd' => Some(time::Duration::days(n)),
+                _ => None,
             };
-            rest.push(format!("{key}={shown}"));
+            if let Some(ago) = ago {
+                return Ok(crate::clock::now() - ago);
+            }
         }
     }
-    Some(format!("{time}  {event:<18}  {}", rest.join(" ")))
+    if let Ok(dt) = crate::clock::parse_iso(text) {
+        return Ok(dt);
+    }
+    let day = time::macros::format_description!("[year]-[month]-[day]");
+    if let Ok(date) = time::Date::parse(text, &day) {
+        return Ok(date.midnight().assume_offset(offset));
+    }
+    Err(OttoError::usage(format!(
+        "--since takes an age (45m, 2h, 3d), a date (2026-09-15) or a timestamp, not {text:?}"
+    )))
+}
+
+/// One parsed journal line: the JSON, and its instant, when it has one.
+struct Line {
+    value: Value,
+    at: Option<time::OffsetDateTime>,
+}
+
+fn parse_line(raw: &str) -> Option<Line> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let at = value.get("ts").and_then(Value::as_str).and_then(|ts| crate::clock::parse_iso(ts).ok());
+    Some(Line { value, at })
+}
+
+/// What `logs` keeps, from `--since`, `--event` and `--decisions`. Filters compose as "and".
+struct Filter {
+    since: Option<time::OffsetDateTime>,
+    events: Vec<String>,
+}
+
+impl Filter {
+    fn keeps(&self, line: &Line) -> bool {
+        if let Some(since) = self.since {
+            match line.at {
+                Some(at) if at >= since => {}
+                _ => return false,
+            }
+        }
+        if !self.events.is_empty() {
+            let event = line.value.get("event").and_then(Value::as_str).unwrap_or("");
+            if !self.events.iter().any(|e| e == event) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Turns journal lines into what a person reads: local times, a rule wherever the date changes
+/// (forty lines can span days, and a bare `05:51` on each does not say which), timestamps inside
+/// a line shown in the same clock, and token counts rounded to what the eye takes in. The journal
+/// is JSON because a wake writes it; this is for reading.
+struct Renderer {
+    offset: time::UtcOffset,
+    last_day: Option<time::Date>,
+}
+
+impl Renderer {
+    fn new(offset: time::UtcOffset) -> Self {
+        Renderer { offset, last_day: None }
+    }
+
+    fn render(&mut self, line: &Line) -> String {
+        let mut out = String::new();
+        let local = line.at.map(|at| at.to_offset(self.offset));
+        let day = local.map(|dt| dt.date());
+        if let Some(d) = day.filter(|_| day != self.last_day) {
+            let weekday = d.weekday().to_string();
+            out.push_str(&format!("── {} {d} ──\n", &weekday[..3]));
+            self.last_day = day;
+        }
+        let hms = time::macros::format_description!("[hour]:[minute]:[second]");
+        let time = match local {
+            Some(dt) => dt.format(&hms).unwrap_or_default(),
+            None => line.value.get("ts").and_then(Value::as_str).unwrap_or("").to_string(),
+        };
+        let event = line.value.get("event").and_then(Value::as_str).unwrap_or("?");
+        let mut rest: Vec<String> = Vec::new();
+        if let Value::Object(map) = &line.value {
+            for (key, val) in map {
+                if key == "ts" || key == "event" {
+                    continue;
+                }
+                rest.push(format!("{key}={}", self.shown(key, val, day)));
+            }
+        }
+        out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));
+        out
+    }
+
+    /// One field's value. `day` is the line's own date, so a timestamp on the same day is just a
+    /// time and one on another day says which.
+    fn shown(&self, key: &str, val: &Value, day: Option<time::Date>) -> String {
+        match val {
+            Value::String(s) => {
+                if let Ok(at) = crate::clock::parse_iso(s) {
+                    let local = at.to_offset(self.offset);
+                    let fmt = if Some(local.date()) == day {
+                        time::macros::format_description!("[hour]:[minute]:[second]")
+                    } else {
+                        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]")
+                    };
+                    return local.format(&fmt).unwrap_or_else(|_| s.clone());
+                }
+                // Long prose (a goal, a verbatim answer) makes the log unreadable as a sequence;
+                // `otto show` is where full text belongs.
+                if s.chars().count() > 80 {
+                    format!("{}…", s.chars().take(77).collect::<String>())
+                } else {
+                    s.clone()
+                }
+            }
+            Value::Number(n) if TOKEN_KEYS.contains(&key) => n.as_u64().map(humanise).unwrap_or_else(|| n.to_string()),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// The line above the log: where the run stands, so the tail below it has a frame. Someone
+/// arriving cold otherwise reads forty lines of wake rhythm and still has to ask `otto show`.
+fn logs_header(state: &RunState, short: &str, offset: time::UtcOffset) -> String {
+    let since = state.created_at.dt().to_offset(offset).date();
+    let days = (crate::clock::now() - state.created_at.dt()).whole_days();
+    let age = if days == 0 { "today".to_string() } else { format!("{days}d") };
+    let last = match &state.wake {
+        Some(wake) => format!("last wake {}", relative(wake.started_at)),
+        None => "no wake yet".to_string(),
+    };
+    let gate = match &state.gate {
+        Some(gate) => format!(", gate {} {} open", gate.id, gate.slug),
+        None => String::new(),
+    };
+    format!(
+        "# {short} · {} wake(s) since {since} ({age}) · {last} · {}{gate} · times {}",
+        state.budget.spent_wakes,
+        status_label(state),
+        crate::clock::offset_label(offset)
+    )
 }
 
 pub fn logs(mut args: LogsArgs) -> Result<(), OttoError> {
+    // First, before anything could start a thread: see `clock::local_offset`.
+    let offset = crate::clock::local_offset();
     args.id = crate::paths::resolve_run_id(&args.id)?;
+    let state = read_run(&args.id)?;
     let path = crate::paths::run_dir(&args.id)?.join("journal.jsonl");
+
+    let mut events: Vec<String> = args.event.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
+    if args.decisions {
+        events.extend(DECISION_EVENTS.iter().map(|e| e.to_string()));
+    }
+    let filter = Filter {
+        since: args.since.as_deref().map(|s| parse_since(s, offset)).transpose()?,
+        events,
+    };
+    // `--since` says where to start, so it shows everything from there unless -n says otherwise.
+    let limit = args.lines.unwrap_or(if filter.since.is_some() { usize::MAX } else { 40 });
+
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let all: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let start = all.len().saturating_sub(args.lines);
-    for line in &all[start..] {
-        if let Some(shown) = format_event(line) {
-            println!("{shown}");
-        }
+    let kept: Vec<Line> = text.lines().filter_map(parse_line).filter(|l| filter.keeps(l)).collect();
+    let start = kept.len().saturating_sub(limit);
+    let mut renderer = Renderer::new(offset);
+    println!("{}", logs_header(&state, &short_id(&args.id), offset));
+    for line in &kept[start..] {
+        println!("{}", renderer.render(line));
     }
     if !args.follow {
         return Ok(());
@@ -758,10 +944,8 @@ pub fn logs(mut args: LogsArgs) -> Result<(), OttoError> {
         std::thread::sleep(std::time::Duration::from_millis(500));
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         if text.len() > seen {
-            for line in text[seen..].lines().filter(|l| !l.trim().is_empty()) {
-                if let Some(shown) = format_event(line) {
-                    println!("{shown}");
-                }
+            for line in text[seen..].lines().filter_map(parse_line).filter(|l| filter.keeps(l)) {
+                println!("{}", renderer.render(&line));
             }
             seen = text.len();
         }
@@ -1305,19 +1489,100 @@ mod tests {
         assert_eq!(resolve_typed("something else", &options, Some("keep-polling")).unwrap(), "something else");
     }
 
+    fn line(json: serde_json::Value) -> Line {
+        parse_line(&json.to_string()).unwrap()
+    }
+
     #[test]
     fn journal_lines_render_readably_and_long_prose_is_trimmed() {
-        let line = serde_json::json!({
+        let mut r = Renderer::new(time::UtcOffset::UTC);
+        let shown = r.render(&line(serde_json::json!({
             "ts": "2026-09-12T14:31:07Z", "event": "wake-complete", "status": "sleeping"
-        })
-        .to_string();
-        let shown = format_event(&line).unwrap();
-        assert!(shown.starts_with("14:31:07"));
-        assert!(shown.contains("wake-complete"));
+        })));
+        assert!(shown.contains("14:31:07  wake-complete"), "got: {shown}");
         assert!(shown.contains("status=sleeping"));
 
-        let long = serde_json::json!({"ts": "2026-09-12T14:31:07Z", "event": "run-created", "goal": "x".repeat(200)})
-            .to_string();
-        assert!(format_event(&long).unwrap().contains('…'));
+        let long = line(serde_json::json!({"ts": "2026-09-12T14:31:07Z", "event": "run-created", "goal": "x".repeat(200)}));
+        assert!(r.render(&long).contains('…'));
+    }
+
+    /// Forty lines span days; a bare `05:51` on each does not say which. The rule is printed
+    /// once per day, and times — the line's own and any inside it — are in the reader's clock.
+    #[test]
+    fn a_date_rule_marks_each_new_day_and_times_are_local() {
+        let two_east = time::UtcOffset::from_hms(2, 0, 0).unwrap();
+        let mut r = Renderer::new(two_east);
+        let first = r.render(&line(serde_json::json!({
+            "ts": "2026-09-14T23:30:00Z", "event": "timer-armed", "nextWakeAt": "2026-09-15T00:30:00Z"
+        })));
+        // 23:30Z is 01:30 on the 15th, two hours east; so is the wake time, hence just a clock.
+        assert!(first.starts_with("── Tue 2026-09-15 ──\n01:30:00  timer-armed"), "got: {first}");
+        assert!(first.contains("nextWakeAt=02:30:00"), "got: {first}");
+
+        let same_day = r.render(&line(serde_json::json!({"ts": "2026-09-15T05:00:00Z", "event": "wake-started"})));
+        assert!(!same_day.contains("──"), "no second rule on the same day: {same_day}");
+
+        let next_day = r.render(&line(serde_json::json!({
+            "ts": "2026-09-16T05:00:00Z", "event": "gate-opened", "expiresAt": "2026-09-18T05:00:00Z"
+        })));
+        assert!(next_day.starts_with("── Wed 2026-09-16 ──"), "got: {next_day}");
+        // A timestamp on another day says which day.
+        assert!(next_day.contains("expiresAt=2026-09-18 07:00"), "got: {next_day}");
+    }
+
+    #[test]
+    fn token_counts_are_rounded_to_what_the_eye_reads() {
+        assert_eq!(humanise(392), "392");
+        assert_eq!(humanise(9_999), "9999");
+        assert_eq!(humanise(46_209), "46k");
+        assert_eq!(humanise(358_986), "359k");
+        assert_eq!(humanise(1_260_000), "1.3M");
+        let mut r = Renderer::new(time::UtcOffset::UTC);
+        let shown = r.render(&line(serde_json::json!({
+            "ts": "2026-09-15T07:12:40Z", "event": "wake-spent", "turns": 16, "spentWakes": 35,
+            "inputTokens": 392, "outputTokens": 9437, "cacheRead": 358986, "cacheCreation": 50545, "toolErrors": 0
+        })));
+        assert!(shown.contains("cacheRead=359k cacheCreation=51k"), "got: {shown}");
+        assert!(shown.contains("turns=16 spentWakes=35"), "counters that are not tokens stay exact: {shown}");
+    }
+
+    #[test]
+    fn since_takes_an_age_a_date_or_a_timestamp() {
+        let utc = time::UtcOffset::UTC;
+        let two_hours = parse_since("2h", utc).unwrap();
+        let delta = crate::clock::now() - two_hours;
+        assert!((delta.whole_minutes() - 120).abs() <= 1, "got {delta}");
+        assert_eq!(parse_since("2026-09-15T07:00:00Z", utc).unwrap(), crate::clock::parse_iso("2026-09-15T07:00:00Z").unwrap());
+        // A bare date is local midnight.
+        let east = time::UtcOffset::from_hms(2, 0, 0).unwrap();
+        assert_eq!(parse_since("2026-09-15", east).unwrap(), crate::clock::parse_iso("2026-09-14T22:00:00Z").unwrap());
+        assert!(parse_since("yesterday", utc).is_err());
+    }
+
+    #[test]
+    fn decisions_keep_the_turning_points_and_drop_the_wake_rhythm() {
+        let filter = Filter { since: None, events: DECISION_EVENTS.iter().map(|e| e.to_string()).collect() };
+        let kept = |event: &str| filter.keeps(&line(serde_json::json!({"ts": "2026-09-15T07:00:00Z", "event": event})));
+        for event in ["gate-opened", "gate-closed", "status-changed", "wake-incomplete", "budget-exhausted"] {
+            assert!(kept(event), "{event} is a decision");
+        }
+        for event in ["wake-started", "wake-spent", "wake-complete", "noop-tick", "timer-armed"] {
+            assert!(!kept(event), "{event} is rhythm");
+        }
+        // `--since` composes with it.
+        let recent = Filter { since: Some(crate::clock::parse_iso("2026-09-15T08:00:00Z").unwrap()), events: vec!["gate-opened".into()] };
+        assert!(!recent.keeps(&line(serde_json::json!({"ts": "2026-09-15T07:00:00Z", "event": "gate-opened"}))));
+        assert!(recent.keeps(&line(serde_json::json!({"ts": "2026-09-15T09:00:00Z", "event": "gate-opened"}))));
+    }
+
+    #[test]
+    fn the_header_frames_the_tail() {
+        let _h = TempHome::new();
+        test_init("h-logs", "a goal").unwrap();
+        gate_open("h-logs", "plan-review");
+        let state = read_run("h-logs").unwrap();
+        let header = logs_header(&state, "logs", time::UtcOffset::UTC);
+        assert!(header.starts_with("# logs · 0 wake(s) since"), "got: {header}");
+        assert!(header.contains("(today) · no wake yet · awaiting_human, gate 001 plan-review open · times UTC"), "got: {header}");
     }
 }
