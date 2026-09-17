@@ -15,7 +15,7 @@ use crate::error::OttoError;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::commands::InitArgs;
 use crate::paths::{short_id, short_id_among};
-use crate::state::{read_all_runs, read_run, CheckResult, Detach, RunEntry, RunState, Status};
+use crate::state::{read_all_runs, read_run, Blocked, BlockedCause, CheckResult, Detach, RunEntry, RunState, Status};
 use serde_json::Value;
 use std::io::{IsTerminal, Write as _};
 
@@ -266,10 +266,17 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             spent.to_string()
         };
         let short = short_id_among(&state.id, &all_ids);
+        // `blocked` on its own sends a person to the logs; the cause says whether that is even
+        // the right place to look.
+        let status = if state.status == Status::Blocked {
+            format!("blocked ({})", blocked_record(&state).0.cause.label())
+        } else {
+            crate::state::commands::status_str(state.status).to_string()
+        };
         rows.push(LsRow {
             id: state.id.clone(),
             short,
-            status: crate::state::commands::status_str(state.status).to_string(),
+            status,
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
             wakes,
@@ -282,14 +289,15 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     let width = rows.iter().map(|r| r.id.len()).max().unwrap_or(2).max(2);
     // SHORT is what to type back: every command otto prints uses it, and every `<id>` accepts it.
     let short_width = rows.iter().map(|r| r.short.len()).max().unwrap_or(5).max("SHORT".len());
+    let status_width = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max("awaiting_human".len());
     let waiting = rows.iter().map(|r| r.blocking.len()).max().unwrap_or(10).max("WAITING ON".len());
     println!(
-        "{:<width$}  {:<short_width$}  {:<14}  {:<12}  {:<waiting$}  WAKES",
+        "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  WAKES",
         "ID", "SHORT", "STATUS", "PHASE", "WAITING ON"
     );
     for row in &rows {
         println!(
-            "{:<width$}  {:<short_width$}  {:<14}  {:<12}  {:<waiting$}  {}",
+            "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {}",
             row.id, row.short, row.status, row.phase, row.blocking, row.wakes
         );
     }
@@ -437,12 +445,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         );
     }
     if state.status == Status::Blocked {
-        // The same two commands `wake::open_stuck_gate`'s own gate text recommends — printed
-        // here too, so a person does not have to read the gate file to find the diagnostic path.
-        println!(
-            "\nblocked after repeated wake failures — see `otto logs {short}` for what happened, \
-             then `otto wake {short} --watch` to retry it in this terminal"
-        );
+        println!("\n{}", blocked_explanation(&state, &short));
     }
 
     if let Some(gate) = &state.gate {
@@ -472,6 +475,55 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         }
     }
     Ok(())
+}
+
+/// Why the run is blocked and what to do about it, in one line, matched to the cause. This used
+/// to say "blocked after repeated wake failures — see the logs, then retry the wake" for every
+/// blocked run, and was seen saying it to a run whose wakes had all completed: it had stalled,
+/// nothing had failed, and retrying was the one thing that could not help.
+fn blocked_explanation(state: &RunState, short: &str) -> String {
+    let gate = match &state.gate {
+        Some(gate) => format!("answer gate {} below", gate.id),
+        // The contract forbids this state; if it is seen anyway, say what to do rather than nothing.
+        None => format!("no gate is open, so nothing can unblock it — `otto wake {short} --watch` or `otto stop {short}`"),
+    };
+    let (blocked, inferred) = blocked_record(state);
+    let detail = blocked.detail.as_deref();
+    let line = match blocked.cause {
+        BlockedCause::WakeFailures => format!(
+            "blocked: {} wake(s) in a row did not finish{} — `otto logs {short}` for what happened, \
+             `otto wake {short} --watch` to retry one in this terminal, or {gate}",
+            state.incomplete_wakes,
+            detail.map(|d| format!(" (last: {d})")).unwrap_or_default()
+        ),
+        BlockedCause::Budget => format!(
+            "blocked: {} — nothing is wrong with the work; {gate}",
+            detail.unwrap_or("a budget ceiling was reached")
+        ),
+        BlockedCause::Stall => format!(
+            "blocked: {} tick(s) in a row changed nothing (policy maxTicksWithoutProgress = {}) — nothing \
+             failed, the run is asking whether to keep going; {gate}",
+            state.ticks_without_progress, state.policy.max_ticks_without_progress
+        ),
+        BlockedCause::Instructions => format!(
+            "blocked by its instructions{} — {gate}",
+            detail.map(|d| format!(": {d}")).unwrap_or_default()
+        ),
+    };
+    if inferred {
+        format!("{line}\n(cause inferred from the run's counters: it was blocked before otto recorded reasons)")
+    } else {
+        line
+    }
+}
+
+/// The blocked record, or — for a run blocked before otto kept one — the same inference
+/// `set-status` makes today, flagged as such. The `bool` is "inferred".
+fn blocked_record(state: &RunState) -> (Blocked, bool) {
+    match &state.blocked {
+        Some(blocked) => (blocked.clone(), false),
+        None => (Blocked { cause: state.inferred_block_cause(), detail: None, at: state.updated_at }, true),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +801,7 @@ fn stop_with(mut args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(),
         id: args.id.clone(),
         status,
         reason: Some(reason.clone()),
+        because: None,
     })?;
     // Release locks on the way out, or the next run against that repo waits on a corpse.
     let _ = crate::state::locks::unlock(crate::state::locks::UnlockArgs {
@@ -1201,6 +1254,43 @@ mod tests {
         // A finished run is not live, so it is never implied.
         stop(StopArgs { id: "2026-09-13-solo".into(), reason: None, failed: false }).unwrap();
         assert!(implied_run("show", true).is_err());
+    }
+
+    /// The line under `otto show` for a blocked run must match the cause: the logs-and-retry
+    /// advice is right for failures and wrong for a stall, where every wake completed.
+    #[test]
+    fn a_blocked_run_is_explained_by_its_cause() {
+        let _h = TempHome::new();
+        test_init("h-why", "a goal").unwrap();
+        gate_open("h-why", "keep-going");
+        let mut state = read_run("h-why").unwrap();
+        state.ticks_without_progress = 24;
+        state.block(BlockedCause::Stall, None);
+        let stall = blocked_explanation(&state, "why");
+        assert!(stall.contains("24 tick(s) in a row changed nothing"), "got: {stall}");
+        assert!(stall.contains("nothing failed"), "got: {stall}");
+        assert!(stall.contains("answer gate 001"), "got: {stall}");
+        assert!(!stall.contains("otto wake"), "retrying is not the remedy for a stall: {stall}");
+
+        state.incomplete_wakes = 5;
+        state.block(BlockedCause::WakeFailures, Some("exited 1; ended still running".into()));
+        let failures = blocked_explanation(&state, "why");
+        assert!(failures.contains("5 wake(s) in a row did not finish (last: exited 1"), "got: {failures}");
+        assert!(failures.contains("`otto logs why`") && failures.contains("`otto wake why --watch`"), "got: {failures}");
+
+        state.block(BlockedCause::Budget, Some("wake budget spent: 35 of 35".into()));
+        assert!(blocked_explanation(&state, "why").contains("wake budget spent: 35 of 35"));
+
+        state.block(BlockedCause::Instructions, Some("gh cannot reach the PR host".into()));
+        assert!(blocked_explanation(&state, "why").contains("blocked by its instructions: gh cannot reach"));
+
+        // A run blocked before otto recorded causes gets the same inference `set-status` makes,
+        // and says that it is one.
+        state.blocked = None;
+        let legacy = blocked_explanation(&state, "why");
+        assert!(legacy.contains("24 tick(s) in a row changed nothing"), "got: {legacy}");
+        assert!(legacy.contains("cause inferred"), "got: {legacy}");
+        assert!(legacy.contains("answer gate 001"), "got: {legacy}");
     }
 
     /// Enter at the prompt means the gate's stated default — and nothing, when it has none.

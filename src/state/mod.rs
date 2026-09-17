@@ -34,6 +34,48 @@ impl Status {
     }
 }
 
+/// Why a run is `blocked`. The status alone says a person has to act; the cause says what
+/// happened, and that is what decides the right action — looking at the logs and retrying the
+/// wake is the answer to failures and beside the point for a stall, where nothing failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+#[clap(rename_all = "kebab-case")]
+pub enum BlockedCause {
+    /// `policy.maxIncompleteWakes` wakes in a row did not finish
+    WakeFailures,
+    /// A ceiling set when the run was created (`--budget-wakes`, `--budget-hours`) was reached
+    Budget,
+    /// `policy.maxTicksWithoutProgress` ticks in a row changed nothing
+    Stall,
+    /// The wrapped instructions decided the run could not proceed
+    Instructions,
+}
+
+impl BlockedCause {
+    /// The kebab-case name, as it appears in `run.json` and the journal.
+    pub fn label(self) -> &'static str {
+        match self {
+            BlockedCause::WakeFailures => "wake-failures",
+            BlockedCause::Budget => "budget",
+            BlockedCause::Stall => "stall",
+            BlockedCause::Instructions => "instructions",
+        }
+    }
+}
+
+/// The record behind a `blocked` status. Present exactly while the run is blocked — `transaction`
+/// drops it the moment the status is anything else — so a stale reason can never outlive the
+/// state it explained.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Blocked {
+    pub cause: BlockedCause,
+    /// What the blocker said, verbatim: the last wake failure, the budget line, the reason a wake
+    /// gave `set-status`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub at: crate::clock::Timestamp,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "kebab-case")]
@@ -386,6 +428,9 @@ pub struct RunState {
     pub check: Option<Check>,
     #[serde(rename = "incompleteWakes", default)]
     pub incomplete_wakes: u32,
+    /// Why `status` is `blocked`, when it is. Set through `block`; cleared by `transaction`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<Blocked>,
     /// Poke's own bookkeeping, kept out of `facts` deliberately: `facts` is the wake's scratch
     /// space, and a wake that re-records what it read has been observed clobbering this with
     /// otto's own `0`, silently corrupting the backoff.
@@ -571,8 +616,35 @@ where
     let _lock = RunLock::acquire(&path)?;
     let mut state = read_state(&path)?;
     let result = f(&path, &mut state)?;
+    // A blocked-reason is a fact about the current status, not history. Every write passes
+    // through here, so this is the one place that keeps the two in step — whichever of the many
+    // status assignments moved the run on.
+    if state.status != Status::Blocked {
+        state.blocked = None;
+    }
     write_state(&path, &mut state)?;
     Ok(result)
+}
+
+impl RunState {
+    /// Enter `blocked`, saying why. The only way in, so a blocked run always carries its reason;
+    /// the caller still owes it a gate (`wake::contract`: blocked without one is stranded).
+    pub fn block(&mut self, cause: BlockedCause, detail: Option<String>) {
+        self.status = Status::Blocked;
+        self.next_wake_at = None;
+        self.blocked = Some(Blocked { cause, detail, at: crate::clock::Timestamp::now() });
+    }
+
+    /// The cause `set-status --status blocked` means when the wake did not say: the stall guard,
+    /// if its counter is what tripped; otherwise the instructions themselves decided.
+    pub fn inferred_block_cause(&self) -> BlockedCause {
+        let limit = self.policy.max_ticks_without_progress;
+        if limit > 0 && i64::from(self.ticks_without_progress) >= limit {
+            BlockedCause::Stall
+        } else {
+            BlockedCause::Instructions
+        }
+    }
 }
 
 /// Reads `run.json` without locking — fine for read-only commands (`get`, `list`, `due`),
@@ -694,6 +766,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         wake: None,
         check: None,
         incomplete_wakes: 0,
+        blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
         ticks_without_progress: 0,

@@ -1,8 +1,8 @@
 //! One function per `otto state` subcommand
 
 use super::{
-    dig, emit, journal, parse_kv, read_all_runs, read_run, read_text_arg, transaction, write_atomic, Budget, Check,
-    CheckResult, Detach, Launcher, LauncherKind, Permission, PermissionMode, Policy, RunLock, RunState, Status,
+    dig, emit, journal, parse_kv, read_all_runs, read_run, read_text_arg, transaction, write_atomic, BlockedCause, Budget,
+    Check, CheckResult, Detach, Launcher, LauncherKind, Permission, PermissionMode, Policy, RunLock, RunState, Status,
     WrapKind, Wraps, SCHEMA_VERSION,
 };
 use crate::clock::Timestamp;
@@ -292,6 +292,7 @@ pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
         wake: None,
         check: None,
         incomplete_wakes: 0,
+        blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
         ticks_without_progress: 0,
@@ -475,13 +476,24 @@ pub struct SetStatusArgs {
     pub status: Status,
     #[arg(long)]
     pub reason: Option<String>,
+    /// With `--status blocked`: why. Omitted, otto infers `stall` when the tick counter is what
+    /// tripped, else `instructions`. Ignored for any other status
+    #[arg(long, value_enum)]
+    pub because: Option<BlockedCause>,
 }
 
 pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
     let id = args.id.clone();
     transaction(&id, |path, state| {
         let previous = status_str(state.status).to_string();
-        state.status = args.status;
+        let mut because = None;
+        if args.status == Status::Blocked {
+            let cause = args.because.unwrap_or_else(|| state.inferred_block_cause());
+            because = Some(cause.label().to_string());
+            state.block(cause, args.reason.clone());
+        } else {
+            state.status = args.status;
+        }
         if args.status.is_terminal() {
             state.next_wake_at = None;
         }
@@ -491,6 +503,7 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
                 from: previous,
                 to: status_str(args.status).to_string(),
                 reason: args.reason.clone(),
+                because,
             },
         )
     })
@@ -824,6 +837,55 @@ pub(crate) fn test_init(id: &str, goal: &str) -> Result<(), OttoError> {
 
 #[cfg(test)]
 mod tests {
+    /// `set-status --status blocked` from a wake carries a cause, said or inferred, and the
+    /// cause does not outlive the status.
+    #[test]
+    fn blocking_records_why_and_leaving_blocked_forgets_it() {
+        use super::super::{BlockedCause, Status};
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-why", "a goal").unwrap();
+
+        // Nothing said, counter not tripped: the instructions decided.
+        super::set_status(super::SetStatusArgs {
+            id: "s-why".into(),
+            status: Status::Blocked,
+            reason: Some("gh cannot reach the PR host".into()),
+            because: None,
+        })
+        .unwrap();
+        let state = super::read_run("s-why").unwrap();
+        let blocked = state.blocked.as_ref().expect("blocked says why");
+        assert_eq!(blocked.cause, BlockedCause::Instructions);
+        assert_eq!(blocked.detail.as_deref(), Some("gh cannot reach the PR host"));
+        let journal = std::fs::read_to_string(crate::paths::run_dir("s-why").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""because":"instructions""#), "got: {journal}");
+
+        // Moving on clears it, whichever write did the moving.
+        super::set_status(super::SetStatusArgs { id: "s-why".into(), status: Status::Running, reason: None, because: None })
+            .unwrap();
+        assert!(super::read_run("s-why").unwrap().blocked.is_none());
+
+        // Counter tripped and nothing said: the stall guard is what happened.
+        super::super::transaction("s-why", |_p, state| {
+            state.ticks_without_progress = 24;
+            Ok(())
+        })
+        .unwrap();
+        super::set_status(super::SetStatusArgs { id: "s-why".into(), status: Status::Blocked, reason: None, because: None })
+            .unwrap();
+        assert_eq!(super::read_run("s-why").unwrap().blocked.unwrap().cause, BlockedCause::Stall);
+
+        // Said explicitly, it wins over inference.
+        super::set_status(super::SetStatusArgs {
+            id: "s-why".into(),
+            status: Status::Blocked,
+            reason: None,
+            because: Some(BlockedCause::Instructions),
+        })
+        .unwrap();
+        assert_eq!(super::read_run("s-why").unwrap().blocked.unwrap().cause, BlockedCause::Instructions);
+    }
+
     use super::*;
     use crate::paths::test_support::TempHome;
 

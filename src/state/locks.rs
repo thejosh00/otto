@@ -276,7 +276,7 @@ mod tests {
         test_init("lock-owner-1", "dev-flow").unwrap();
         test_init("lock-taker-1", "dev-flow").unwrap();
         lock(LockArgs { id: "lock-owner-1".into(), repo: "/tmp/repo-b".into(), force: false }).unwrap();
-        set_status(SetStatusArgs { id: "lock-owner-1".into(), status: Status::Done, reason: None }).unwrap();
+        set_status(SetStatusArgs { id: "lock-owner-1".into(), status: Status::Done, reason: None, because: None }).unwrap();
         lock(LockArgs { id: "lock-taker-1".into(), repo: "/tmp/repo-b".into(), force: false }).unwrap();
         let (path, _) = repo_lock_path("/tmp/repo-b").unwrap();
         let held: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

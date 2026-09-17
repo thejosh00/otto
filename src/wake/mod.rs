@@ -361,8 +361,7 @@ pub fn record_incomplete(id: &str, why: &str) -> Result<(), OttoError> {
             // Retrying forever is the expensive failure. Hand it to a person, in a state a
             // person can actually act on.
             gave_up = true;
-            state.status = Status::Blocked;
-            state.next_wake_at = None;
+            state.block(crate::state::BlockedCause::WakeFailures, Some(why_owned.clone()));
         } else {
             // Back off rather than hammer: whatever broke may need a moment.
             let minutes = crate::poke::backoff_minutes(consecutive);
@@ -419,8 +418,7 @@ fn open_stuck_gate(id: &str, why: &str, consecutive: u32) -> Result<(), OttoErro
 fn block_on_budget(id: &str, why: &str) -> Result<(), OttoError> {
     let already_gated = crate::state::read_run(id)?.gate.is_some();
     transaction(id, |path, state| {
-        state.status = Status::Blocked;
-        state.next_wake_at = None;
+        state.block(crate::state::BlockedCause::Budget, Some(why.to_string()));
         crate::event::record(path, &Event::BudgetExhausted { reason: why.to_string() })
     })?;
     if !already_gated {
@@ -644,6 +642,9 @@ mod tests {
         assert_eq!(state.status, Status::Blocked);
         assert!(state.gate.is_some(), "blocked without a gate would strand the run");
         assert_eq!(state.gate.as_ref().unwrap().slug, "wake-stuck");
+        let blocked = state.blocked.as_ref().expect("a blocked run says why");
+        assert_eq!(blocked.cause, crate::state::BlockedCause::WakeFailures);
+        assert!(blocked.detail.as_deref().unwrap_or("").contains("nothing would ever bring this run back"));
     }
 
     #[test]
@@ -677,6 +678,9 @@ mod tests {
         let state = read_run("w-broke").unwrap();
         assert_eq!(state.status, Status::Blocked);
         assert!(state.gate.is_some());
+        let blocked = state.blocked.as_ref().expect("a blocked run says why");
+        assert_eq!(blocked.cause, crate::state::BlockedCause::Budget);
+        assert_eq!(blocked.detail.as_deref(), Some("wake budget spent: 2 of 2"));
     }
 
     #[test]

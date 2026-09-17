@@ -47,6 +47,9 @@ pub enum Event {
         to: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
+        /// Only when `to` is `blocked`: the `BlockedCause` label, so the journal says why.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        because: Option<String>,
     },
     FactsRecorded {
         facts: Map<String, Value>,
@@ -219,6 +222,7 @@ mod tests {
             from: "running".into(),
             to: "done".into(),
             reason: None,
+            because: None,
         })
         .unwrap();
         assert!(value.get("reason").is_none(), "a None field must not appear, not appear as null");

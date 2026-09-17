@@ -174,6 +174,13 @@ that simply stopped talking → **`wake-incomplete`**: increment `incompleteWake
 `nextWakeAt` with backoff, and let the next wake re-enter cold. Consecutive failures past
 `policy.maxIncompleteWakes` → `blocked` plus a human gate carrying what the wakes were doing.
 
+Every way into `blocked` records why — `run.json`'s `blocked: {cause, detail, at}`, with `cause`
+one of `wake-failures`, `budget`, `stall`, `instructions` — because the remedy depends on it:
+the logs and a retried wake for failures, a plain answer to the gate for a stall where nothing
+failed. otto's own paths set it; a wake setting `blocked` itself says `--because`, or otto infers
+`stall` from the tick counter. `transaction` clears the record whenever the status is no longer
+`blocked`, so it can never describe a state the run has left.
+
 Two checks, because two are enforceable against anything. A validator that also demanded a
 declared `exitCondition` would only work on skills written for otto, and then the premise in §1
 would be false.
@@ -366,7 +373,7 @@ slow leak. Since every wake is a cold start, a cheap tick must be a genuinely sm
 not just a small amount of work.
 
 `tick` prints `{"ticksWithoutProgress": n, "limit": l, "exhausted": bool}`. Exhausted → stop
-sleeping: `blocked` plus a human gate. **Progress means durable state changed**, not that the
+sleeping: `blocked` (`set-status --status blocked --because stall`) plus a human gate. **Progress means durable state changed**, not that the
 goal was reached: a rejected proposal recorded in a ledger is progress. `0` means disabled, for a
 workflow whose ticks are *expected* to achieve nothing (§11.5).
 

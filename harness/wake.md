@@ -167,9 +167,15 @@ Ticks must be cheap: one status check, then `otto state tick <id>` (add `--progr
 something actually changed), re-arm, stop. Only a real change deserves real work.
 
 **Progress means durable state changed**, not that the goal was reached. A proposal recorded
-and rejected is progress. When `tick` reports `exhausted`, stop sleeping: set `blocked` and
-open a gate carrying what the ticks have been seeing. A timer that ticks forever achieving
+and rejected is progress. When `tick` reports `exhausted`, stop sleeping: set `blocked`
+(`otto state set-status <id> --status blocked --because stall --reason "<what the ticks saw>"`)
+and open a gate carrying what the ticks have been seeing. A timer that ticks forever achieving
 nothing is the most expensive way for a run to fail.
+
+Whenever you set `blocked` yourself, say why with `--because` (`stall`, or `instructions` when
+your own instructions decided the run cannot proceed) and `--reason`. `otto ls` and `otto show`
+tell the person what happened and what to do from exactly that; without it otto guesses from
+the tick counter.
 
 **A missed window is one wake, not a backlog.** However long the run was down, reconcile once
 and carry on. Never replay the ticks you missed.
