@@ -45,6 +45,9 @@
 //! - `~/.claude` is not visible inside the sandbox, so a skill cannot be found there. Skills
 //!   arrive through `yolo --skills <dir>`, which is why `launcher.skillDirs` exists and why a
 //!   `--skill` run under yolo without one is refused up front rather than failing mid-wake.
+//!
+//! On macOS both launchers are wrapped in `caffeinate` — see `sleep_guard`. That is a property of
+//! the machine, not of the launcher, which is why it sits in front of either one.
 
 use crate::error::OttoError;
 use crate::state::{LauncherKind, RunState, WrapKind};
@@ -74,6 +77,27 @@ fn claude_tail(state: &RunState, session_id: &str) -> Vec<String> {
     argv
 }
 
+/// The wrapper that keeps the machine awake for exactly as long as a wake is working.
+///
+/// An unattended wake has nobody touching the keyboard, so a mac idles its way to sleep in the
+/// middle of one. The wake does not fail cleanly when that happens — it comes back to a killed
+/// child and a deadline it never had a chance to spend, which reads in the journal like a wake
+/// that did nothing.
+///
+/// `caffeinate` holds the assertion for the lifetime of the process it runs, so wrapping the
+/// launcher scopes it to the wake rather than to otto: nothing is held while a run sleeps between
+/// wakes. `-i` is idle sleep, `-s` is system sleep while on AC power (ignored on battery).
+/// Display sleep is deliberately left alone — nobody is watching the screen.
+///
+/// The deadline in `exec` still reaches claude: killing `caffeinate` takes down what it wraps.
+fn sleep_guard() -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        vec!["caffeinate".to_string(), "-i".to_string(), "-s".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Refuse a run whose launcher cannot possibly resolve what it wraps. Cheap to check here,
 /// expensive to discover an hour into a wake that quietly did nothing.
 pub fn check_resolvable(state: &RunState) -> Result<(), OttoError> {
@@ -94,13 +118,17 @@ pub fn check_resolvable(state: &RunState) -> Result<(), OttoError> {
 /// The full command line for one wake. `session_id` is where the wake's usage will be read from
 /// afterwards, so it is chosen by the caller before the spawn and recorded in `wake.session`.
 pub fn argv(state: &RunState, prompt: &str, session_id: &str) -> Vec<String> {
+    // The guard leads, so what follows is the launcher's own command line either way.
+    let guard = sleep_guard();
     match state.launcher.kind {
         LauncherKind::Claude => {
             // The prompt goes before every flag, `--add-dir` included — see the module doc. This
             // is the case that made the rule non-negotiable: `--add-dir` is variadic and otto
             // always passes at least one, so `claude --add-dir <home> <prompt>` fed the prompt to
             // `--add-dir` as a second directory and ran a wake with no prompt at all.
-            let mut argv = vec!["claude".to_string(), prompt.to_string()];
+            let mut argv = guard;
+            argv.push("claude".to_string());
+            argv.push(prompt.to_string());
             // The run directory is not optional. `$OTTO_HOME` is normally outside the working
             // directory, so without this the wake cannot read its own `run.json` or write its
             // handoff — and nobody is attached to widen the grant, so the wake burns its whole
@@ -117,7 +145,8 @@ pub fn argv(state: &RunState, prompt: &str, session_id: &str) -> Vec<String> {
             argv
         }
         LauncherKind::Yolo => {
-            let mut argv = vec!["yolo".to_string()];
+            let mut argv = guard;
+            argv.push("yolo".to_string());
             // Same reason as above, but under yolo the grant must be a sandbox grant: nono
             // only opens paths it was told about, so `--add-dir` alone would let claude try to
             // read a path the kernel has not made visible.
@@ -166,13 +195,19 @@ mod tests {
         argv.join(" ")
     }
 
+    /// argv from the launcher's own command onward. The sleep guard is there on macOS and absent
+    /// everywhere else, so every position-sensitive assertion counts from here rather than from 0.
+    fn launched(argv: &[String]) -> Vec<String> {
+        argv[sleep_guard().len()..].to_vec()
+    }
+
     /// A stand-in for the id the wake will be measured by.
     const SID: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
 
     #[test]
     fn claude_gets_the_unattended_tail() {
         let argv = argv(&state(LauncherKind::Claude, WrapKind::GoalOnly), "wake r1", SID);
-        assert_eq!(argv[0], "claude");
+        assert_eq!(launched(&argv)[0], "claude");
         let line = joined(&argv);
         assert!(line.contains("--permission-mode acceptEdits"));
         assert!(line.contains(&format!("--session-id {SID}")), "usage is read back by session id");
@@ -225,7 +260,7 @@ mod tests {
     fn the_prompt_leads_claudes_own_arguments() {
         let mut c = state(LauncherKind::Claude, WrapKind::GoalOnly);
         c.launcher.repos = vec!["/w/a".into()];
-        assert_eq!(argv(&c, "wake r1", SID)[1], "wake r1", "straight after `claude`");
+        assert_eq!(launched(&argv(&c, "wake r1", SID))[1], "wake r1", "straight after `claude`");
 
         let mut y = state(LauncherKind::Yolo, WrapKind::GoalOnly);
         y.launcher.repos = vec!["/w/a".into()];
@@ -238,7 +273,7 @@ mod tests {
     #[test]
     fn yolo_passes_the_same_tail_after_a_double_dash() {
         let argv = argv(&state(LauncherKind::Yolo, WrapKind::GoalOnly), "wake r1", SID);
-        assert_eq!(argv[0], "yolo");
+        assert_eq!(launched(&argv)[0], "yolo");
         let dashdash = argv.iter().position(|a| a == "--").expect("yolo needs a --");
         // The prompt leads the tail under yolo too, for the same variadic reason.
         assert_eq!(argv[dashdash + 1], "wake r1");
@@ -312,6 +347,21 @@ mod tests {
     fn the_same_wrap_under_plain_claude_is_fine_without_skill_dirs() {
         // ~/.claude/skills is visible without a sandbox, so nothing to declare.
         assert!(check_resolvable(&state(LauncherKind::Claude, WrapKind::Skill)).is_ok());
+    }
+
+    /// A mac that falls asleep mid-wake kills the child and burns the deadline for nothing, so
+    /// the launcher — either one — runs under `caffeinate`. Elsewhere there is nothing to wrap.
+    #[test]
+    fn a_mac_is_kept_awake_for_the_length_of_the_wake() {
+        for kind in [LauncherKind::Claude, LauncherKind::Yolo] {
+            let argv = argv(&state(kind, WrapKind::GoalOnly), "wake r1", SID);
+            if cfg!(target_os = "macos") {
+                assert_eq!(&argv[..3], ["caffeinate", "-i", "-s"], "{kind:?} must not let the mac sleep");
+                assert!(matches!(argv[3].as_str(), "claude" | "yolo"), "the launcher follows the guard");
+            } else {
+                assert_ne!(argv[0], "caffeinate", "caffeinate is macOS-only");
+            }
+        }
     }
 
     #[test]

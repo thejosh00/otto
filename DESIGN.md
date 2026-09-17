@@ -72,7 +72,7 @@ Everything else is guidance. Guidance can be ignored; a validator cannot.
   │ otto wake <id>          ← one process, one wake, then gone        │
   │                                                                  │
   │   write wake-started, deadlineAt                                 │
-  │   exec  claude <harness prompt> --session-id <uuid>               │
+  │   exec  caffeinate claude <harness prompt> --session-id <uuid>    │
   │           ├─ orient:  run.json · handoff.md · journal tail        │
   │           ├─ load:    the wrapped skill / instructions / goal     │
   │           ├─ work:    re-derive, act, delegate to subagents       │
