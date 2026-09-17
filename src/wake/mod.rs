@@ -406,7 +406,7 @@ fn open_stuck_gate(id: &str, why: &str, consecutive: u32) -> Result<(), OttoErro
          leaving the run somewhere anything could resume it — no gate open, no wake time set — \
          or without rewriting `handoff.md`. That usually means the wrapped instructions are \
          asking for something a wake cannot do (waiting for an interactive answer, most often), \
-         or the work genuinely cannot proceed.\n\n\
+         or the work genuinely cannot proceed.\n\n## Options\n\n\
          - **Retry** — clear the counter and wake it again; right if you have fixed the cause.\n\
          - **Stop the run** — retire it (`otto stop {id}`).\n\
          - **Investigate** — read `otto logs {id}` and the journal first; the run stays blocked \
@@ -426,7 +426,7 @@ fn block_on_budget(id: &str, why: &str) -> Result<(), OttoError> {
     if !already_gated {
         let question = format!(
             "Run `{id}` has stopped because its {why}.\n\nNothing is wrong with the work; it has \
-             reached a ceiling set when the run was created.\n\n\
+             reached a ceiling set when the run was created.\n\n## Options\n\n\
              - **Raise the budget** — `otto state get {id} --field budget` shows the current one.\n\
              - **Stop the run** — `otto stop {id}`.\n\nDefault: stop. No further wakes will run."
         );

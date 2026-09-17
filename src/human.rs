@@ -257,10 +257,9 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         let running = liveness.probe(&state.id).is_busy();
         if let Some(gate) = &state.gate {
             let dir = crate::paths::run_dir(&state.id).ok();
-            let options = dir
-                .and_then(|d| crate::gate::read_question(&d, gate).ok())
-                .map(|q| crate::gate::parse_options(&q))
-                .unwrap_or_default();
+            let question = dir.and_then(|d| crate::gate::read_question(&d, gate).ok()).unwrap_or_default();
+            // The default leads, so the command printed first is the one the wake recommended.
+            let options = crate::gate::options_default_first(&question);
             needs_you.push((state.id.clone(), format!("gate {} {}", gate.id, gate.slug), options));
         } else if !running && state.status == Status::Sleeping {
             sleeping_count += 1;
@@ -420,13 +419,16 @@ pub fn show(mut args: ShowArgs) -> Result<(), OttoError> {
             Ok(text) => println!("{}", text.trim_end()),
             Err(_) => println!("(gate file {} is missing)", gate.file),
         }
-        let options = crate::gate::read_question(&dir, gate).map(|q| crate::gate::parse_options(&q)).unwrap_or_default();
+        let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
+        let options = crate::gate::parse_options(&question);
+        let default = crate::gate::parse_default(&question, &options);
         println!("\nAnswer it with:");
         if options.is_empty() {
             println!("  otto answer {} --choice <option>", state.id);
         } else {
             for option in &options {
-                println!("  otto answer {} --choice \"{option}\"", state.id);
+                let mark = if default.as_deref() == Some(option) { "   # default" } else { "" };
+                println!("  otto answer {} --choice \"{option}\"{mark}", state.id);
             }
         }
         println!("  otto answer {} --text \"…\"", state.id);
@@ -481,26 +483,38 @@ fn resolve_choice(choice: &str, options: &[String]) -> Result<String, OttoError>
 }
 
 /// Print the question and, when the gate lists options, a numbered menu; read one line from
-/// stdin and resolve it to an answer. A number picks that option, text matching an option's name
-/// picks it too (both case-insensitively), and anything else is taken as free text — so someone
-/// who wants to write more than an option name still can. Only reached on a TTY (see `answer`);
-/// otherwise there is nobody to read a menu.
-fn interactive_prompt(question: &str, options: &[String]) -> Result<String, OttoError> {
+/// stdin and resolve it with `resolve_typed`. Only reached on a TTY (see `answer`); otherwise
+/// there is nobody to read a menu.
+fn interactive_prompt(question: &str, options: &[String], default: Option<&str>) -> Result<String, OttoError> {
     println!("{}\n", question.trim());
     if options.is_empty() {
         print!("your answer: ");
     } else {
         for (i, option) in options.iter().enumerate() {
-            println!("  {}) {option}", i + 1);
+            let mark = if default == Some(option.as_str()) { "  (default)" } else { "" };
+            println!("  {}) {option}{mark}", i + 1);
         }
-        print!("choose 1-{}, or type an answer: ", options.len());
+        match default {
+            Some(name) => print!("choose 1-{}, Enter for {name}, or type an answer: ", options.len()),
+            None => print!("choose 1-{}, or type an answer: ", options.len()),
+        }
     }
     std::io::stdout().flush().ok();
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
-    let line = line.trim();
+    resolve_typed(line.trim(), options, default)
+}
+
+/// What one typed line at the prompt means. A number picks that option, text matching an
+/// option's name picks it too (both case-insensitively), an empty line takes the default when the
+/// gate names one, and anything else is taken as free text — so someone who wants to write more
+/// than an option name still can.
+fn resolve_typed(line: &str, options: &[String], default: Option<&str>) -> Result<String, OttoError> {
     if line.is_empty() {
-        return Err(OttoError::usage("no answer given"));
+        return match default {
+            Some(name) => Ok(name.to_string()),
+            None => Err(OttoError::usage("no answer given")),
+        };
     }
     if let Ok(n) = line.parse::<usize>() {
         if n >= 1 && n <= options.len() {
@@ -544,7 +558,8 @@ pub fn answer(mut args: AnswerArgs) -> Result<(), OttoError> {
         }
         (None, None, None) => {
             if stdin_is_terminal() {
-                interactive_prompt(&question, &options)?
+                let default = crate::gate::parse_default(&question, &options);
+                interactive_prompt(&question, &options, default.as_deref())?
             } else if options.is_empty() {
                 return Err(OttoError::usage(
                     "give the answer: --choice <option>, --text \"…\", or --file <path>".to_string(),
@@ -1106,6 +1121,18 @@ mod tests {
         test_init("h-strand", "a goal").unwrap();
         let state = read_run("h-strand").unwrap();
         assert_eq!(blocking(&state, false), "nothing scheduled");
+    }
+
+    /// Enter at the prompt means the gate's stated default — and nothing, when it has none.
+    #[test]
+    fn an_empty_line_at_the_prompt_takes_the_default_when_there_is_one() {
+        let options: Vec<String> = vec!["keep-polling".into(), "stop-run".into()];
+        assert_eq!(resolve_typed("", &options, Some("keep-polling")).unwrap(), "keep-polling");
+        assert!(resolve_typed("", &options, None).is_err());
+        // The other readings are unchanged by a default being present.
+        assert_eq!(resolve_typed("2", &options, Some("keep-polling")).unwrap(), "stop-run");
+        assert_eq!(resolve_typed("STOP-RUN", &options, Some("keep-polling")).unwrap(), "stop-run");
+        assert_eq!(resolve_typed("something else", &options, Some("keep-polling")).unwrap(), "something else");
     }
 
     #[test]

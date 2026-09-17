@@ -136,9 +136,13 @@ to anything worth reading. "Does the plan look OK?" costs a round trip and earns
 which is not a review.
 
 Name the options plainly, so the answer can be `--choice approve` and so it still means
-something specific in the journal a week from now. List them as a markdown bullet list —
-`- Approve` or, with a consequence attached, `- **Approve** — merges to main` — so `otto answer`
-can check `--choice` against them and offer a numbered menu instead of taking any string.
+something specific in the journal a week from now. Put them under an `## Options` heading as a
+markdown bullet list — `- Approve` or, with a consequence attached, `- **Approve** — merges to
+main` — and mark the default either inline (`- **Approve** *(default)* — …`) or with a sentence
+(`Default: approve.`). otto reads exactly that: the bullets under `## Options` are what
+`--choice` is checked against and what the numbered menu offers, the default is what Enter picks,
+and any other list in the question (paths worth reading, say) is left alone. Without the heading
+every bullet in the question is taken as an option.
 
 Use `--expires-in` only where silence has a sane meaning. "No answer, so don't do it" is sane.
 "No answer, so push it" is not.
