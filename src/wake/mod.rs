@@ -107,6 +107,30 @@ fn budget_exceeded(state: &RunState) -> Option<String> {
     None
 }
 
+/// The command a wake would run, for a person to read. The harness is printed as a length
+/// rather than inline: it is several KB and would bury the part a human is actually checking.
+pub fn dry_run_line(argv: &[String]) -> String {
+    let shown: Vec<String> = argv
+        .iter()
+        .map(|a| {
+            if a == prompt::HARNESS {
+                format!("<harness: {} bytes>", a.len())
+            } else {
+                a.clone()
+            }
+        })
+        .collect();
+    shown.join(" ")
+}
+
+/// What `otto run --dry-run` prints: the first wake's command line, for a run that does not
+/// exist yet. Same argv builder as the real thing, so what it shows is what would run.
+pub fn first_wake_dry_run_line(state: &crate::state::RunState, run_dir: &std::path::Path) -> String {
+    let prompt = prompt::user_prompt(&state.id, run_dir);
+    let session = transcript::session_id(&state.id, 1, &Timestamp::now().to_string());
+    dry_run_line(&launcher::argv(state, &prompt, &session))
+}
+
 pub fn wake(args: WakeArgs) -> Result<(), OttoError> {
     let mut exec = RealExec;
     run_wake(&args, &mut exec)
@@ -146,19 +170,7 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     let argv = launcher::argv(&state, &prompt, &session);
 
     if args.dry_run {
-        // Print the harness as a length rather than inline: it is several KB and would bury
-        // the part a human is actually checking.
-        let shown: Vec<String> = argv
-            .iter()
-            .map(|a| {
-                if a == prompt::HARNESS {
-                    format!("<harness: {} bytes>", a.len())
-                } else {
-                    a.clone()
-                }
-            })
-            .collect();
-        println!("{}", shown.join(" "));
+        println!("{}", dry_run_line(&argv));
         return Ok(());
     }
 

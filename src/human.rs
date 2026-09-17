@@ -27,9 +27,12 @@ use std::io::{IsTerminal, Write as _};
 pub struct RunArgs {
     #[command(flatten)]
     pub init: InitArgs,
-    /// Watch the first wake in this terminal instead of detaching it
-    #[arg(long)]
+    /// Watch every wake in this terminal instead of detaching it (persists for the run)
+    #[arg(long, help_heading = "Where it runs")]
     pub watch: bool,
+    /// Print the id the run would get and the command its first wake would run, and create nothing
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
@@ -39,6 +42,15 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
         args.init.detach = Detach::None;
     }
     let detach = args.init.detach;
+    if args.dry_run {
+        // Everything `init_run` would decide, and the same refusals, with nothing on disk — so a
+        // flag can be checked before it costs a run directory and a wake.
+        let planned = crate::state::commands::plan_run(&args.init)?;
+        crate::wake::launcher::check_resolvable(&planned.state)?;
+        println!("{}", planned.state.id);
+        println!("{}", crate::wake::first_wake_dry_run_line(&planned.state, &planned.path));
+        return Ok(());
+    }
     let id = crate::state::commands::init_run(args.init)?;
     println!("{id}");
     // Fail before the first wake rather than after it: a launcher that cannot resolve what the
@@ -1393,6 +1405,50 @@ mod tests {
         test_init("h-strand", "a goal").unwrap();
         let state = read_run("h-strand").unwrap();
         assert_eq!(blocking(&state, false), "nothing scheduled");
+    }
+
+    /// `otto run --dry-run` is how a flag gets checked before it costs a run: nothing may exist
+    /// afterwards, and what it prints is the real first-wake command.
+    #[test]
+    fn a_dry_run_prints_the_first_wake_and_creates_nothing() {
+        let _h = TempHome::new();
+        run(RunArgs {
+            init: InitArgs { goal: "a goal".into(), slug: Some("dry".into()), repos: vec!["/w/a".into()], ..Default::default() },
+            watch: false,
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(crate::paths::all_run_ids().is_empty(), "a dry run must create no run");
+        // The same refusals apply: yolo + a skill with nowhere to find it.
+        let err = run(RunArgs {
+            init: InitArgs {
+                goal: "a goal".into(),
+                skill: Some("manage-pr".into()),
+                launcher: crate::state::LauncherKind::Yolo,
+                ..Default::default()
+            },
+            watch: false,
+            dry_run: true,
+        })
+        .expect_err("must refuse");
+        assert!(err.to_string().contains("--skills-dir"));
+        assert!(crate::paths::all_run_ids().is_empty());
+    }
+
+    /// Every flag a person sees on `otto run --help` says what it is for. Nine used to say
+    /// nothing at all.
+    #[test]
+    fn every_visible_run_flag_has_help() {
+        use clap::CommandFactory;
+        let cli = crate::cli::Cli::command();
+        let run = cli.find_subcommand("run").expect("otto run exists");
+        for arg in run.get_arguments() {
+            if arg.is_hide_set() || arg.get_id() == "help" {
+                continue;
+            }
+            assert!(arg.get_help().is_some(), "--{} has no help text", arg.get_id());
+        }
+        assert!(run.get_arguments().any(|a| a.get_id() == "budget_usd" && a.is_hide_set()), "--budget-usd is hidden");
     }
 
     /// `otto ls` said one run needs you; `otto answer --choice X` with no id is the reply to that.

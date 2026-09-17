@@ -52,70 +52,86 @@ fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, cr
     )
 }
 
+/// Everything that describes a run. Grouped in `--help` the way a person decides them: what to
+/// run, when it is finished, where it runs, what it may do — and the knobs almost nobody sets.
 #[derive(clap::Args, Debug)]
 pub struct InitArgs {
-    /// What this run is trying to achieve. Required: it is the only thing that survives
-    /// every wake unaltered, and the only thing that can say when to stop.
-    #[arg(long, required = true)]
+    /// What this run is trying to achieve. The only thing that survives every wake unaltered,
+    /// and the only thing that can say when to stop
+    #[arg(long, required = true, help_heading = "What to run")]
     pub goal: String,
-    /// Wrap a Claude skill by name
-    #[arg(long, conflicts_with = "instructions")]
+    /// Wrap a Claude Code skill by name (`manage-pr`)
+    #[arg(long, conflicts_with = "instructions", help_heading = "What to run")]
     pub skill: Option<String>,
-    /// Wrap any prose file — a runbook, a workflow table, a ticket
-    #[arg(long)]
+    /// Wrap a prose file — a runbook, a workflow table, a ticket
+    #[arg(long, help_heading = "What to run")]
     pub instructions: Option<String>,
-    /// State the done-condition outright; otherwise the first wake proposes one and gates it
-    #[arg(long, conflicts_with = "perpetual")]
-    pub until: Option<String>,
-    /// There is no done-condition: this run is retired, never finished
-    #[arg(long)]
-    pub perpetual: bool,
-    /// What the run is about, e.g. a Jira key
-    #[arg(long)]
+    /// What the run is about — a Jira key, a PR — recorded as `facts.target` and used for the id
+    #[arg(long, help_heading = "What to run")]
     pub target: Option<String>,
-    /// Explicit run id (default: <date>-<slug>)
-    #[arg(long)]
-    pub id: Option<String>,
-    /// Slug for the generated id (default: from target, else the goal)
-    #[arg(long)]
-    pub slug: Option<String>,
-    #[arg(long, default_value = "start")]
-    pub phase: String,
-    #[arg(long, value_enum, default_value = "claude")]
-    pub launcher: LauncherKind,
-    /// Extra repo the wake may touch (repeatable)
-    #[arg(long = "repo")]
+    /// A repository the wake may work in (repeatable). Granted to claude with `--add-dir`, or
+    /// opened in the sandbox under yolo
+    #[arg(long = "repo", value_name = "DIR", help_heading = "What to run")]
     pub repos: Vec<String>,
-    /// Directory to load skills from (repeatable). Required under yolo for --skill to
-    /// resolve, because the sandbox cannot see ~/.claude
-    #[arg(long = "skills-dir")]
+    /// Where to find skills (repeatable). Needed under yolo for --skill to resolve, because the
+    /// sandbox cannot see ~/.claude
+    #[arg(long = "skills-dir", value_name = "DIR", help_heading = "What to run")]
     pub skill_dirs: Vec<String>,
-    /// Defaults to the permissive mode, and not casually. A wake is unattended, so every other
-    /// mode relies on a prompt for some tool class, and `--permission-prompts none` turns every
-    /// unanswerable prompt into a denial. Measured: `accept-edits` denies Bash, and `dont-ask`
-    /// denies Write, Edit and Bash — so the stricter modes do not merely restrict a wake, they
-    /// break it silently while still charging for it. The real guardrail is the launcher (run
-    /// under `--launcher yolo` for a kernel-enforced sandbox) plus `authorize` for anything
-    /// outward-facing.
-    #[arg(long = "permission-mode", value_enum, default_value = "bypass-permissions")]
-    pub permission_mode: PermissionMode,
-    #[arg(long = "allow-tool", value_name = "TOOL")]
-    pub allowed_tools: Vec<String>,
-    #[arg(long = "deny-tool", value_name = "TOOL")]
-    pub disallowed_tools: Vec<String>,
-    #[arg(long, value_enum, default_value = "tmux")]
-    pub detach: Detach,
-    /// 0 means unlimited
-    #[arg(long = "budget-wakes", default_value_t = 0)]
+
+    /// The done-condition, stated outright. Otherwise the first wake proposes one and gates it
+    #[arg(long, conflicts_with = "perpetual", help_heading = "When it is done")]
+    pub until: Option<String>,
+    /// Never: the run is retired with `otto stop`, not finished
+    #[arg(long, help_heading = "When it is done")]
+    pub perpetual: bool,
+    /// Block with a gate after this many wakes (0: unlimited)
+    #[arg(long = "budget-wakes", value_name = "N", default_value_t = 0, help_heading = "When it is done")]
     pub budget_wakes: u32,
-    #[arg(long = "budget-hours", default_value_t = 0)]
+    /// Block with a gate after this many hours since creation (0: unlimited)
+    #[arg(long = "budget-hours", value_name = "H", default_value_t = 0, help_heading = "When it is done")]
     pub budget_hours: u32,
-    /// Unenforceable, and refused if set — kept declared so saying so is possible. See `Budget`.
-    #[arg(long = "budget-usd", default_value_t = 0.0)]
+    /// Refused if set: nothing can price a wake on a subscription. Kept declared so the refusal
+    /// can say why (see `Budget`)
+    #[arg(long = "budget-usd", default_value_t = 0.0, hide = true)]
     pub budget_usd: f64,
-    #[arg(long = "fact", value_name = "K=V")]
+
+    /// What runs the model: plain `claude`, or `yolo` for a kernel-enforced sandbox — the right
+    /// choice for anything unattended
+    #[arg(long, value_enum, default_value = "claude", help_heading = "Where it runs")]
+    pub launcher: LauncherKind,
+    /// Where each wake is backgrounded: a tmux session named otto-<id>, or none (your terminal)
+    #[arg(long, value_enum, default_value = "tmux", help_heading = "Where it runs")]
+    pub detach: Detach,
+
+    /// claude's permission mode for every wake. A wake is unattended, so no prompt can be
+    /// answered; `bypass-permissions` is the only mode measured to work, and the real guardrail
+    /// is `--launcher yolo` (README "Launchers", DESIGN.md open question 4)
+    #[arg(long = "permission-mode", value_enum, default_value = "bypass-permissions", help_heading = "What it may do")]
+    pub permission_mode: PermissionMode,
+    /// Tool claude may use without asking, in claude's own syntax (`Read`, `Bash(git *)`); repeatable
+    #[arg(long = "allow-tool", value_name = "TOOL", help_heading = "What it may do")]
+    pub allowed_tools: Vec<String>,
+    /// Tool claude may not use (`WebFetch`); repeatable
+    #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "What it may do")]
+    pub disallowed_tools: Vec<String>,
+
+    /// The run id, instead of the generated <date>-<slug>
+    #[arg(long, help_heading = "Advanced")]
+    pub id: Option<String>,
+    /// The slug for the generated id (default: from --target, else the goal)
+    #[arg(long, help_heading = "Advanced")]
+    pub slug: Option<String>,
+    /// The phase label the run starts in — free-form, for the wrapped instructions and `otto ls`
+    #[arg(long, default_value = "start", help_heading = "Advanced")]
+    pub phase: String,
+    /// A fact the first wake starts with (`branch=feat/x`); repeatable. Values parse as JSON
+    /// when they can
+    #[arg(long = "fact", value_name = "K=V", help_heading = "Advanced")]
     pub fact: Vec<String>,
-    #[arg(long = "policy", value_name = "K=V")]
+    /// A policy knob (repeatable): maxWakeMinutes=45, maxIncompleteWakes=5,
+    /// maxTicksWithoutProgress=24 (0 disables), gateStaleAfterHours=48, handoffMaxBytes=8192,
+    /// autoMergeWhenGreen=false. Any other key is kept for the wrapped instructions to read
+    #[arg(long = "policy", value_name = "K=V", help_heading = "Advanced")]
     pub policy: Vec<String>,
 }
 
@@ -157,9 +173,17 @@ pub fn init(args: InitArgs) -> Result<(), OttoError> {
     Ok(())
 }
 
-/// Create the run and hand back its id, so `otto run` can go straight on to waking it instead
-/// of parsing the id back out of stdout.
-pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
+/// A run worked out but not yet written: what `init_run` would create. `otto run --dry-run`
+/// stops here, which is also why every refusal (`--budget-usd`, a missing instructions file, a
+/// bad `--policy`) now happens before a single directory exists — a refused run used to leave an
+/// empty `gates/` and `artifacts/` behind it.
+pub struct PlannedRun {
+    pub state: RunState,
+    pub path: std::path::PathBuf,
+}
+
+/// Decide everything about a run — id, wraps, policy, facts — without writing any of it.
+pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
     let wraps = match (&args.skill, &args.instructions) {
         (Some(skill), None) => Wraps {
             kind: WrapKind::Skill,
@@ -237,8 +261,6 @@ pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
             }
         }
     }
-    std::fs::create_dir_all(path.join("gates"))?;
-    std::fs::create_dir_all(path.join("artifacts"))?;
     let created = Timestamp::now();
 
     // Every field below has its default in exactly one place: `Policy::default()`. See its doc
@@ -277,9 +299,7 @@ pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
         ));
     }
 
-    let wraps_ref = wraps.reference.clone();
-    let wraps_kind = wraps.kind;
-    let mut state = RunState {
+    let state = RunState {
         schema_version: SCHEMA_VERSION,
         id: run_id.clone(),
         wraps,
@@ -320,7 +340,19 @@ pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
         updated_at: created,
         authorizations: Map::new(),
     };
+    Ok(PlannedRun { state, path })
+}
 
+/// Create the run and hand back its id, so `otto run` can go straight on to waking it instead
+/// of parsing the id back out of stdout.
+pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
+    let PlannedRun { mut state, path } = plan_run(&args)?;
+    let run_id = state.id.clone();
+    let wraps_ref = state.wraps.reference.clone();
+    let wraps_kind = state.wraps.kind;
+    let created = state.created_at;
+    std::fs::create_dir_all(path.join("gates"))?;
+    std::fs::create_dir_all(path.join("artifacts"))?;
     let _lock = RunLock::acquire(&path)?;
     super::write_state(&path, &mut state)?;
     write_atomic(&path.join(HANDOFF_FILE), &initial_handoff(&run_id, &args, &wraps_ref, created))?;
@@ -837,6 +869,29 @@ pub(crate) fn test_init(id: &str, goal: &str) -> Result<(), OttoError> {
 
 #[cfg(test)]
 mod tests {
+    /// `otto run --dry-run` rests on this: everything about a run can be decided without a
+    /// directory existing. It is also what makes a refusal clean — `--budget-usd` used to be
+    /// refused *after* `gates/` and `artifacts/` had been created.
+    #[test]
+    fn planning_a_run_writes_nothing_and_a_refused_run_leaves_nothing() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let planned = super::plan_run(&super::InitArgs {
+            goal: "a goal".into(),
+            slug: Some("planned".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(planned.state.id.ends_with("-planned"));
+        assert!(!planned.path.exists(), "planning must not create the run directory");
+        assert!(crate::paths::all_run_ids().is_empty());
+
+        let err = super::init_run(super::InitArgs { goal: "a goal".into(), budget_usd: 5.0, ..Default::default() })
+            .expect_err("a dollar budget is refused");
+        assert!(err.to_string().contains("--budget-usd"));
+        assert!(crate::paths::all_run_ids().is_empty(), "a refused run must leave no directory");
+        assert!(std::fs::read_dir(crate::paths::runs_dir()).map(|d| d.count() == 0).unwrap_or(true), "not even an empty one");
+    }
+
     /// `set-status --status blocked` from a wake carries a cause, said or inferred, and the
     /// cause does not outlive the status.
     #[test]

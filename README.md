@@ -74,7 +74,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 
 | | |
 |---|---|
-| `otto run` | Start a run and take the first wake. `--skill` \| `--instructions` \| neither |
+| `otto run` | Start a run and take the first wake. `--skill` \| `--instructions` \| neither. `--dry-run` prints the id and the first wake's command without creating anything |
 | `otto ls` | Every live run and what each waits on, plus a `needs you:` summary of copy-pasteable answer commands. `--all` includes finished |
 | `otto show [id]` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option. With no id: the one run waiting on you, or the only live run |
 | `otto answer [id]` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing; Enter takes the gate's stated default. With no id: the one run waiting on you |
