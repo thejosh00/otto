@@ -14,7 +14,8 @@ use crate::clock::relative;
 use crate::error::OttoError;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::commands::InitArgs;
-use crate::state::{read_all_runs, read_run, CheckResult, Detach, RunState, Status};
+use crate::paths::{short_id, short_id_among};
+use crate::state::{read_all_runs, read_run, CheckResult, Detach, RunEntry, RunState, Status};
 use serde_json::Value;
 use std::io::{IsTerminal, Write as _};
 
@@ -97,7 +98,8 @@ pub fn wake_command(mut args: crate::wake::WakeArgs) -> Result<(), OttoError> {
                 return Err(OttoError::conflict(format!(
                     "a wake is already running for {} — `otto attach {}` to watch it, or wait for \
                      it to finish",
-                    args.id, args.id
+                    args.id,
+                    short_id(&args.id)
                 )));
             }
             start_wake(&args.id, Detach::Tmux, args.answer)
@@ -147,10 +149,11 @@ fn start_wake(id: &str, detach: Detach, answer: Option<String>) -> Result<(), Ot
             if !crate::spawner::wait_for_hold(id, before) {
                 return Err(OttoError::usage(format!(
                     "started tmux session {} but no wake took hold within {}s — the wake \
-                     process exited immediately. Run `otto wake {id} --watch` in this terminal to \
+                     process exited immediately. Run `otto wake {} --watch` in this terminal to \
                      see why.",
                     handle.session.unwrap_or_default(),
-                    crate::spawner::CONFIRM_SECONDS
+                    crate::spawner::CONFIRM_SECONDS,
+                    short_id(id)
                 )));
             }
             if let Some(note) = handle.description {
@@ -201,23 +204,9 @@ fn blocking(state: &RunState, wake_running: bool) -> String {
     }
 }
 
-/// The shortest leading substring of `id` that no other id in `all_ids` also starts with — what
-/// `otto ls` shows so a person has something shorter than the full id to type back at
-/// `otto answer`/`otto show`/etc. (see `paths::resolve_run_id`).
-fn shortest_unique_prefix(id: &str, all_ids: &[String]) -> String {
-    let chars: Vec<char> = id.chars().collect();
-    for len in 1..chars.len() {
-        let candidate: String = chars[..len].iter().collect();
-        if all_ids.iter().filter(|other| other.starts_with(&candidate)).count() == 1 {
-            return candidate;
-        }
-    }
-    id.to_string()
-}
-
 struct LsRow {
     id: String,
-    prefix: String,
+    short: String,
     status: String,
     phase: String,
     blocking: String,
@@ -238,10 +227,10 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             crate::state::RunEntry::Readable(state) => state,
             crate::state::RunEntry::Unreadable { id } => {
                 if args.all {
-                    let prefix = shortest_unique_prefix(&id, &all_ids);
+                    let short = short_id_among(&id, &all_ids);
                     rows.push(LsRow {
                         id,
-                        prefix,
+                        short,
                         status: "unreadable".to_string(),
                         phase: "?".to_string(),
                         blocking: "a person needs to look".to_string(),
@@ -260,7 +249,7 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             let question = dir.and_then(|d| crate::gate::read_question(&d, gate).ok()).unwrap_or_default();
             // The default leads, so the command printed first is the one the wake recommended.
             let options = crate::gate::options_default_first(&question);
-            needs_you.push((state.id.clone(), format!("gate {} {}", gate.id, gate.slug), options));
+            needs_you.push((short_id_among(&state.id, &all_ids), format!("gate {} {}", gate.id, gate.slug), options));
         } else if !running && state.status == Status::Sleeping {
             sleeping_count += 1;
         }
@@ -276,10 +265,10 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         } else {
             spent.to_string()
         };
-        let prefix = shortest_unique_prefix(&state.id, &all_ids);
+        let short = short_id_among(&state.id, &all_ids);
         rows.push(LsRow {
             id: state.id.clone(),
-            prefix,
+            short,
             status: crate::state::commands::status_str(state.status).to_string(),
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
@@ -291,16 +280,17 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         return Ok(());
     }
     let width = rows.iter().map(|r| r.id.len()).max().unwrap_or(2).max(2);
-    let prefix_width = rows.iter().map(|r| r.prefix.len()).max().unwrap_or(6).max("PREFIX".len());
+    // SHORT is what to type back: every command otto prints uses it, and every `<id>` accepts it.
+    let short_width = rows.iter().map(|r| r.short.len()).max().unwrap_or(5).max("SHORT".len());
     let waiting = rows.iter().map(|r| r.blocking.len()).max().unwrap_or(10).max("WAITING ON".len());
     println!(
-        "{:<width$}  {:<prefix_width$}  {:<14}  {:<12}  {:<waiting$}  WAKES",
-        "ID", "PREFIX", "STATUS", "PHASE", "WAITING ON"
+        "{:<width$}  {:<short_width$}  {:<14}  {:<12}  {:<waiting$}  WAKES",
+        "ID", "SHORT", "STATUS", "PHASE", "WAITING ON"
     );
     for row in &rows {
         println!(
-            "{:<width$}  {:<prefix_width$}  {:<14}  {:<12}  {:<waiting$}  {}",
-            row.id, row.prefix, row.status, row.phase, row.blocking, row.wakes
+            "{:<width$}  {:<short_width$}  {:<14}  {:<12}  {:<waiting$}  {}",
+            row.id, row.short, row.status, row.phase, row.blocking, row.wakes
         );
     }
     if sleeping_count > 0 {
@@ -333,24 +323,67 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct ShowArgs {
-    pub id: String,
+    /// The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you — or the
+    /// only live run, if there is just one
+    pub id: Option<String>,
+}
+
+/// The run a command means when none is named. With one gate open anywhere, it is that run —
+/// `otto ls` said "needs you", and this is the reply. Otherwise, only when `or_only_live` and
+/// exactly one run is live, that one. Anything else is a question back, naming what to type.
+fn implied_run(verb: &str, or_only_live: bool) -> Result<String, OttoError> {
+    let mut waiting: Vec<String> = Vec::new();
+    let mut live: Vec<String> = Vec::new();
+    for entry in read_all_runs()? {
+        let RunEntry::Readable(state) = entry else { continue };
+        if state.status.is_terminal() {
+            continue;
+        }
+        if state.gate.is_some() {
+            waiting.push(state.id.clone());
+        }
+        live.push(state.id);
+    }
+    let ids = crate::paths::all_run_ids();
+    let name_each = |runs: &[String]| -> String {
+        runs.iter().map(|id| format!("`otto {verb} {}`", short_id_among(id, &ids))).collect::<Vec<_>>().join(", ")
+    };
+    match (waiting.as_slice(), live.as_slice()) {
+        ([only], _) => Ok(only.clone()),
+        ([], [only]) if or_only_live => Ok(only.clone()),
+        ([], []) => Err(OttoError::conflict("no run is live — `otto ls --all` to see finished ones")),
+        ([], _) => Err(OttoError::conflict(format!(
+            "no run is waiting on you — say which: {}",
+            name_each(&live)
+        ))),
+        (several, _) => Err(OttoError::usage(format!(
+            "{} runs are waiting on you — say which: {}",
+            several.len(),
+            name_each(several)
+        ))),
+    }
 }
 
 /// Everything needed to answer a gate cold, in one screen: where the run stands, what it last
 /// did, and the question in full. Someone arriving eight hours later has no transcript, because
 /// the session that asked is gone.
-pub fn show(mut args: ShowArgs) -> Result<(), OttoError> {
-    args.id = crate::paths::resolve_run_id(&args.id)?;
-    let state = read_run(&args.id)?;
-    let dir = crate::paths::run_dir(&args.id)?;
-    let running = LockLiveness.probe(&args.id).is_busy();
+pub fn show(args: ShowArgs) -> Result<(), OttoError> {
+    let id = match args.id {
+        Some(id) => crate::paths::resolve_run_id(&id)?,
+        None => implied_run("show", true)?,
+    };
+    let state = read_run(&id)?;
+    let dir = crate::paths::run_dir(&id)?;
+    let running = LockLiveness.probe(&id).is_busy();
+    // The full id leads the screen; the commands below it use the short form `otto ls` shows.
+    let short = short_id(&id);
 
     println!("{}  ({:?})", state.id, state.status);
     println!("  goal      {}", state.goal);
     match &state.done_condition {
         Some(done) => println!("  done when {done}"),
         None if state.policy.perpetual => {
-            println!("  done when never — perpetual; retire it with `otto stop {}`", state.id)
+            println!("  done when never — perpetual; retire it with `otto stop {short}`")
         }
         None => println!("  done when (not yet decided — the next wake proposes one and asks)"),
     }
@@ -407,9 +440,8 @@ pub fn show(mut args: ShowArgs) -> Result<(), OttoError> {
         // The same two commands `wake::open_stuck_gate`'s own gate text recommends — printed
         // here too, so a person does not have to read the gate file to find the diagnostic path.
         println!(
-            "\nblocked after repeated wake failures — see `otto logs {}` for what happened, \
-             then `otto wake {} --watch` to retry it in this terminal",
-            state.id, state.id
+            "\nblocked after repeated wake failures — see `otto logs {short}` for what happened, \
+             then `otto wake {short} --watch` to retry it in this terminal"
         );
     }
 
@@ -424,14 +456,14 @@ pub fn show(mut args: ShowArgs) -> Result<(), OttoError> {
         let default = crate::gate::parse_default(&question, &options);
         println!("\nAnswer it with:");
         if options.is_empty() {
-            println!("  otto answer {} --choice <option>", state.id);
+            println!("  otto answer {short} --choice <option>");
         } else {
             for option in &options {
                 let mark = if default.as_deref() == Some(option) { "   # default" } else { "" };
-                println!("  otto answer {} --choice \"{option}\"{mark}", state.id);
+                println!("  otto answer {short} --choice \"{option}\"{mark}");
             }
         }
-        println!("  otto answer {} --text \"…\"", state.id);
+        println!("  otto answer {short} --text \"…\"");
     } else {
         let handoff = dir.join(crate::state::commands::HANDOFF_FILE);
         match std::fs::read_to_string(&handoff) {
@@ -448,7 +480,8 @@ pub fn show(mut args: ShowArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct AnswerArgs {
-    pub id: String,
+    /// The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you
+    pub id: Option<String>,
     /// The option you are choosing, by name — checked against the gate's own options when it
     /// lists any, and rejected (naming the valid ones) if it matches none
     #[arg(long, conflicts_with_all = ["text", "file"])]
@@ -534,17 +567,20 @@ fn stdin_is_terminal() -> bool {
     !cfg!(test) && std::io::stdin().is_terminal()
 }
 
-pub fn answer(mut args: AnswerArgs) -> Result<(), OttoError> {
-    args.id = crate::paths::resolve_run_id(&args.id)?;
-    let state = read_run(&args.id)?;
+pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
+    let id = match &args.id {
+        Some(id) => crate::paths::resolve_run_id(id)?,
+        None => implied_run("answer", false)?,
+    };
+    let short = short_id(&id);
+    let state = read_run(&id)?;
     let gate = state.gate.as_ref().ok_or_else(|| {
         OttoError::conflict(format!(
-            "{} has no gate open — nothing is being asked. `otto show {}` for where it stands",
-            args.id, args.id
+            "{id} has no gate open — nothing is being asked. `otto show {short}` for where it stands"
         ))
     })?;
     let slug = gate.slug.clone();
-    let dir = crate::paths::run_dir(&args.id)?;
+    let dir = crate::paths::run_dir(&id)?;
     let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
     let options = crate::gate::parse_options(&question);
 
@@ -577,27 +613,26 @@ pub fn answer(mut args: AnswerArgs) -> Result<(), OttoError> {
     // follows sees an answered gate. It takes the run lock inside its own transaction and
     // releases it on return, so the wake below is sequential rather than nested — `RunLock` is
     // not reentrant and holding it across the wake would deadlock the wake's own first write.
-    crate::state::ops::close_gate(&args.id, Some(&answer), Status::Running)?;
+    crate::state::ops::close_gate(&id, Some(&answer), Status::Running)?;
     println!("recorded against gate {} ({slug})", gate.id);
 
     if args.no_wake {
-        println!("not waking it — `otto wake {}` when you want it to continue", args.id);
+        println!("not waking it — `otto wake {short}` when you want it to continue");
         return Ok(());
     }
     // The answer is already on disk, so if a wake is somehow still running after the wait, saying
     // so is better than failing: poke will carry the run on from here either way.
-    if !wait_for_wake_to_finish(&args.id) {
+    if !wait_for_wake_to_finish(&id) {
         println!(
             "a wake is still running after {}s — your answer is recorded, and the \
-             run will act on it. `otto ls` to watch, or `otto wake {}` once it is idle.",
-            crate::spawner::CONFIRM_SECONDS,
-            args.id
+             run will act on it. `otto ls` to watch, or `otto wake {short}` once it is idle.",
+            crate::spawner::CONFIRM_SECONDS
         );
         return Ok(());
     }
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
-    start_wake(&args.id, detach_of(&args.id), Some(answer))
+    start_wake(&id, detach_of(&id), Some(answer))
 }
 
 /// How this run's wakes are backgrounded, as configured when the run was created.
@@ -835,7 +870,7 @@ mod tests {
         test_init("h-answer", "a goal").unwrap();
         gate_open("h-answer", "plan-review");
         answer(AnswerArgs {
-            id: "h-answer".into(),
+            id: Some("h-answer".into()),
             choice: Some("Approve".into()),
             text: None,
             file: None,
@@ -860,7 +895,7 @@ mod tests {
         test_init("h-typo", "a goal").unwrap();
         gate_open("h-typo", "plan-review");
         let err = answer(AnswerArgs {
-            id: "h-typo".into(),
+            id: Some("h-typo".into()),
             choice: Some("aprove".into()),
             text: None,
             file: None,
@@ -882,7 +917,7 @@ mod tests {
         test_init("h-case", "a goal").unwrap();
         gate_open("h-case", "plan-review");
         answer(AnswerArgs {
-            id: "h-case".into(),
+            id: Some("h-case".into()),
             choice: Some("approve".into()),
             text: None,
             file: None,
@@ -902,7 +937,7 @@ mod tests {
         test_init("h-prose", "a goal").unwrap();
         crate::state::ops::open_gate("h-prose", "review", "Does this look right? Say yes or no.", None).unwrap();
         answer(AnswerArgs {
-            id: "h-prose".into(),
+            id: Some("h-prose".into()),
             choice: Some("yes".into()),
             text: None,
             file: None,
@@ -936,7 +971,7 @@ mod tests {
         let _h = TempHome::new();
         test_init("h-nogate", "a goal").unwrap();
         let err = answer(AnswerArgs {
-            id: "h-nogate".into(),
+            id: Some("h-nogate".into()),
             choice: Some("Approve".into()),
             text: None,
             file: None,
@@ -953,7 +988,7 @@ mod tests {
         test_init("h-empty", "a goal").unwrap();
         gate_open("h-empty", "review");
         let err = answer(AnswerArgs {
-            id: "h-empty".into(),
+            id: Some("h-empty".into()),
             choice: None,
             text: None,
             file: None,
@@ -1121,6 +1156,51 @@ mod tests {
         test_init("h-strand", "a goal").unwrap();
         let state = read_run("h-strand").unwrap();
         assert_eq!(blocking(&state, false), "nothing scheduled");
+    }
+
+    /// `otto ls` said one run needs you; `otto answer --choice X` with no id is the reply to that.
+    #[test]
+    fn answering_with_no_id_means_the_one_run_waiting_on_you() {
+        let _h = TempHome::new();
+        test_init("2026-09-13-polling", "a goal").unwrap();
+        test_init("2026-09-13-other", "a goal").unwrap();
+        gate_open("2026-09-13-polling", "keep-going");
+        answer(AnswerArgs { id: None, choice: Some("Approve".into()), text: None, file: None, no_wake: true }).unwrap();
+        assert!(read_run("2026-09-13-polling").unwrap().gate.is_none());
+        assert!(read_run("2026-09-13-other").unwrap().gate.is_none(), "untouched");
+    }
+
+    /// With nothing or several waiting there is no one obvious run, so it asks — naming the short
+    /// forms, which is what a person would type next.
+    #[test]
+    fn an_omitted_id_is_refused_unless_exactly_one_run_is_waiting() {
+        let _h = TempHome::new();
+        test_init("2026-09-13-polling", "a goal").unwrap();
+        test_init("2026-09-13-other", "a goal").unwrap();
+        let err = implied_run("answer", false).expect_err("nothing is waiting");
+        assert_eq!(err.code, 2);
+        assert!(err.to_string().contains("`otto answer polling`"), "got: {err}");
+        assert!(err.to_string().contains("`otto answer other`"), "got: {err}");
+
+        gate_open("2026-09-13-polling", "a");
+        gate_open("2026-09-13-other", "b");
+        let err = implied_run("answer", false).expect_err("two are waiting");
+        assert_eq!(err.code, 1);
+        assert!(err.to_string().contains("2 runs are waiting"), "got: {err}");
+        assert!(err.to_string().contains("`otto answer other`"), "got: {err}");
+    }
+
+    /// `otto show` on its own is also useful when there is only one run at all, gate or not.
+    #[test]
+    fn show_with_no_id_falls_back_to_the_only_live_run() {
+        let _h = TempHome::new();
+        test_init("2026-09-13-solo", "a goal").unwrap();
+        assert_eq!(implied_run("show", true).unwrap(), "2026-09-13-solo");
+        // `answer` does not take that fallback: with no gate there is nothing to answer.
+        assert_eq!(implied_run("answer", false).expect_err("no gate").code, 2);
+        // A finished run is not live, so it is never implied.
+        stop(StopArgs { id: "2026-09-13-solo".into(), reason: None, failed: false }).unwrap();
+        assert!(implied_run("show", true).is_err());
     }
 
     /// Enter at the prompt means the gate's stated default — and nothing, when it has none.

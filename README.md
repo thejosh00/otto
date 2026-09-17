@@ -58,8 +58,8 @@ otto run --instructions test/fixtures/hello-flow.md \
          --until "artifacts/farewell.md exists and the run is done"
 
 otto ls                       # which runs need you
-otto show <id>                # where one stands, and the open question in full
-otto answer <id> --choice Approve
+otto show                     # where the one that needs you stands, and its question in full
+otto answer --choice Approve  # answer it; name the run when more than one is waiting
 otto logs <id> -f             # the journal, readably
 ```
 
@@ -76,8 +76,8 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 |---|---|
 | `otto run` | Start a run and take the first wake. `--skill` \| `--instructions` \| neither |
 | `otto ls` | Every live run and what each waits on, plus a `needs you:` summary of copy-pasteable answer commands. `--all` includes finished |
-| `otto show <id>` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option |
-| `otto answer <id>` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing |
+| `otto show [id]` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option. With no id: the one run waiting on you, or the only live run |
+| `otto answer [id]` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing; Enter takes the gate's stated default. With no id: the one run waiting on you |
 | `otto logs <id>` | The journal, readably. `-f`/`--follow` to keep following, like `tail -f`; `-n`/`--lines` for how many, like `tail -n` |
 | `otto attach <id>` | Watch the wake running right now |
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
@@ -88,7 +88,8 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 
 Every `<id>` above takes the full id, a unique prefix of it, or a unique prefix of just its
 slug — `otto show verify` resolves to `2026-09-11-verify-1789130664` as long as no other run
-starts the same way, and names the candidates if it doesn't.
+starts the same way, and names the candidates if it doesn't. `otto ls` prints that shortest
+form in its `SHORT` column, and every command otto prints for you to paste back uses it.
 
 ## The contract
 

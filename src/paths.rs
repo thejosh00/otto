@@ -97,6 +97,44 @@ fn slug_of(id: &str) -> &str {
     }
 }
 
+/// Does a person-typed `input` name this run? The one rule `resolve_run_id` and `short_id_among`
+/// share, so that what one prints the other accepts.
+fn names(id: &str, input: &str) -> bool {
+    id.starts_with(input) || slug_of(id).starts_with(input)
+}
+
+/// The shortest thing a person can type for `id` that `resolve_run_id` will bring back to it,
+/// given `all_ids` (every run that exists): the shortest unique prefix of the slug, extended to
+/// the end of its word so it reads as a name rather than a letter — `verify`, not `v`. Two runs
+/// whose slugs share a first word get `verify-a` and `verify-b`. Falls back to the full id when
+/// nothing shorter is unique.
+///
+/// Only as durable as the set of runs: right for a command printed to a terminal to be pasted
+/// back now, wrong for anything written to disk, where a run created tomorrow could make it
+/// ambiguous. Gate files and the journal always carry the full id.
+pub fn short_id_among(id: &str, all_ids: &[String]) -> String {
+    let slug = slug_of(id);
+    let ends = slug.char_indices().map(|(i, _)| i).skip(1).chain(std::iter::once(slug.len()));
+    for end in ends {
+        let candidate = &slug[..end];
+        let mut matching = all_ids.iter().filter(|other| names(other, candidate));
+        if let (Some(only), None) = (matching.next(), matching.next()) {
+            if only != id {
+                continue;
+            }
+            let word_end = slug[end..].find('-').map(|i| end + i).unwrap_or(slug.len());
+            return slug[..word_end].to_string();
+        }
+    }
+    id.to_string()
+}
+
+/// `short_id_among` against the runs that exist right now. One directory scan; a caller printing
+/// many ids at once (`otto ls`) should read `all_run_ids` once and use `short_id_among`.
+pub fn short_id(id: &str) -> String {
+    short_id_among(id, &all_run_ids())
+}
+
 /// Resolve a person-typed id to the real one: an exact match, else a unique prefix of the whole
 /// id, or of just the slug (the part after `YYYY-MM-DD-`, if it looks like one). The slug prefix
 /// is what makes this actually useful from a phone: `2026-09-11-verify-1789130664`'s date tells
@@ -108,12 +146,7 @@ pub fn resolve_run_id(input: &str) -> Result<String, OttoError> {
         return Ok(input.to_string());
     }
     let ids = all_run_ids();
-    let mut candidates: Vec<&String> = Vec::new();
-    for id in &ids {
-        if id.starts_with(input) || slug_of(id).starts_with(input) {
-            candidates.push(id);
-        }
-    }
+    let candidates: Vec<&String> = ids.iter().filter(|id| names(id, input)).collect();
     match candidates.len() {
         0 => Err(OttoError::not_found(format!("no such run: {input} (looked in {})", runs_dir().display()))),
         1 => Ok(candidates[0].clone()),
@@ -340,6 +373,44 @@ mod tests {
         let err = resolve_run_id("no-such-thing").expect_err("must refuse");
         assert_eq!(err.code, 3);
         assert!(err.to_string().contains("no such run"));
+    }
+
+    /// What `otto ls` prints in its SHORT column, and every printed command uses in place of
+    /// the id: one word of the slug when that is enough, more when runs share it.
+    #[test]
+    fn short_id_is_the_first_unique_word_of_the_slug() {
+        let ids: Vec<String> = vec![
+            "2026-09-11-verify-1789130664".into(),
+            "2026-09-13-once-an-hour-check-for-tasks-to-complete".into(),
+            "2026-09-11-upgrade-a".into(),
+            "2026-09-12-upgrade-b".into(),
+            "h-answer".into(),
+        ];
+        assert_eq!(short_id_among(&ids[0], &ids), "verify");
+        assert_eq!(short_id_among(&ids[1], &ids), "once");
+        assert_eq!(short_id_among(&ids[2], &ids), "upgrade-a");
+        assert_eq!(short_id_among(&ids[3], &ids), "upgrade-b");
+        // An explicit --id with no date is its own slug.
+        assert_eq!(short_id_among(&ids[4], &ids), "h");
+        // An id not in the set can't be shortened, so it is itself.
+        assert_eq!(short_id_among("2026-09-14-elsewhere", &ids), "2026-09-14-elsewhere");
+    }
+
+    /// The property that matters: whatever is printed must resolve back to the run it was
+    /// printed for, under the same rule and the same set of runs.
+    #[test]
+    fn short_id_round_trips_through_resolve_run_id() {
+        let _h = test_support::TempHome::new();
+        for id in ["2026-09-11-verify-1789130664", "2026-09-11-upgrade-a", "2026-09-12-upgrade-b", "2026-09-12-u"] {
+            stub_run(id);
+        }
+        let ids = all_run_ids();
+        for id in &ids {
+            let short = short_id_among(id, &ids);
+            assert_eq!(&resolve_run_id(&short).unwrap(), id, "{short} must resolve to {id}");
+        }
+        // The slug `u` is a prefix of `upgrade-…`, so nothing shorter than the id itself is unique.
+        assert_eq!(short_id_among("2026-09-12-u", &ids), "2026-09-12-u");
     }
 
     #[test]

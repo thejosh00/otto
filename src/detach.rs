@@ -75,7 +75,8 @@ pub fn spawn_detached(exec: &mut dyn Exec, run_id: &str, argv: &[&str], cwd: &st
     let name = session_name(run_id);
     if session_exists(exec, &name) {
         return Err(OttoError::conflict(format!(
-            "tmux session {name} already exists — a wake may be running; `otto attach {run_id}` to look"
+            "tmux session {name} already exists — a wake may be running; `otto attach {}` to look",
+            crate::paths::short_id(run_id)
         )));
     }
     let env = inherited_env();
@@ -109,9 +110,10 @@ pub fn attach(run_id: &str) -> Result<(), OttoError> {
     let name = session_name(run_id);
     let mut exec = crate::exec::RealExec;
     if !session_exists(&mut exec, &name) {
+        let short = crate::paths::short_id(run_id);
         return Err(OttoError::not_found(format!(
             "no live session for {run_id} — a wake is not running right now. \
-             `otto show {run_id}` for where it stands, `otto logs {run_id}` for what it has done"
+             `otto show {short}` for where it stands, `otto logs {short}` for what it has done"
         )));
     }
     let err = std::process::Command::new("tmux").args(["attach", "-t", &name]).exec();

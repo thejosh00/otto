@@ -95,7 +95,10 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn 
             let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
             let session = crate::detach::spawn_detached(exec, id, &refs, &cwd())?;
             Ok(Handle {
-                description: Some(format!("wake started in tmux session {session} — `otto attach {id}` to watch")),
+                description: Some(format!(
+                    "wake started in tmux session {session} — `otto attach {}` to watch",
+                    crate::paths::short_id(id)
+                )),
                 session: Some(session),
             })
         }
