@@ -41,6 +41,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Logs(args) => human::logs(args),
         Command::Attach(args) => human::attach(args),
         Command::Stop(args) => human::stop(args),
+        Command::Resume(args) => human::resume(args),
         Command::Install(args) => install::install(args),
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {

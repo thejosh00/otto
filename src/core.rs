@@ -646,6 +646,89 @@ pub fn stop_run(id: &str, reason: Option<String>, failed: bool, exec: &mut dyn c
 }
 
 // ---------------------------------------------------------------------------
+// resume
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeOutcome {
+    pub id: String,
+    pub status: Status,
+    pub reason: String,
+    pub wake: Option<WakeStart>,
+    /// Why no wake was started, when none was.
+    pub note: Option<String>,
+}
+
+/// Undo `stop`: bring a stopped or failed run back. `done` stays done — its goal was met, and
+/// more work is a new run with a goal of its own.
+///
+/// The run comes back `sleeping` and due, never `running`: that is a state poke already knows how
+/// to revive, so a wake that fails to start here still gets taken on the next poke rather than
+/// leaving the run stranded. A gate that was open when it stopped is still the question, so the
+/// run goes back to waiting on it instead.
+pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<ResumeOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let reason = reason.unwrap_or_else(|| "resumed by hand".to_string());
+    // A wake that `stop` failed to kill must not get a second one alongside it.
+    refuse_if_busy(&id)?;
+    let status = crate::state::transaction(&id, |path, state| {
+        let previous = crate::state::commands::status_str(state.status);
+        match state.status {
+            Status::Stopped | Status::Failed => {}
+            Status::Done => {
+                return Err(OttoError::conflict(format!(
+                    "{id} is done — its goal was met; start a new run for more work"
+                )))
+            }
+            _ => {
+                return Err(OttoError::conflict(format!(
+                    "{id} is {previous} — only a stopped or failed run can be resumed"
+                )))
+            }
+        }
+        // A fresh start: whatever counted towards giving up last time should not count again.
+        state.incomplete_wakes = 0;
+        state.spawn_attempts = 0;
+        state.ticks_without_progress = 0;
+        if state.gate.is_some() {
+            state.status = Status::AwaitingHuman;
+            state.next_wake_at = None;
+        } else {
+            state.status = Status::Sleeping;
+            state.next_wake_at = Some(if no_wake { state.period_wake_at() } else { crate::clock::Timestamp::now() });
+        }
+        crate::event::record(
+            path,
+            &crate::event::Event::StatusChanged {
+                from: previous.to_string(),
+                to: crate::state::commands::status_str(state.status).to_string(),
+                reason: Some(reason.clone()),
+                because: None,
+            },
+        )?;
+        Ok(state.status)
+    })?;
+    let mut outcome = ResumeOutcome { id: id.clone(), status, reason, wake: None, note: None };
+    let state = read_run(&id)?;
+    if let Some(gate) = &state.gate {
+        outcome.note = Some(format!("waiting on its open gate {} ({}) — answer it to continue", gate.id, gate.slug));
+        return Ok(outcome);
+    }
+    if no_wake {
+        let at = state.next_wake_at.map(relative).unwrap_or_default();
+        outcome.note = Some(format!("not waking it now — next wake {at}"));
+        return Ok(outcome);
+    }
+    match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None) {
+        Ok(wake) => outcome.wake = Some(wake),
+        // The resume itself stands: the run is due, so the next poke tries again.
+        Err(err) => outcome.note = Some(format!("resumed, but the wake did not start: {} — the next poke will retry it", err.message)),
+    }
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
 // logs
 // ---------------------------------------------------------------------------
 
@@ -1004,6 +1087,70 @@ mod tests {
         assert_eq!(ok.answer, "Approve");
         assert!(ok.wake.is_none());
         assert!(read_run("2026-09-20-bad").unwrap().gate.is_none());
+    }
+
+    fn stopped(id: &str) {
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() });
+        stop_run(id, None, false, &mut exec).unwrap();
+    }
+
+    #[test]
+    fn a_stopped_run_resumes_sleeping_on_a_clean_slate() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-back", "a goal").unwrap();
+        crate::state::transaction("2026-09-25-back", |_p, state| {
+            state.incomplete_wakes = 3;
+            state.ticks_without_progress = 7;
+            Ok(())
+        })
+        .unwrap();
+        stopped("back");
+
+        let outcome = resume_run("back", None, true).unwrap();
+        assert_eq!(outcome.status, Status::Sleeping);
+        assert!(outcome.wake.is_none());
+        let state = read_run("2026-09-25-back").unwrap();
+        assert_eq!(state.status, Status::Sleeping);
+        assert!(state.next_wake_at.is_some(), "a resumed run must be revivable by poke");
+        assert_eq!((state.incomplete_wakes, state.ticks_without_progress), (0, 0));
+        let journal = std::fs::read_to_string(crate::paths::run_dir("2026-09-25-back").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("resumed by hand"), "the resume must be in the audit trail");
+    }
+
+    #[test]
+    fn a_resumed_run_with_an_open_gate_goes_back_to_waiting_on_it() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-asked", "a goal").unwrap();
+        gate_open("2026-09-25-asked");
+        stopped("asked");
+
+        let outcome = resume_run("asked", None, false).unwrap();
+        assert_eq!(outcome.status, Status::AwaitingHuman);
+        assert!(outcome.wake.is_none(), "the question is still unanswered — nothing to wake for");
+        assert!(read_run("2026-09-25-asked").unwrap().next_wake_at.is_none());
+    }
+
+    #[test]
+    fn only_a_stopped_or_failed_run_can_be_resumed() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-live", "a goal").unwrap();
+        assert_eq!(resume_run("live", None, true).expect_err("still live").code, 2);
+
+        test_init("2026-09-25-met", "a goal").unwrap();
+        crate::state::transaction("2026-09-25-met", |_p, state| {
+            state.status = Status::Done;
+            Ok(())
+        })
+        .unwrap();
+        let err = resume_run("met", None, true).expect_err("done stays done");
+        assert!(err.message.contains("new run"), "got: {}", err.message);
+
+        test_init("2026-09-25-broke", "a goal").unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() });
+        stop_run("broke", None, true, &mut exec).unwrap();
+        assert_eq!(resume_run("broke", None, true).unwrap().status, Status::Sleeping);
     }
 
     #[test]

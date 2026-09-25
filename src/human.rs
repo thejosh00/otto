@@ -473,7 +473,7 @@ pub fn logs(args: LogsArgs) -> Result<(), OttoError> {
 }
 
 // ---------------------------------------------------------------------------
-// otto stop / attach
+// otto stop / resume / attach
 // ---------------------------------------------------------------------------
 
 #[derive(clap::Args, Debug)]
@@ -498,6 +498,28 @@ fn stop_with(args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), Ott
         println!("killed the live wake for {}", outcome.id);
     }
     println!("{} is {:?} — {}", outcome.id, outcome.status, outcome.reason);
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ResumeArgs {
+    pub id: String,
+    #[arg(long)]
+    pub reason: Option<String>,
+    /// Put it back on its schedule without waking it now
+    #[arg(long)]
+    pub no_wake: bool,
+}
+
+/// Undo `otto stop`. The wake goes wherever the run's wakes go — `otto attach` to watch it.
+pub fn resume(args: ResumeArgs) -> Result<(), OttoError> {
+    let outcome = crate::core::resume_run(&args.id, args.reason, args.no_wake)?;
+    println!("{} is {:?} — {}", outcome.id, outcome.status, outcome.reason);
+    match (&outcome.wake, &outcome.note) {
+        (Some(wake), _) => println!("{}", wake.note.as_deref().unwrap_or("wake started")),
+        (None, Some(note)) => println!("{note}"),
+        (None, None) => {}
+    }
     Ok(())
 }
 

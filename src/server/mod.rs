@@ -74,6 +74,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}", get(handlers::run_detail))
         .route("/runs/{id}/answer", post(handlers::answer))
         .route("/runs/{id}/stop", post(handlers::stop))
+        .route("/runs/{id}/resume", post(handlers::resume))
         .route("/runs/{id}/wake", post(handlers::wake))
         .route("/runs/{id}/logs", get(handlers::logs))
         .route("/runs/{id}/logs/stream", get(live::logs_stream))

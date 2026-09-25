@@ -101,6 +101,21 @@ pub async fn stop(Path(id): Path<String>, Json(body): Json<StopBody>) -> Respons
 
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResumeBody {
+    reason: Option<String>,
+    no_wake: bool,
+}
+
+pub async fn resume(Path(id): Path<String>, Json(body): Json<ResumeBody>) -> Response {
+    blocking(move || {
+        let reason = body.reason.filter(|r| !r.trim().is_empty());
+        crate::core::resume_run(&id, reason, body.no_wake)
+    })
+    .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct WakeBody {
     detach: Option<Detach>,
 }

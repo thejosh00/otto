@@ -30,6 +30,8 @@ pub enum Command {
     Attach(crate::human::AttachArgs),
     /// Retire a run.
     Stop(crate::human::StopArgs),
+    /// Bring a stopped or failed run back, and wake it.
+    Resume(crate::human::ResumeArgs),
     /// Run one wake: spawn the model, then validate what it left behind.
     Wake(crate::wake::WakeArgs),
     /// Start the wakes that are due, and clean up after the ones that are over. Run this from

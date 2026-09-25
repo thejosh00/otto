@@ -82,6 +82,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto logs <id>` | The journal, readably: a status line on top, local times, a rule per day, token counts rounded. `-f` to keep following, `-n` for how many (like `tail`), `--since 2h`/`--since 2026-09-15`, `--event gate-opened,gate-closed`, `--decisions` for just the turning points |
 | `otto attach <id>` | Watch the wake running right now |
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
+| `otto resume <id>` | Bring a stopped or failed run back and wake it (`--no-wake` to wait for its next period) |
 | `otto wake <id>` | Force one wake now, backgrounded the way the run asks for. `--watch` keeps it in your terminal, `--detach` overrides the run for this wake, `--dry-run` prints the command it would run |
 | `otto poke` | The reviver: start wakes whose timer has passed. launchd runs this |
 | `otto agent start\|stop\|status` | Manage the launchd reviver, or check whether it's loaded and when it last ran |
@@ -101,7 +102,7 @@ otto serve --open        # http://127.0.0.1:7878/
 
 Everything a person does from the CLI can be done from the page: the runs list with a **needs
 you** section whose option buttons answer a gate in one click, a run's full state and question,
-answering in your own words, waking and stopping a run, starting one from a form that mirrors
+answering in your own words, waking, stopping and resuming a run, starting one from a form that mirrors
 `otto run`'s flags (with a dry run), the journal with filters and live follow, a read-only view of
 the wake running right now (its tmux pane, or `wake.log` for a detached wake), and the reviver:
 its status, start/stop, and poke-now.

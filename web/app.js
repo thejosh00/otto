@@ -426,8 +426,21 @@ function runView(id) {
   }
 
   function renderActions(d) {
-    const terminal = ["done", "failed", "stopped"].includes(d.state.status);
-    if (terminal) { actions.replaceChildren(); return; }
+    const status = d.state.status;
+    if (status === "stopped" || status === "failed") {
+      actions.replaceChildren(h("div.row", { style: "margin-top:16px" },
+        h("button", {
+          disabled: d.running,
+          title: d.running ? "A wake is still running" : "Bring this run back and wake it",
+          onclick: (e) => busy(e.currentTarget, async () => {
+            const r = await api(path + "/resume", {});
+            toast(`${r.id} is ${r.status}${r.note ? " — " + r.note : ""}`);
+            refresh();
+          }),
+        }, "Resume run")));
+      return;
+    }
+    if (status === "done") { actions.replaceChildren(); return; }
     if (actions.dataset.open === "stop") return; // the stop form is being filled in
     actions.replaceChildren(h("div.row", { style: "margin-top:16px" },
       h("button", {
@@ -449,7 +462,7 @@ function runView(id) {
     const close = () => { delete actions.dataset.open; refresh(); };
     actions.replaceChildren(h("div.card", { style: "margin-top:16px" },
       h("h3", "Retire this run?"),
-      h("p.muted", "It is marked stopped (or failed), its repo locks are released, and any wake still running is killed."),
+      h("p.muted", "It is marked stopped (or failed), its repo locks are released, and any wake still running is killed. You can resume it later."),
       h("div.field", h("span", "Reason"), reason),
       h("div.row.spread", { style: "margin-top:10px" },
         h("label.check", failed, "It failed — it could not do its job"),
