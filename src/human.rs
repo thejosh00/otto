@@ -148,14 +148,17 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     let short_width = rows.iter().map(|r| r.short.len()).max().unwrap_or(5).max("SHORT".len());
     let status_width = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max("awaiting_human".len());
     let waiting = rows.iter().map(|r| r.blocking.len()).max().unwrap_or(10).max("WAITING ON".len());
+    let next_width = rows.iter().map(|r| r.next_wake.chars().count()).max().unwrap_or(9).max("NEXT WAKE".len());
+    let period_width = rows.iter().map(|r| r.period.chars().count()).max().unwrap_or(6).max("PERIOD".len());
     println!(
-        "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  WAKES",
-        "ID", "SHORT", "STATUS", "PHASE", "WAITING ON"
+        "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  WAKES",
+        "ID", "SHORT", "STATUS", "PHASE", "WAITING ON", "NEXT WAKE", "PERIOD"
     );
     for row in rows {
+        // `—` is one column wide but three bytes, and `{:<n}` pads by chars, so this lines up.
         println!(
-            "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {}",
-            row.id, row.short, row.status, row.phase, row.blocking, row.wakes
+            "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  {}",
+            row.id, row.short, row.status, row.phase, row.blocking, row.next_wake, row.period, row.wakes
         );
     }
     if let Some(sleeping_count) = view.stranded_sleepers {
@@ -234,10 +237,17 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if state.incomplete_wakes > 0 {
         println!("  failed    {} wake(s) in a row did not finish", state.incomplete_wakes);
     }
-    if let Some(at) = state.next_wake_at {
-        println!("  next wake {} ({at})", crate::clock::relative(at));
+    if !state.status.is_terminal() {
+        match state.next_wake_at {
+            Some(at) if !detail.running => {
+                println!("  next wake {} ({})", crate::clock::relative(at), crate::clock::local_clock(at))
+            }
+            _ if detail.running => println!("  next wake set when this wake finishes"),
+            _ if state.gate.is_some() => println!("  next wake after the gate is answered"),
+            _ => println!("  next wake nothing scheduled"),
+        }
+        println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
     }
-    println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
     if let Some(check) = &state.check {
         // Opt-in only (DESIGN.md §8) — kept cold-readable like everything else here, since a
         // check script's whole point is to run where nobody is watching.
@@ -866,9 +876,11 @@ mod tests {
         })
         .unwrap();
         let state = read_run("h-sleep").unwrap();
-        let shown = blocking(&state, false);
+        assert_eq!(blocking(&state, false), "timer");
+        let when = crate::core::next_wake(&state, false);
         // Same one-minute tolerance as `relative_times_read_forwards_and_backwards`.
-        assert!(shown == "timer: in 24m" || shown == "timer: in 23m", "got {shown}");
+        assert!(when.starts_with("in 24m (") || when.starts_with("in 23m ("), "got {when}");
+        assert_eq!(crate::core::next_wake(&state, true), "—", "a running wake has nothing due yet");
         // A live wake outranks the recorded status: the run is working, whatever it last wrote.
         assert!(blocking(&state, true).starts_with("working"));
     }

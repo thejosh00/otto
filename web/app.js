@@ -85,6 +85,14 @@ function localTime(iso) {
   return iso ? new Date(iso).toLocaleString() : "";
 }
 
+// Mirrors clock::local_clock: just the time today, the day too otherwise.
+function clockTime(iso) {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
 function statusClass(status) {
   return (status || "").split(" ")[0];
 }
@@ -275,12 +283,15 @@ function runsView() {
       return;
     }
     table.replaceChildren(h("table.table",
-      h("thead", h("tr", ["Run", "Status", "Phase", "Waiting on", "Wakes"].map((t) => h("th", t)))),
+      h("thead", h("tr", ["Run", "Status", "Phase", "Waiting on", "Next wake", "Period", "Wakes"].map((t) => h("th", t)))),
       h("tbody", rows.map((r) => h("tr", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
         h("td.id", h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.short), h("small", r.id)),
         h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
         h("td", { dataset: { label: "phase" } }, r.phase),
         h("td", { dataset: { label: "waiting on" } }, r.blocking),
+        h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
+          r.nextWakeAt && !r.running && !r.terminal ? `${relative(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
+        h("td.mono", { dataset: { label: "period" } }, r.period),
         h("td.mono", { dataset: { label: "wakes" } }, r.wakes)))),
     ));
   }
@@ -367,8 +378,12 @@ function runView(id) {
     if (s.budget.hours > 0) used += `, ${s.budget.hours}h budget`;
     rows.push(["Used", used]);
     if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
-    if (s.nextWakeAt) rows.push(["Next wake", `${relative(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`]);
-    rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
+    const over = ["done", "failed", "stopped"].includes(s.status);
+    if (!over) {
+      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${relative(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`
+        : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
+      rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
+    }
     if (s.check) {
       rows.push(["Check", `${s.check.script} every ${s.check.everySeconds}s, next ${relative(s.check.nextCheckAt)} — last: ${s.check.lastResult || "not run yet"}`]);
     }

@@ -170,14 +170,26 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
         return format!("working (wake {n})");
     }
     match state.status {
+        // When is its own column (`next_wake`); this one only says what the run waits on.
         Status::Sleeping => match state.next_wake_at {
-            Some(at) => format!("timer: {}", relative(at)),
+            Some(_) => "timer".to_string(),
             None => "nothing — sleeping with no wake time".to_string(),
         },
         Status::Done | Status::Failed | Status::Stopped => "—".to_string(),
         // Not running and nothing pending. The validator turns this into a retry, so seeing it
         // here means a wake is between attempts, or something went wrong outside a wake.
         _ => "nothing scheduled".to_string(),
+    }
+}
+
+/// When the next wake is due, for a list: relative first (what a person scans for), then the
+/// local clock time. A running wake has cleared its timer, so nothing is due until it decides.
+pub fn next_wake(state: &RunState, wake_running: bool) -> String {
+    match state.next_wake_at {
+        Some(at) if !wake_running && !state.status.is_terminal() => {
+            format!("{} ({})", relative(at), crate::clock::local_clock(at))
+        }
+        _ => "—".to_string(),
     }
 }
 
@@ -200,6 +212,12 @@ pub struct LsRow {
     pub phase: String,
     pub blocking: String,
     pub wakes: String,
+    /// `1h`, `30m`; `—` for a finished run, which will never wake again.
+    pub period: String,
+    /// For the web page, which renders it relative to the viewer's clock on each refresh.
+    pub next_wake_at: Option<crate::clock::Timestamp>,
+    /// For `otto ls`: `in 43m (14:05)`, or `—` with nothing scheduled.
+    pub next_wake: String,
     pub running: bool,
     pub terminal: bool,
 }
@@ -244,6 +262,9 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         phase: "?".to_string(),
                         blocking: "a person needs to look".to_string(),
                         wakes: "?".to_string(),
+                        period: "?".to_string(),
+                        next_wake_at: None,
+                        next_wake: "?".to_string(),
                         running: false,
                         terminal: false,
                     });
@@ -281,6 +302,13 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
             wakes,
+            period: if state.status.is_terminal() {
+                "—".to_string()
+            } else {
+                crate::clock::format_minutes(state.policy.period_minutes)
+            },
+            next_wake_at: state.next_wake_at,
+            next_wake: next_wake(&state, running),
             running,
             terminal: state.status.is_terminal(),
         });

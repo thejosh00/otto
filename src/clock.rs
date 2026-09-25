@@ -168,6 +168,20 @@ pub fn relative(at: Timestamp) -> String {
     }
 }
 
+/// A wake time as a person reads a clock: `14:05` today, `Sep 26 14:05` any other day, in
+/// local time. Display only — everything stored stays UTC.
+pub fn local_clock(at: Timestamp) -> String {
+    let offset = local_offset();
+    let local = at.dt().to_offset(offset);
+    let same_day = local.date() == now().to_offset(offset).date();
+    let fmt = if same_day {
+        format_description!("[hour]:[minute]")
+    } else {
+        format_description!("[month repr:short] [day padding:none] [hour]:[minute]")
+    };
+    local.format(fmt).unwrap_or_else(|_| at.to_string())
+}
+
 /// Lowercase, collapse runs of non-`[a-z0-9]` to a single hyphen, trim leading/trailing
 /// hyphens. Falls back to `fallback` if the result would be empty.
 pub fn slugify(text: &str, fallback: &str) -> String {
@@ -239,6 +253,16 @@ mod tests {
     /// Deliberately tolerant of one minute either way. `whole_minutes()` truncates, so a second
     /// ticking between building the timestamp and formatting it turns 30 into 29 — which made an
     /// exact assertion here fail about one run in a hundred.
+    #[test]
+    fn local_clock_drops_the_date_only_for_today() {
+        let soon = Timestamp::in_minutes(1);
+        let shown = local_clock(soon);
+        // Whether `soon` is still today depends on when the test runs; either form is right.
+        assert!(shown.len() == 5 || shown.contains(' '), "got {shown}");
+        let later = Timestamp::in_minutes(3 * 1440);
+        assert!(local_clock(later).contains(' '), "another day names the day: {}", local_clock(later));
+    }
+
     #[test]
     fn relative_times_read_forwards_and_backwards() {
         let future = Timestamp::in_minutes(30);
