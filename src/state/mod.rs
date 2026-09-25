@@ -110,7 +110,8 @@ pub struct Wake {
     pub started_at: crate::clock::Timestamp,
     #[serde(rename = "deadlineAt")]
     pub deadline_at: crate::clock::Timestamp,
-    pub launcher: LauncherKind,
+    /// The launcher's name as the run recorded it (see `crate::config`).
+    pub launcher: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -123,20 +124,10 @@ pub struct Wake {
 #[serde(rename_all = "snake_case")]
 #[clap(rename_all = "kebab-case")]
 // No `Bg` variant: `claude attach` on a re-adopted worker needs a process-identity probe that
-// execs the setuid `/bin/ps`, which macOS Seatbelt blocks unconditionally under yolo.
+// execs the setuid `/bin/ps`, which macOS Seatbelt blocks unconditionally inside a sandbox.
 pub enum Detach {
     None,
     Tmux,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "snake_case")]
-#[clap(rename_all = "kebab-case")]
-// Separate from `Detach` on purpose: this decides argv shape, how a skill is resolved, and
-// what the network posture is.
-pub enum LauncherKind {
-    Claude,
-    Yolo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -182,19 +173,19 @@ fn default_detach() -> Detach {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Launcher {
-    pub kind: LauncherKind,
+    /// The name of the launcher every wake runs under — `claude`, or one defined in
+    /// `$OTTO_HOME/config.json` (see `crate::config`). Separate from `detach` on purpose: this
+    /// decides argv shape and what the wake can see, not where it is backgrounded.
+    pub kind: String,
     /// A run-level preference, deliberately not a field on `Wake`: a wake has no way to know
     /// how it was started, so recording it per wake made the second wake read the first wake's
     /// value instead of this one.
     #[serde(default = "default_detach")]
     pub detach: Detach,
-    /// Extra repos the wake may touch. Under yolo this grants both sandbox and tool access.
+    /// Extra repos the wake may touch: `--add-dir` for claude, plus the launcher's `grantFlag`
+    /// when it has one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<String>,
-    /// Directories to load skills from. Required under yolo for `--skill` to resolve at
-    /// all, because the sandbox cannot see `~/.claude`.
-    #[serde(rename = "skillDirs", default, skip_serializing_if = "Vec::is_empty")]
-    pub skill_dirs: Vec<String>,
 }
 
 /// `wakes` and `hours` are the enforced dimensions. `usd`/`spent_usd` are vestigial — pricing a
@@ -849,7 +840,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         last_spawned_at: None,
         budget_warned_at: None,
         ticks_without_progress: 0,
-        launcher: Launcher { kind: LauncherKind::Claude, detach: Detach::Tmux, repos: vec![], skill_dirs: vec![] },
+        launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![] },
         permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
         budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, spent_usd: 0.0 },
         policy: Policy::default(),

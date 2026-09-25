@@ -236,7 +236,7 @@ mod tests {
             n: 1,
             started_at: crate::clock::Timestamp::now(),
             deadline_at: crate::clock::Timestamp::now(),
-            launcher: crate::state::LauncherKind::Claude,
+            launcher: "claude".into(),
             pid: Some(424242),
             session: None,
             outcome: None,

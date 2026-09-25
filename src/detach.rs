@@ -13,8 +13,8 @@
 //! Which makes detachment **observability, not architecture**. `Detach::None` runs the wake in
 //! the foreground and is exactly as correct; the run does not know or care which was used.
 //!
-//! There is deliberately no `bg` strategy. `claude --bg` is disabled under yolo
-//! (`AGENT_VIEW_ENABLED = False`) because `claude attach` on a re-adopted worker needs a
+//! There is deliberately no `bg` strategy. `claude --bg` cannot work inside a sandbox
+//! because `claude attach` on a re-adopted worker needs a
 //! process-identity probe that execs the setuid `/bin/ps`, which macOS Seatbelt blocks
 //! unconditionally. A strategy that cannot work under the sandbox this is meant to run in is not
 //! a strategy.

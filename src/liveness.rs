@@ -17,7 +17,7 @@
 //!   as "a wake is running" forever, and the run never gets revived.
 //! - **No `ps`.** Verifying a pid really belongs to a wake wants process metadata, and
 //!   macOS Seatbelt blocks the setuid `/bin/ps` unconditionally — that is precisely what
-//!   defeated background sessions under yolo.
+//!   defeated background sessions inside a sandbox.
 //! - **It works across the sandbox boundary.** The lock file lives on the host under
 //!   `$OTTO_HOME`, while the model may be running inside nono. `otto poke` runs on the
 //!   host and never needs to see into the sandbox to answer the question.

@@ -2,7 +2,7 @@
 //! unanswered past `policy.gateStaleAfterHours`, a run blocked, a budget past 80%.
 //!
 //! Sent from poke rather than from the wake that caused them, for two reasons. A wake under
-//! `--launcher yolo` is sandboxed and may not be able to reach the notification centre at all;
+//! a sandboxing launcher may not be able to reach the notification centre at all;
 //! poke runs from launchd in the person's own session. And poke already visits every run every
 //! few minutes, so it can see a gate go *stale* — something no single wake is around to notice.
 //!

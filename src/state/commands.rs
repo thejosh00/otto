@@ -2,7 +2,7 @@
 
 use super::{
     dig, emit, journal, parse_kv, read_all_runs, read_run, read_text_arg, transaction, write_atomic, BlockedCause, Budget,
-    Check, CheckResult, Detach, Launcher, LauncherKind, Permission, PermissionMode, Policy, RunLock, RunState, Status,
+    Check, CheckResult, Detach, Launcher, Permission, PermissionMode, Policy, RunLock, RunState, Status,
     WrapKind, Wraps, SCHEMA_VERSION,
 };
 use crate::clock::Timestamp;
@@ -73,14 +73,10 @@ pub struct InitArgs {
     /// What the run is about — a Jira key, a PR — recorded as `facts.target` and used for the id
     #[arg(long, help_heading = "What to run")]
     pub target: Option<String>,
-    /// A repository the wake may work in (repeatable). Granted to claude with `--add-dir`, or
-    /// opened in the sandbox under yolo
+    /// A repository the wake may work in (repeatable). Granted to claude with `--add-dir`, and
+    /// opened in the sandbox too when the launcher has a `grantFlag`
     #[arg(long = "repo", value_name = "DIR", help_heading = "What to run")]
     pub repos: Vec<String>,
-    /// Where to find skills (repeatable). Needed under yolo for --skill to resolve, because the
-    /// sandbox cannot see ~/.claude
-    #[arg(long = "skills-dir", value_name = "DIR", help_heading = "What to run")]
-    pub skill_dirs: Vec<String>,
 
     /// The done-condition, stated outright. Otherwise the first wake proposes one and gates it
     #[arg(long, conflicts_with = "perpetual", help_heading = "When it is done")]
@@ -103,17 +99,17 @@ pub struct InitArgs {
     #[arg(long = "budget-usd", default_value_t = 0.0, hide = true)]
     pub budget_usd: f64,
 
-    /// What runs the model: plain `claude`, or `yolo` for a kernel-enforced sandbox — the right
-    /// choice for anything unattended
-    #[arg(long, value_enum, default_value = "claude", help_heading = "Where it runs")]
-    pub launcher: LauncherKind,
+    /// What runs the model: plain `claude`, or a launcher named in $OTTO_HOME/config.json — a
+    /// sandbox is the right choice for anything unattended. A unique prefix of the name will do
+    #[arg(long, value_name = "NAME", default_value = crate::config::DEFAULT_LAUNCHER, help_heading = "Where it runs")]
+    pub launcher: String,
     /// Where each wake is backgrounded: a tmux session named otto-<id>, or none (your terminal)
     #[arg(long, value_enum, default_value = "tmux", help_heading = "Where it runs")]
     pub detach: Detach,
 
     /// claude's permission mode for every wake. A wake is unattended, so no prompt can be
     /// answered; `bypass-permissions` is the only mode measured to work, and the real guardrail
-    /// is `--launcher yolo` (README "Launchers", DESIGN.md open question 4)
+    /// is a sandboxing `--launcher` (README "Launchers", DESIGN.md open question 4)
     #[arg(long = "permission-mode", value_enum, default_value = "bypass-permissions", help_heading = "What it may do")]
     pub permission_mode: PermissionMode,
     /// Tool claude may use without asking, in claude's own syntax (`Read`, `Bash(git *)`); repeatable
@@ -160,9 +156,8 @@ impl Default for InitArgs {
             id: None,
             slug: None,
             phase: "start".to_string(),
-            launcher: LauncherKind::Claude,
+            launcher: crate::config::DEFAULT_LAUNCHER.to_string(),
             repos: vec![],
-            skill_dirs: vec![],
             permission_mode: PermissionMode::BypassPermissions,
             allowed_tools: vec![],
             disallowed_tools: vec![],
@@ -338,10 +333,10 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         budget_warned_at: None,
         ticks_without_progress: 0,
         launcher: Launcher {
-            kind: args.launcher,
+            // Recorded by its full name, so `--launcher nono` reads back as the launcher it found.
+            kind: crate::config::launcher(&args.launcher)?.name,
             detach: args.detach,
             repos: args.repos.clone(),
-            skill_dirs: args.skill_dirs.clone(),
         },
         permission: Permission {
             mode: args.permission_mode,
@@ -389,7 +384,7 @@ pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
             perpetual: args.perpetual,
             phase: args.phase,
             target: args.target,
-            launcher: format!("{:?}", args.launcher).to_lowercase(),
+            launcher: state.launcher.kind.clone(),
         },
     )?;
     Ok(run_id)

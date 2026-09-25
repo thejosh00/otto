@@ -26,7 +26,7 @@ that it cannot.
 | `testCmd` | `prepare` | The repo's test command, as `manage-pr` inferred it |
 | `pushedSha` | `publish` | The commit last pushed. What `check-authorized` is compared against |
 | `prNumber`, `prUrl` | `publish` | The PR, or `null` when the remote has no PR host |
-| `prHost` | `publish` | The remote's host, e.g. `source.datanerd.us`. `gh` auth is per-host |
+| `prHost` | `publish` | The remote's host, e.g. `github.com` or a GitHub Enterprise host. `gh` auth is per-host |
 | `prCommentCursor` | `babysit` | Highest review-comment id already handled. Makes polling cheap and exactly-once |
 | `ciStatus`, `reviewDecision` | `babysit` | Re-derived every tick, never remembered |
 

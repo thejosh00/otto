@@ -131,21 +131,17 @@ pub struct Planned {
 /// can be checked before it costs a run directory and a wake.
 pub fn plan_run(init: &InitArgs) -> Result<Planned, OttoError> {
     let planned = crate::state::commands::plan_run(init)?;
-    crate::wake::launcher::check_resolvable(&planned.state)?;
     Ok(Planned {
         id: planned.state.id.clone(),
-        first_wake: crate::wake::first_wake_dry_run_line(&planned.state, &planned.path),
+        first_wake: crate::wake::first_wake_dry_run_line(&planned.state, &planned.path)?,
     })
 }
 
 /// Create the run. The first wake is the caller's to start, so the terminal can print the id
 /// before a foreground wake takes over the screen.
 pub fn create_run(init: InitArgs) -> Result<String, OttoError> {
-    let id = crate::state::commands::init_run(init)?;
-    // Fail before the first wake rather than after it: a launcher that cannot resolve what the
-    // run wraps produces a wake that spends money and achieves nothing.
-    crate::wake::launcher::check_resolvable(&read_run(&id)?)?;
-    Ok(id)
+    // An unknown launcher is refused by `init_run` itself, before any run directory exists.
+    crate::state::commands::init_run(init)
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,7 +1395,7 @@ mod tests {
                 n: 1,
                 started_at: started,
                 deadline_at: started,
-                launcher: crate::state::LauncherKind::Claude,
+                launcher: "claude".into(),
                 pid: None,
                 session: None,
                 outcome: Some(crate::state::WakeOutcome::Complete),

@@ -370,7 +370,7 @@ decisions, it posts a macOS notification (`osascript`) for each of these, **once
 | `gate-stale:<id>` | The gate has waited past `gateStaleAfterHours` |
 | `budget` | A budget dimension is between 80% and 100% spent |
 
-Poke sends them, not the wake, because a wake under yolo may not be able to reach the
+Poke sends them, not the wake, because a sandboxed wake may not be able to reach the
 notification centre, and because no wake is around to see a gate go stale. What was sent is kept
 in `run.json`'s top-level `notified` (not `facts`, §6) and journaled as `notified`; a key that
 no longer applies is dropped, so the next gate is news again. A failed send still counts as sent —
@@ -969,8 +969,8 @@ for a session that outlived a wake:
    so the deadline is not silently burned waiting for an answer nobody can give. One tool in one
    mode is not enough to say what each mode now denies, and the modes want re-measuring.
    `bypassPermissions` stays the default until that happens. The conclusion that survived intact
-   is the more important one: **the real decision is the launcher, not the mode** — run under
-   `--launcher yolo` and the guardrail is a kernel-enforced sandbox rather than a prompt nobody is
+   is the more important one: **the real decision is the launcher, not the mode** — run under a
+   sandboxing `--launcher` and the guardrail is a kernel-enforced sandbox rather than a prompt nobody is
    there to answer. The stricter modes remain useful for a *supervised* run (`plan`, `manual`) to
    see what a wrapped skill would do without letting it act.
 5. **Does a non-print wake expose everything a wake needs?** Skills resolve, subagents and MCP

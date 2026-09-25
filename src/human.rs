@@ -969,7 +969,7 @@ mod tests {
                 n: 1,
                 started_at: crate::clock::Timestamp::now(),
                 deadline_at: crate::clock::Timestamp::now(),
-                launcher: crate::state::LauncherKind::Claude,
+                launcher: "claude".into(),
                 pid: None,
                 session: None,
                 outcome: None,
@@ -1017,7 +1017,7 @@ mod tests {
                 n: 1,
                 started_at: crate::clock::Timestamp::now(),
                 deadline_at: crate::clock::Timestamp::in_minutes(30),
-                launcher: crate::state::LauncherKind::Claude,
+                launcher: "claude".into(),
                 pid: Some(313131),
                 session: None,
                 outcome: None,
@@ -1074,7 +1074,7 @@ mod tests {
                 n: 1,
                 started_at: crate::clock::Timestamp::now(),
                 deadline_at: crate::clock::Timestamp::now(),
-                launcher: crate::state::LauncherKind::Claude,
+                launcher: "claude".into(),
                 pid: Some(1),
                 session: None,
                 outcome: None,
@@ -1126,19 +1126,14 @@ mod tests {
         })
         .unwrap();
         assert!(crate::paths::all_run_ids().is_empty(), "a dry run must create no run");
-        // The same refusals apply: yolo + a skill with nowhere to find it.
+        // The same refusals apply: a launcher nobody has defined.
         let err = run(RunArgs {
-            init: InitArgs {
-                goal: "a goal".into(),
-                skill: Some("manage-pr".into()),
-                launcher: crate::state::LauncherKind::Yolo,
-                ..Default::default()
-            },
+            init: InitArgs { goal: "a goal".into(), launcher: "no-such-launcher".into(), ..Default::default() },
             watch: false,
             dry_run: true,
         })
         .expect_err("must refuse");
-        assert!(err.to_string().contains("--skills-dir"));
+        assert!(err.to_string().contains("no launcher"));
         assert!(crate::paths::all_run_ids().is_empty());
     }
 

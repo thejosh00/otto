@@ -69,7 +69,7 @@ pub struct WakeArgs {
 /// document — see `launcher` for why `-p` had to go and `transcript` for what replaced it. So
 /// `usage` is `None` whenever the transcript could not be read, which is an ordinary outcome
 /// rather than a failure: a wake that was killed at its deadline may have written nothing, and
-/// under yolo the sandbox cannot see `~/.claude` at all.
+/// a sandbox may not be able to see `~/.claude` at all.
 #[derive(Debug, Default, Clone)]
 pub struct WakeResult {
     pub usage: Option<transcript::Usage>,
@@ -125,10 +125,11 @@ pub fn dry_run_line(argv: &[String]) -> String {
 
 /// What `otto run --dry-run` prints: the first wake's command line, for a run that does not
 /// exist yet. Same argv builder as the real thing, so what it shows is what would run.
-pub fn first_wake_dry_run_line(state: &crate::state::RunState, run_dir: &std::path::Path) -> String {
+pub fn first_wake_dry_run_line(state: &crate::state::RunState, run_dir: &std::path::Path) -> Result<String, OttoError> {
+    let launcher = launcher::resolve(state)?;
     let prompt = prompt::user_prompt(&state.id, run_dir);
     let session = transcript::session_id(&state.id, 1, &Timestamp::now().to_string());
-    dry_run_line(&launcher::argv(state, &prompt, &session))
+    Ok(dry_run_line(&launcher::argv(state, &launcher, &prompt, &session)))
 }
 
 pub fn wake(args: WakeArgs) -> Result<(), OttoError> {
@@ -146,7 +147,7 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         println!("{} is {:?} — nothing to do", args.id, state.status);
         return Ok(());
     }
-    launcher::check_resolvable(&state)?;
+    let launcher = launcher::resolve(&state)?;
     if let Some(why) = budget_exceeded(&state) {
         return block_on_budget(&args.id, &why);
     }
@@ -173,7 +174,7 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     let wake_number = state.wake.as_ref().map(|w| w.n).unwrap_or(0) + 1;
     let session = transcript::session_id(&args.id, wake_number, &started.to_string());
 
-    let argv = launcher::argv(&state, &prompt, &session);
+    let argv = launcher::argv(&state, &launcher, &prompt, &session);
 
     if args.dry_run {
         println!("{}", dry_run_line(&argv));
@@ -186,13 +187,13 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
 
     // Recorded before the spawn, so a crash in the next instant still leaves evidence.
     let id = args.id.clone();
-    let launcher_kind = state.launcher.kind;
+    let launcher_name = launcher.name.clone();
     transaction(&id, |path, state| {
         state.wake = Some(Wake {
             n: wake_number,
             started_at: started,
             deadline_at: deadline,
-            launcher: launcher_kind,
+            launcher: launcher_name.clone(),
             pid: Some(std::process::id()),
             // Written before the spawn so the transcript is findable even if this wake never
             // comes back to record what it used.
@@ -224,7 +225,7 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
             &Event::WakeStarted {
                 wake: wake_number,
                 deadline_at: deadline,
-                launcher: format!("{launcher_kind:?}").to_lowercase(),
+                launcher: launcher_name.clone(),
             },
         )
     })?;
@@ -269,7 +270,7 @@ fn finish_wake(
         if !usage_found {
             // Not a failure: the wake is validated against its contract either way. But blind
             // accounting has to be visible, or a run of zero-token wakes reads as a run that did
-            // nothing. Expected under yolo, where the sandbox cannot see `~/.claude`.
+            // nothing. Expected under a sandbox that cannot see `~/.claude`.
             crate::event::record(
                 path,
                 &Event::UsageUnavailable {
@@ -939,7 +940,7 @@ mod tests {
         assert!(journal.contains("\"toolErrors\":3"), "three failed tool calls must show up");
     }
 
-    /// A wake whose transcript cannot be read at all. Expected under yolo, where the sandbox
+    /// A wake whose transcript cannot be read at all. Expected under a sandbox that
     /// cannot see `~/.claude` — so blind accounting must be an ordinary outcome that still counts
     /// the wake, still validates the contract, and says out loud that the tokens are unknown.
     /// Accounting is never allowed to be what fails a wake.

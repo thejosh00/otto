@@ -17,10 +17,16 @@ use std::sync::Arc;
 struct Meta {
     version: &'static str,
     home: String,
+    /// Every launcher the new-run form can offer, `claude` first.
+    launchers: Vec<String>,
 }
 
 pub async fn meta() -> Response {
-    blocking(|| Ok(Meta { version: env!("CARGO_PKG_VERSION"), home: crate::paths::otto_home().display().to_string() })).await
+    blocking(|| {
+        let launchers = crate::config::load()?.launchers().into_iter().map(|l| l.name).collect();
+        Ok(Meta { version: env!("CARGO_PKG_VERSION"), home: crate::paths::otto_home().display().to_string(), launchers })
+    })
+    .await
 }
 
 #[derive(Deserialize, Default)]

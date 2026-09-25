@@ -696,8 +696,7 @@ function newRunView() {
       skillField, instrField,
       h("div.grid2",
         field("target", "Target", h("input", { placeholder: "PROJ-123, a PR URL…" }), "Recorded as facts.target and used for the id."),
-        field("repos", "Repositories", h("textarea", { rows: 2, placeholder: "One directory per line" }))),
-      field("skillDirs", "Skill directories", h("textarea", { rows: 1, placeholder: "One per line" }), "Needed under yolo for a skill to resolve.")),
+        field("repos", "Repositories", h("textarea", { rows: 2, placeholder: "One directory per line" })))),
     h("fieldset", h("legend", "When it is done"),
       field("until", "Done when", h("input", { placeholder: "Otherwise the first wake proposes one and asks" })),
       h("label.check", { style: "margin-top:10px" }, (f.perpetual = h("input", { type: "checkbox" })), "Perpetual — never done; retired by stopping it"),
@@ -707,8 +706,8 @@ function newRunView() {
         field("budgetHours", "Hours budget", h("input", { type: "number", min: 0, value: 0 }), "0: unlimited."))),
     h("fieldset", h("legend", "Where it runs"),
       h("div.grid2",
-        field("launcher", "Launcher", select([["claude", "claude"], ["yolo", "yolo (sandboxed)"]], "claude"),
-          "yolo is the right choice for anything unattended."),
+        field("launcher", "Launcher", select([["claude", "claude"]], "claude"),
+          "A sandbox is the right choice for anything unattended. Add launchers in config.json under otto's home."),
         field("detach", "Wakes run in", select([["tmux", "tmux session"], ["none", "detached process"]], "tmux"),
           "tmux lets you watch a wake live."))),
     h("fieldset", h("legend", "What it may do"),
@@ -734,6 +733,11 @@ function newRunView() {
     result,
   );
   syncWrap();
+  // The launchers are the machine's, from config.json, so the list comes from the server.
+  api("/meta").then((m) => {
+    const current = f.launcher.value;
+    f.launcher.replaceChildren(...m.launchers.map((name) => h("option", { value: name, selected: name === current }, name)));
+  }).catch(() => {});
 
   function body() {
     const kind = wrap.querySelector("input:checked").value;
@@ -744,7 +748,6 @@ function newRunView() {
       instructions: kind === "instructions" ? text("instructions") : null,
       target: text("target"),
       repos: lines(f.repos),
-      skillDirs: lines(f.skillDirs),
       until: text("until"),
       perpetual: f.perpetual.checked,
       period: text("period"),

@@ -4,7 +4,7 @@
 //! returns stdout and stderr **merged** into a single string, which is fine for `tmux
 //! list-sessions` and wrong for a wake. A wake's stdout is its own narration, kept for the
 //! failure dump a wake that broke its contract leaves behind, while its launcher may write
-//! progress to stderr — yolo does, on every invocation. Merging them means every such dump
+//! progress to stderr — a sandbox wrapper typically does, on every invocation. Merging them means every such dump
 //! opens with the sandbox's chatter interleaved through the only account of what went wrong.
 //! Here they stay apart.
 //!
@@ -297,7 +297,7 @@ mod tests {
     }
 
     /// The whole reason this module exists: a JSON document on stdout must survive a
-    /// launcher writing to stderr, because yolo writes to stderr on every invocation.
+    /// launcher writing to stderr, because a sandbox wrapper may write to stderr on every invocation.
     #[test]
     fn stdout_json_survives_stderr_chatter() {
         let mut exec = RealExec;

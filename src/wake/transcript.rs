@@ -20,8 +20,8 @@
 //!   pretend to know which of them were permission problems.
 //!
 //! Accounting never fails a wake. A missing or unreadable transcript yields `None` and a journal
-//! line; the contract is validated the same either way. That case is expected under yolo, where
-//! `~/.claude` is not visible inside the sandbox at all (see `detach`).
+//! line; the contract is validated the same either way. That case is expected under a sandbox
+//! whose profile does not make `~/.claude` visible (see `detach`).
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(usage.input_tokens, 7);
     }
 
-    /// Expected under yolo, where the sandbox cannot see `~/.claude` — and never fatal.
+    /// Expected under a sandbox that cannot see `~/.claude` — and never fatal.
     #[test]
     fn a_missing_transcript_is_none_rather_than_an_error() {
         let _home = crate::paths::test_support::TempHome::new();

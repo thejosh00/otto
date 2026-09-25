@@ -35,27 +35,27 @@
 //! persist, which is merely disk — otto never resumes one, so the ephemerality that matters is
 //! unaffected.
 //!
-//! **yolo** (a nono-based sandbox for unattended Claude) takes everything after `--` and passes
-//! it to claude, so the tail is identical there. Two things differ, and both are properties of
-//! the sandbox rather than choices:
+//! **Every launcher is a prefix in front of claude.** `claude` is built in; anything else — a
+//! sandbox, typically — is a command line in `$OTTO_HOME/config.json` (see `crate::config`) that
+//! ends in running claude, so the prompt and the tail above go after it unchanged. What a sandbox
+//! needs differently is only which directories to open, and that is its `grantFlag`: otto passes
+//! it once per directory the wake needs, ahead of the command's first `--`, so it reaches the
+//! sandbox rather than claude. Anything else a sandbox needs — seeing `~/.claude` so a skill
+//! resolves, its network allowlist — belongs to its own profile.
 //!
-//! - It supplies its own `--dangerously-skip-permissions` *unless* `--permission-mode` is
-//!   passed, in which case the mode wins. otto always passes a mode, so the run's recorded
-//!   posture is what takes effect.
-//! - `~/.claude` is not visible inside the sandbox, so a skill cannot be found there. Skills
-//!   arrive through `yolo --skills <dir>`, which is why `launcher.skillDirs` exists and why a
-//!   `--skill` run under yolo without one is refused up front rather than failing mid-wake.
+//! Whatever the launcher, otto always passes `--permission-mode`, so the run's recorded posture is
+//! what takes effect even under a sandbox that would otherwise supply its own.
 //!
-//! On macOS both launchers are wrapped in `caffeinate` — see `sleep_guard`. That is a property of
-//! the machine, not of the launcher, which is why it sits in front of either one.
+//! On macOS every launcher is wrapped in `caffeinate` — see `sleep_guard`. That is a property of
+//! the machine, not of the launcher, which is why it sits in front of whichever one runs.
 
+use crate::config::LauncherDef;
 use crate::error::OttoError;
-use crate::state::{LauncherKind, RunState, WrapKind};
+use crate::state::RunState;
 
 /// The claude flags every wake gets, whatever launcher carries them.
 ///
-/// Flags only — the prompt is placed by `argv`, because *where* it goes differs between the two
-/// launchers even though it leads claude's own arguments in both. See the module doc on why it
+/// Flags only — the prompt is placed by `argv`, ahead of these. See the module doc on why it
 /// cannot simply trail.
 fn claude_tail(state: &RunState, session_id: &str) -> Vec<String> {
     let mut argv = vec![
@@ -98,97 +98,77 @@ fn sleep_guard() -> Vec<String> {
     }
 }
 
-/// Refuse a run whose launcher cannot possibly resolve what it wraps. Cheap to check here,
-/// expensive to discover an hour into a wake that quietly did nothing.
-pub fn check_resolvable(state: &RunState) -> Result<(), OttoError> {
-    if state.launcher.kind == LauncherKind::Yolo
-        && state.wraps.kind == WrapKind::Skill
-        && state.launcher.skill_dirs.is_empty()
-    {
-        return Err(OttoError::usage(format!(
-            "run {} wraps the skill `{}` under yolo but has no --skills-dir: the sandbox cannot \
-             see ~/.claude, so the skill would not resolve. Give the directory that contains it.",
-            state.id,
-            state.wraps.reference.as_deref().unwrap_or("?"),
-        )));
-    }
-    Ok(())
+/// The launcher this run's wakes go under, from the config as it is now — so a launcher edited
+/// in `config.json` applies from the next wake, and one removed from it refuses the wake up front
+/// rather than spawning something that is not there.
+pub fn resolve(state: &RunState) -> Result<LauncherDef, OttoError> {
+    crate::config::launcher(&state.launcher.kind)
+        .map_err(|e| OttoError::usage(format!("run {}: {e}", state.id)))
 }
 
 /// The full command line for one wake. `session_id` is where the wake's usage will be read from
 /// afterwards, so it is chosen by the caller before the spawn and recorded in `wake.session`.
-pub fn argv(state: &RunState, prompt: &str, session_id: &str) -> Vec<String> {
-    // The guard leads, so what follows is the launcher's own command line either way.
-    let guard = sleep_guard();
-    match state.launcher.kind {
-        LauncherKind::Claude => {
-            // The prompt goes before every flag, `--add-dir` included — see the module doc. This
-            // is the case that made the rule non-negotiable: `--add-dir` is variadic and otto
-            // always passes at least one, so `claude --add-dir <home> <prompt>` fed the prompt to
-            // `--add-dir` as a second directory and ran a wake with no prompt at all.
-            let mut argv = guard;
-            argv.push("claude".to_string());
-            argv.push(prompt.to_string());
-            // The run directory is not optional. `$OTTO_HOME` is normally outside the working
-            // directory, so without this the wake cannot read its own `run.json` or write its
-            // handoff — and nobody is attached to widen the grant, so the wake burns its whole
-            // deadline achieving nothing.
-            // Granting all of `$OTTO_HOME` rather than just this run's directory is deliberate:
-            // repo locks live in a sibling (`runs/.locks`).
-            argv.push("--add-dir".to_string());
-            argv.push(crate::paths::otto_home().display().to_string());
-            for repo in &state.launcher.repos {
-                argv.push("--add-dir".to_string());
-                argv.push(repo.clone());
-            }
-            argv.extend(claude_tail(state, session_id));
-            argv
-        }
-        LauncherKind::Yolo => {
-            let mut argv = guard;
-            argv.push("yolo".to_string());
-            // Same reason as above, but under yolo the grant must be a sandbox grant: nono
-            // only opens paths it was told about, so `--add-dir` alone would let claude try to
-            // read a path the kernel has not made visible.
-            argv.push("--repo".to_string());
-            argv.push(crate::paths::otto_home().display().to_string());
-            for repo in &state.launcher.repos {
-                // Under yolo this grants both sandbox and tool access; --add-dir alone
-                // would let claude try to read a path nono has not opened.
-                argv.push("--repo".to_string());
-                argv.push(repo.clone());
-            }
-            for dir in &state.launcher.skill_dirs {
-                argv.push("--skills".to_string());
-                argv.push(dir.clone());
-            }
-            // Under yolo everything after `--` is claude's, so the prompt leads there instead —
-            // same rule, different position. yolo's own flags are all before the `--`.
-            argv.push("--".to_string());
-            argv.push(prompt.to_string());
-            argv.extend(claude_tail(state, session_id));
-            argv
-        }
+pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str) -> Vec<String> {
+    // The run directory is not optional. `$OTTO_HOME` is normally outside the working directory,
+    // so without this the wake cannot read its own `run.json` or write its handoff — and nobody
+    // is attached to widen the grant, so the wake burns its whole deadline achieving nothing.
+    // Granting all of `$OTTO_HOME` rather than just this run's directory is deliberate: repo
+    // locks live in a sibling (`runs/.locks`).
+    let mut dirs = vec![crate::paths::otto_home().display().to_string()];
+    dirs.extend(state.launcher.repos.iter().cloned());
+
+    // The guard leads, so what follows is the launcher's own command line.
+    let mut argv = sleep_guard();
+    let mut command = launcher.command_words();
+    if let Some(flag) = &launcher.grant_flag {
+        // A sandbox only opens paths it was told about, so `--add-dir` alone would let claude try
+        // to read a path the kernel has not made visible. The grants go before the command's
+        // first `--`, where they are the sandbox's arguments and not claude's.
+        let at = command.iter().position(|w| w == "--").unwrap_or(command.len());
+        let grants = dirs.iter().flat_map(|d| [flag.clone(), d.clone()]);
+        command.splice(at..at, grants);
     }
+    argv.extend(command);
+    // The prompt goes before every claude flag, `--add-dir` included — see the module doc. This
+    // is the case that made the rule non-negotiable: `--add-dir` is variadic and otto always
+    // passes at least one, so `claude --add-dir <home> <prompt>` fed the prompt to `--add-dir` as
+    // a second directory and ran a wake with no prompt at all.
+    argv.push(prompt.to_string());
+    for dir in &dirs {
+        argv.push("--add-dir".to_string());
+        argv.push(dir.clone());
+    }
+    argv.extend(claude_tail(state, session_id));
+    argv
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::Wraps;
 
-    fn state(kind: LauncherKind, wraps: WrapKind) -> RunState {
-        let mut state = crate::state::test_run_state("r1");
-        state.launcher.kind = kind;
-        state.wraps = Wraps {
-            kind: wraps,
-            reference: match wraps {
-                WrapKind::Skill => Some("manage-pr".into()),
-                WrapKind::Instructions => Some("/tmp/flow.md".into()),
-                WrapKind::GoalOnly => None,
-            },
-        };
-        state
+    fn state() -> RunState {
+        crate::state::test_run_state("r1")
+    }
+
+    fn claude() -> LauncherDef {
+        LauncherDef { name: "claude".into(), command: "claude".into(), grant_flag: None }
+    }
+
+    fn nono() -> LauncherDef {
+        LauncherDef {
+            name: "nono (sandbox)".into(),
+            command: "nono run --profile nolabs-ai/claude -- claude".into(),
+            grant_flag: Some("--allow".into()),
+        }
+    }
+
+    /// A wrapper with no `--` of its own, whose trailing arguments go to claude.
+    fn wrapper() -> LauncherDef {
+        LauncherDef { name: "wrapper".into(), command: "wrap".into(), grant_flag: Some("--repo".into()) }
+    }
+
+    fn all() -> [LauncherDef; 3] {
+        [claude(), nono(), wrapper()]
     }
 
     fn joined(argv: &[String]) -> String {
@@ -201,12 +181,19 @@ mod tests {
         argv[sleep_guard().len()..].to_vec()
     }
 
+    /// Where claude's own arguments start: straight after the launcher's command and grants.
+    fn claude_args(argv: &[String], launcher: &LauncherDef) -> Vec<String> {
+        let skip = launcher.command_words().len()
+            + launcher.grant_flag.as_ref().map_or(0, |_| 2 * (1 + state().launcher.repos.len()));
+        launched(argv)[skip..].to_vec()
+    }
+
     /// A stand-in for the id the wake will be measured by.
     const SID: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
 
     #[test]
     fn claude_gets_the_unattended_tail() {
-        let argv = argv(&state(LauncherKind::Claude, WrapKind::GoalOnly), "wake r1", SID);
+        let argv = argv(&state(), &claude(), "wake r1", SID);
         assert_eq!(launched(&argv)[0], "claude");
         let line = joined(&argv);
         assert!(line.contains("--permission-mode acceptEdits"));
@@ -217,15 +204,16 @@ mod tests {
     /// works with `-p` went with it. A regression here is expensive and completely silent.
     #[test]
     fn no_wake_is_launched_in_print_mode() {
-        for kind in [LauncherKind::Claude, LauncherKind::Yolo] {
-            let mut s = state(kind, WrapKind::GoalOnly);
+        for launcher in all() {
+            let mut s = state();
             // Set every input that used to add a print-only flag.
             s.budget.usd = 40.0;
             s.budget.spent_usd = 1.0;
-            let argv = argv(&s, "wake r1", SID);
-            assert!(!argv.iter().any(|a| a == "-p" || a == "--print"), "{kind:?} must not print");
+            let argv = argv(&s, &launcher, "wake r1", SID);
+            let name = &launcher.name;
+            assert!(!argv.iter().any(|a| a == "-p" || a == "--print"), "{name} must not print");
             for flag in ["--output-format", "--permission-prompts", "--no-session-persistence", "--max-budget-usd"] {
-                assert!(!argv.iter().any(|a| a == flag), "{flag} only works with -p, so {kind:?} must not pass it");
+                assert!(!argv.iter().any(|a| a == flag), "{flag} only works with -p, so {name} must not pass it");
             }
         }
     }
@@ -238,18 +226,16 @@ mod tests {
     /// getting the order wrong breaks *every* wake rather than only the configured ones.
     #[test]
     fn the_prompt_comes_before_every_variadic_flag() {
-        for kind in [LauncherKind::Claude, LauncherKind::Yolo] {
-            let mut s = state(kind, WrapKind::GoalOnly);
+        for launcher in all() {
+            let mut s = state();
             s.launcher.repos = vec!["/w/a".into()];
             s.permission.allowed_tools = vec!["Read".into()];
             s.permission.disallowed_tools = vec!["WebFetch".into()];
-            let argv = argv(&s, "wake r1", SID);
+            let argv = argv(&s, &launcher, "wake r1", SID);
             let prompt = argv.iter().position(|a| a == "wake r1").expect("the prompt must be there");
-            // Every variadic flag claude parses. `--repo`/`--skills` are yolo's own and sit before
-            // the `--`, where they can only ever eat yolo's arguments.
             for variadic in ["--add-dir", "--allowed-tools", "--disallowed-tools"] {
                 if let Some(idx) = argv.iter().position(|a| a == variadic) {
-                    assert!(prompt < idx, "{kind:?}: {variadic} would swallow a prompt that follows it");
+                    assert!(prompt < idx, "{}: {variadic} would swallow a prompt that follows it", launcher.name);
                 }
             }
         }
@@ -258,35 +244,30 @@ mod tests {
     /// Nothing claude parses may precede the prompt, whatever the launcher puts in front.
     #[test]
     fn the_prompt_leads_claudes_own_arguments() {
-        let mut c = state(LauncherKind::Claude, WrapKind::GoalOnly);
-        c.launcher.repos = vec!["/w/a".into()];
-        assert_eq!(launched(&argv(&c, "wake r1", SID))[1], "wake r1", "straight after `claude`");
-
-        let mut y = state(LauncherKind::Yolo, WrapKind::GoalOnly);
-        y.launcher.repos = vec!["/w/a".into()];
-        let argv = argv(&y, "wake r1", SID);
-        let dashdash = argv.iter().position(|a| a == "--").unwrap();
-        assert_eq!(argv[dashdash + 1], "wake r1", "straight after the `--`");
+        for launcher in all() {
+            let argv = argv(&state(), &launcher, "wake r1", SID);
+            assert_eq!(claude_args(&argv, &launcher)[0], "wake r1", "{}", launcher.name);
+        }
     }
 
-    /// The whole point of the yolo seam: same tail, wrapped, after a `--`.
+    /// A configured launcher is its command, then the same tail claude gets on its own.
     #[test]
-    fn yolo_passes_the_same_tail_after_a_double_dash() {
-        let argv = argv(&state(LauncherKind::Yolo, WrapKind::GoalOnly), "wake r1", SID);
-        assert_eq!(launched(&argv)[0], "yolo");
-        let dashdash = argv.iter().position(|a| a == "--").expect("yolo needs a --");
-        // The prompt leads the tail under yolo too, for the same variadic reason.
-        assert_eq!(argv[dashdash + 1], "wake r1");
+    fn a_configured_launcher_carries_the_same_tail() {
+        let argv = argv(&state(), &nono(), "wake r1", SID);
+        assert_eq!(&launched(&argv)[..3], ["nono", "run", "--profile"]);
+        let dashdash = argv.iter().position(|a| a == "--").expect("the command's own --");
+        assert_eq!(argv[dashdash + 1], "claude");
+        assert_eq!(argv[dashdash + 2], "wake r1");
         let tail = joined(&argv[dashdash + 1..]);
         assert!(tail.contains(&format!("--session-id {SID}")));
-        // Passing a mode is what stops yolo adding --dangerously-skip-permissions, so the
-        // run's recorded posture is the one that takes effect.
+        // Passing a mode is what stops a sandbox substituting its own, so the run's recorded
+        // posture is the one that takes effect.
         assert!(tail.contains("--permission-mode acceptEdits"));
     }
 
     #[test]
     fn the_harness_rides_in_the_system_prompt_not_the_user_prompt() {
-        let argv = argv(&state(LauncherKind::Claude, WrapKind::GoalOnly), "wake r1", SID);
+        let argv = argv(&state(), &claude(), "wake r1", SID);
         let idx = argv.iter().position(|a| a == "--append-system-prompt").unwrap();
         assert_eq!(argv[idx + 1], super::super::prompt::HARNESS);
         // The cacheable prefix must not be the thing that varies per wake.
@@ -294,70 +275,58 @@ mod tests {
     }
 
     #[test]
-    fn repos_use_add_dir_for_claude_and_repo_for_yolo() {
-        let mut s = state(LauncherKind::Claude, WrapKind::GoalOnly);
+    fn repos_get_add_dir_and_a_sandbox_grant_before_the_double_dash() {
+        let mut s = state();
         s.launcher.repos = vec!["/w/a".into(), "/w/b".into()];
-        assert!(joined(&argv(&s, "p", SID)).contains("--add-dir /w/a --add-dir /w/b"));
+        assert!(joined(&argv(&s, &claude(), "p", SID)).contains("--add-dir /w/a --add-dir /w/b"));
 
-        let mut y = state(LauncherKind::Yolo, WrapKind::GoalOnly);
-        y.launcher.repos = vec!["/w/a".into()];
-        let line = joined(&argv(&y, "p", SID));
-        assert!(line.contains("--repo /w/a"));
-        assert!(!line.contains("--add-dir"), "yolo grants sandbox access with --repo");
+        let argv = argv(&s, &nono(), "p", SID);
+        let line = joined(&argv);
+        assert!(line.contains("--allow /w/a --allow /w/b -- claude"), "{line}");
+        assert!(line.contains("--add-dir /w/a"), "claude is still told, as well as the sandbox");
+    }
+
+    /// With no `--` in the command, grants go at its end — still ahead of the prompt.
+    #[test]
+    fn grants_follow_a_command_without_a_double_dash() {
+        let mut s = state();
+        s.launcher.repos = vec!["/w/a".into()];
+        let argv = argv(&s, &wrapper(), "p", SID);
+        let home = crate::paths::otto_home().display().to_string();
+        assert_eq!(&launched(&argv)[..6], ["wrap", "--repo", home.as_str(), "--repo", "/w/a", "p"]);
     }
 
     /// Discovered the hard way, by watching a real wake get `Read` denied on its own
-    /// `run.json`: the run directory must always be granted, under either launcher.
+    /// `run.json`: the run directory must always be granted, under any launcher.
     #[test]
     fn the_run_directory_is_always_granted() {
         let _h = crate::paths::test_support::TempHome::new();
         let home = crate::paths::otto_home().display().to_string();
-        let c = joined(&argv(&state(LauncherKind::Claude, WrapKind::GoalOnly), "p", SID));
+        let c = joined(&argv(&state(), &claude(), "p", SID));
         assert!(c.contains(&format!("--add-dir {home}")), "claude wake needs its run dir");
-        let y = joined(&argv(&state(LauncherKind::Yolo, WrapKind::GoalOnly), "p", SID));
-        assert!(y.contains(&format!("--repo {home}")), "yolo needs a sandbox grant, not --add-dir");
+        let n = joined(&argv(&state(), &nono(), "p", SID));
+        assert!(n.contains(&format!("--allow {home}")), "a sandbox needs a grant, not only --add-dir");
     }
 
+    /// A run whose launcher is no longer in the config is refused, not spawned.
     #[test]
-    fn yolo_skill_dirs_are_passed_as_skills() {
-        let mut y = state(LauncherKind::Yolo, WrapKind::Skill);
-        y.launcher.skill_dirs = vec!["/w/otto/skills".into()];
-        let argv = argv(&y, "p", SID);
-        let line = joined(&argv);
-        assert!(line.contains("--skills /w/otto/skills"));
-        // Everything yolo needs must precede the --.
-        let dashdash = argv.iter().position(|a| a == "--").unwrap();
-        let skills = argv.iter().position(|a| a == "--skills").unwrap();
-        assert!(skills < dashdash);
-    }
-
-    /// A skill under yolo with nowhere to find it is refused now, not discovered later.
-    #[test]
-    fn a_skill_under_yolo_without_a_skills_dir_is_refused() {
-        let y = state(LauncherKind::Yolo, WrapKind::Skill);
-        let err = check_resolvable(&y).expect_err("must refuse");
-        assert!(err.to_string().contains("--skills-dir"));
-
-        let mut ok = y;
-        ok.launcher.skill_dirs = vec!["/w/skills".into()];
-        assert!(check_resolvable(&ok).is_ok());
-    }
-
-    #[test]
-    fn the_same_wrap_under_plain_claude_is_fine_without_skill_dirs() {
-        // ~/.claude/skills is visible without a sandbox, so nothing to declare.
-        assert!(check_resolvable(&state(LauncherKind::Claude, WrapKind::Skill)).is_ok());
+    fn a_launcher_missing_from_the_config_is_refused() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut s = state();
+        assert_eq!(resolve(&s).unwrap().name, "claude");
+        s.launcher.kind = "nono (sandbox)".into();
+        assert!(resolve(&s).unwrap_err().to_string().contains("no launcher"));
     }
 
     /// A mac that falls asleep mid-wake kills the child and burns the deadline for nothing, so
-    /// the launcher — either one — runs under `caffeinate`. Elsewhere there is nothing to wrap.
+    /// the launcher — any one — runs under `caffeinate`. Elsewhere there is nothing to wrap.
     #[test]
     fn a_mac_is_kept_awake_for_the_length_of_the_wake() {
-        for kind in [LauncherKind::Claude, LauncherKind::Yolo] {
-            let argv = argv(&state(kind, WrapKind::GoalOnly), "wake r1", SID);
+        for launcher in all() {
+            let argv = argv(&state(), &launcher, "wake r1", SID);
             if cfg!(target_os = "macos") {
-                assert_eq!(&argv[..3], ["caffeinate", "-i", "-s"], "{kind:?} must not let the mac sleep");
-                assert!(matches!(argv[3].as_str(), "claude" | "yolo"), "the launcher follows the guard");
+                assert_eq!(&argv[..3], ["caffeinate", "-i", "-s"], "{} must not let the mac sleep", launcher.name);
+                assert_eq!(argv[3], launcher.command_words()[0], "the launcher follows the guard");
             } else {
                 assert_ne!(argv[0], "caffeinate", "caffeinate is macOS-only");
             }
@@ -366,10 +335,10 @@ mod tests {
 
     #[test]
     fn tool_lists_are_comma_joined_when_present() {
-        let mut s = state(LauncherKind::Claude, WrapKind::GoalOnly);
+        let mut s = state();
         s.permission.allowed_tools = vec!["Bash(git *)".into(), "Read".into()];
         s.permission.disallowed_tools = vec!["WebFetch".into()];
-        let line = joined(&argv(&s, "p", SID));
+        let line = joined(&argv(&s, &claude(), "p", SID));
         assert!(line.contains("--allowed-tools Bash(git *),Read"));
         assert!(line.contains("--disallowed-tools WebFetch"));
     }

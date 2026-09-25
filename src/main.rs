@@ -1,5 +1,6 @@
 mod cli;
 mod clock;
+mod config;
 mod core;
 mod detach;
 mod error;

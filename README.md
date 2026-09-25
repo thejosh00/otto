@@ -146,10 +146,30 @@ than merely discouraged.
 
 ## Launchers
 
-What runs the model is configurable, and separate from how the wake is backgrounded.
+What runs the model is configurable, and separate from how the wake is backgrounded. `claude` is
+built in and the default; any other launcher — a sandbox, typically — is defined per machine in
+`$OTTO_HOME/config.json` (`~/.otto/config.json`):
 
-| `--launcher claude` | Plain `claude`. Portable, and the default |
-| `--launcher yolo` | [yolo](https://source.datanerd.us/joshuahill/yolo)'s nono sandbox: kernel-enforced filesystem and egress limits. The right choice for unattended work |
+```json
+{
+  "launchers": [
+    { "name": "nono (sandbox)", "command": "nono run --profile nolabs-ai/claude -- claude", "grantFlag": "--allow" }
+  ]
+}
+```
+
+- `name` is what `--launcher` takes (a unique prefix will do: `--launcher nono`), what the web
+  form offers, and what the run records.
+- `command` is the command line that ends in running claude. otto appends the wake's prompt and
+  claude's flags to it, so it must end in `claude` or in something that hands its trailing
+  arguments to claude.
+- `grantFlag` (optional) is how the sandbox opens a directory. otto passes it once for
+  `$OTTO_HOME` and once per `--repo`, ahead of the command's first `--` (or at its end if it has
+  none). Leave it out and those grants are the sandbox profile's job — a wake that cannot write to
+  `$OTTO_HOME` cannot write its handoff.
+
+A run records the launcher's name, not its command, so editing `config.json` changes the next
+wake of every run using it, and removing a launcher refuses its runs' wakes up front.
 
 otto deliberately does **not** pass `-p`. Print mode bills SDK credits rather than the
 subscription, and an unattended run that wakes forever is the last thing that should be on the
@@ -161,17 +181,17 @@ hang the wake — a `manual`-mode wake with stdin at `/dev/null` was seen runnin
 exiting cleanly — but what each mode now denies is genuinely unmeasured, because the old answer
 (`acceptEdits` denies Bash, `dontAsk` denies Write/Edit/Bash) rested on `--permission-prompts none`,
 which only works with `-p`. `bypassPermissions` stays the default until someone measures the rest,
-which means **the real safety decision is the launcher, not the permission mode** — run under yolo
-and the guardrail is the kernel. Anything outward-facing (push, merge, commenting on a ticket)
+which means **the real safety decision is the launcher, not the permission mode** — run under a
+sandbox and the guardrail is the kernel. Anything outward-facing (push, merge, commenting on a ticket)
 additionally needs an `authorize` record bound to one commit.
 
-Under yolo, `--skill` needs `--skills-dir`: the sandbox cannot see `~/.claude`, so otto refuses such
-a run up front rather than letting it fail mid-wake.
+Whatever a sandbox has to see beyond those grants — `~/.claude`, so a `--skill` resolves; the
+hosts a wake needs — belongs to the sandbox's own profile.
 
 `--detach tmux` (default) puts each wake in a tmux session named `otto-<run-id>`; the session ends
 when the wake does, so nothing needs reaping. `--detach none` (or `--watch`) runs it in your
 terminal. Detachment is observability only — the run cannot tell which was used. There is no `bg`
-strategy: `claude --bg` is disabled under yolo, because `claude attach` on a re-adopted worker needs
+strategy: `claude --bg` cannot work inside a sandbox, because `claude attach` on a re-adopted worker needs
 a process-identity probe that execs the setuid `/bin/ps`, which macOS Seatbelt blocks.
 
 Where a run's wakes go is a property of the run, so **every way of starting one agrees**: `otto

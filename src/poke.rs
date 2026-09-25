@@ -619,7 +619,7 @@ mod tests {
     }
 
     fn wake_with(n: u32, deadline: Timestamp, pid: u32) -> Wake {
-        Wake { n, started_at: deadline, deadline_at: deadline, launcher: crate::state::LauncherKind::Claude, pid: Some(pid), session: None, outcome: None }
+        Wake { n, started_at: deadline, deadline_at: deadline, launcher: "claude".into(), pid: Some(pid), session: None, outcome: None }
     }
 
     fn check_due(next_check_at: Timestamp) -> Check {
