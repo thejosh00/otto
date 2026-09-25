@@ -258,6 +258,24 @@ pub struct Gate {
     pub expires_at: Option<crate::clock::Timestamp>,
 }
 
+/// A person's note to the run, outside any gate: guidance on how to do the work, handed to the
+/// wakes verbatim (see `notes`). The text lives in `file`; this is the bookkeeping.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Note {
+    pub id: String,
+    pub file: String,
+    /// Given to every wake until dropped. A one-off note is given until a wake that carried it
+    /// completes, then leaves `notes` (its file stays, and the journal says it was delivered).
+    #[serde(default)]
+    pub standing: bool,
+    #[serde(rename = "addedAt")]
+    pub added_at: crate::clock::Timestamp,
+    /// The wake whose prompt last carried this note. Only that wake completing delivers a
+    /// one-off note — one added while a wake runs was never in its prompt, and must not be.
+    #[serde(rename = "givenToWake", default, skip_serializing_if = "Option::is_none")]
+    pub given_to_wake: Option<u32>,
+}
+
 /// What an opt-in check script (DESIGN.md §8) reported. `Changed` and `Error` are handled
 /// identically by poke — both spawn a wake — but kept distinct in the journal so a person can
 /// tell "the PR moved" from "the script broke" in `otto logs`.
@@ -479,6 +497,9 @@ pub struct RunState {
     /// re-recording what it read would clear it and every notice would fire again.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub notified: BTreeMap<String, crate::clock::Timestamp>,
+    /// Notes a person has left for the run that are still to be delivered, and standing ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
 }
 
 /// `k=v` pairs. Values are JSON when parseable (so `prNumber=42` is a number), else the literal
@@ -823,6 +844,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         updated_at: now,
         authorizations: Map::new(),
         notified: BTreeMap::new(),
+        notes: Vec::new(),
     }
 }
 

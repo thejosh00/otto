@@ -61,6 +61,12 @@ pub fn answer_prompt(run_id: &str, run_dir: &std::path::Path, answer: &str) -> S
     )
 }
 
+/// A wake's prompt with the person's notes appended (see `notes::for_wake`). Last, so that an
+/// answer's "record it before acting" instruction is not buried under them.
+pub fn with_notes(prompt: &str, notes: &str) -> String {
+    format!("{prompt}\n\n{notes}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

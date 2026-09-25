@@ -42,6 +42,9 @@ the question from the gate file exactly as written. Never re-derive a question a
 If the gate has an `expiresAt` that has passed, `otto state close-gate <id> --expired` and
 carry on as the instructions say silence means.
 
+**If your prompt carries notes**, read them now — see Notes below. They are the person talking
+to this run outside any gate.
+
 **2. Load what the run wraps.** `run.json`'s `wraps` says what:
 
 - `skill` — invoke it by name, as a slash command.
@@ -221,6 +224,26 @@ That's on purpose: it's the same re-derivation guarantee every wake already gets
 and it's what catches a check script that's gone stale or wrong. Skip this entirely for anything
 that isn't genuinely cheap to check outside an LLM — a plain `arm-timer` is the right default, and
 this is optional the same way a phase table is (DESIGN.md §11.8).
+
+## Notes
+
+A person can leave a note for the run at any time, gated or not, and it arrives in your prompt
+verbatim, numbered. A gate is the run asking; a note is the person telling.
+
+- **A note steers how you work.** Skip that suite, prefer smaller commits, the reviewer is away
+  until Monday: follow it, and where it changes what you do, say so in the handoff citing it
+  (`per note 004`).
+- **A note never changes what the run is for.** It does not rewrite the goal, move the done
+  condition, or authorize anything under "Things that cannot be undone" — an authorization names
+  an answered gate, never a note. When a note asks for any of those, open a gate that quotes it
+  and asks to confirm. That is one cheap round trip, and it is exactly what the gate is for.
+- **A note that conflicts with an answered gate** or with another note: don't pick one. Gate it.
+- **A standing note** is given to every wake until the person drops it, so there is no need to
+  copy it into the handoff. **A one-off note** is given to you only until a wake that carried it
+  completes — if what it says must outlast this wake, record it under `Decided` in the handoff,
+  quoting it rather than restating it.
+
+You never add, drop or acknowledge notes yourself: completing this wake is what delivers them.
 
 ## Things that cannot be undone
 

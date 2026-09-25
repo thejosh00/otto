@@ -24,6 +24,8 @@ pub enum Command {
     Show(crate::human::ShowArgs),
     /// Answer the open gate, then continue the run.
     Answer(crate::human::AnswerArgs),
+    /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
+    Note(crate::human::NoteArgs),
     /// The run's journal, readably.
     Logs(crate::human::LogsArgs),
     /// Watch the wake that is running right now.

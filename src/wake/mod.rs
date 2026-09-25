@@ -151,10 +151,16 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         return block_on_budget(&args.id, &why);
     }
 
-    let prompt = match &args.answer {
+    let mut prompt = match &args.answer {
         Some(answer) => prompt::answer_prompt(&args.id, &run_path, answer),
         None => prompt::user_prompt(&args.id, &run_path),
     };
+    // Read from the same `state` the prompt is built from, so the notes marked as given below are
+    // exactly the ones this wake was told — never one added a moment later.
+    let notes = crate::notes::for_wake(&run_path, &state);
+    if let Some(given) = &notes {
+        prompt = prompt::with_notes(&prompt, &given.block);
+    }
 
     // Ahead of the argv rather than after the lock, because the session id is part of the command
     // line: it is what makes the wake's usage findable afterwards, so `--dry-run` has to be able
@@ -203,6 +209,9 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         // wakes are starting perfectly well — which is what happened the first time a real wake
         // was killed and poke then refused to restart it for five minutes.
         state.spawn_attempts = 0;
+        if let Some(given) = &notes {
+            crate::notes::mark_given(state, &given.ids, wake_number);
+        }
         crate::event::record(
             path,
             &Event::WakeStarted {
@@ -341,6 +350,11 @@ fn finish_wake(
                     wake.outcome = Some(WakeOutcome::Complete);
                 }
                 state.incomplete_wakes = 0;
+                // Only a wake that met the contract delivers its notes; a crashed one leaves them
+                // for the next wake to be given again.
+                if let Some(n) = state.wake.as_ref().map(|w| w.n) {
+                    crate::notes::deliver(path, state, n)?;
+                }
                 crate::event::record(
                     path,
                     &Event::WakeComplete { status: crate::state::commands::status_str(state.status).to_string() },
@@ -1002,6 +1016,55 @@ mod tests {
         .unwrap();
         let call = exec.last_call().join(" ");
         assert!(call.contains("Approve, but rename the flag first."));
+    }
+
+    #[test]
+    fn a_one_off_note_is_given_until_a_wake_that_carried_it_completes() {
+        let _h = TempHome::new();
+        test_init("w-note", "a goal").unwrap();
+        crate::notes::add("w-note", "Skip the e2e suite, it's broken on main.", false).unwrap();
+        crate::notes::add("w-note", "Never touch legacy/.", true).unwrap();
+
+        // A wake that crashes carried the notes but did not complete, so nothing is delivered.
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 1, stdout: String::new(), stderr: "boom".into(), timed_out: false });
+        run_wake(&args("w-note"), &mut exec).unwrap();
+        let call = exec.last_call().join(" ");
+        assert!(call.contains("Skip the e2e suite, it's broken on main."), "the note reaches the prompt verbatim");
+        assert!(call.contains("Never touch legacy/."));
+        let state = read_run("w-note").unwrap();
+        assert_eq!(state.notes.len(), 2, "a failed wake must not swallow a note");
+        assert_eq!(state.notes[0].given_to_wake, Some(1));
+
+        // The next wake is given it again, completes, and so delivers it. The standing one stays.
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-note"));
+        run_wake(&args("w-note"), &mut exec).unwrap();
+        assert!(exec.last_call().join(" ").contains("Skip the e2e suite"));
+        let left: Vec<String> = read_run("w-note").unwrap().notes.iter().map(|n| n.id.clone()).collect();
+        assert_eq!(left, vec!["002"]);
+
+        // And the wake after that carries only the standing note.
+        transaction("w-note", |_p, s| {
+            s.next_wake_at = None;
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-note"));
+        run_wake(&args("w-note"), &mut exec).unwrap();
+        let call = exec.last_call().join(" ");
+        assert!(!call.contains("Skip the e2e suite") && call.contains("Never touch legacy/."));
+    }
+
+    #[test]
+    fn a_wake_with_no_notes_gets_no_notes_section() {
+        let _h = TempHome::new();
+        test_init("w-quiet", "a goal").unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-quiet"));
+        run_wake(&args("w-quiet"), &mut exec).unwrap();
+        assert!(!exec.last_call().join(" ").contains("left notes"));
     }
 
     #[test]

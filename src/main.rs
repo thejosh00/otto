@@ -10,6 +10,7 @@ mod human;
 mod install;
 mod launchd;
 mod liveness;
+mod notes;
 mod notify;
 mod paths;
 mod poke;
@@ -39,6 +40,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Ls(args) => human::ls(args),
         Command::Show(args) => human::show(args),
         Command::Answer(args) => human::answer(args),
+        Command::Note(args) => human::note(args),
         Command::Logs(args) => human::logs(args),
         Command::Attach(args) => human::attach(args),
         Command::Stop(args) => human::stop(args),

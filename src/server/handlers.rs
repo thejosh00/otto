@@ -86,6 +86,22 @@ pub async fn answer(Path(id): Path<String>, Json(body): Json<AnswerBody>) -> Res
 
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteBody {
+    text: String,
+    standing: bool,
+    now: bool,
+}
+
+pub async fn add_note(Path(id): Path<String>, Json(body): Json<NoteBody>) -> Response {
+    blocking(move || crate::core::note_in_background(&id, &body.text, body.standing, body.now)).await
+}
+
+pub async fn drop_note(Path((id, note)): Path<(String, String)>) -> Response {
+    blocking(move || crate::core::drop_note(&id, &note)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct StopBody {
     reason: Option<String>,
     failed: bool,

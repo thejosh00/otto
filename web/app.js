@@ -309,6 +309,7 @@ function runView(id) {
   const head = h("div");
   const facts = h("div");
   const gateBox = h("div");
+  const notesBox = h("div");
   const actions = h("div");
   const panel = h("div");
   let shownGate = null;
@@ -316,7 +317,7 @@ function runView(id) {
 
   view.replaceChildren(
     h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, facts, gateBox, actions,
+    head, facts, gateBox, notesBox, actions,
     h("div.tabs", { role: "tablist" },
       tabButton("logs", "Logs"),
       tabButton("live", "Live wake")),
@@ -346,6 +347,7 @@ function runView(id) {
     renderHead(d);
     renderFacts(d);
     renderGate(d);
+    renderNotes(d);
     renderActions(d);
   }
 
@@ -423,6 +425,63 @@ function runView(id) {
             },
           }, "Send answer"))),
     );
+  }
+
+  // The form is built once and kept, so a refresh never wipes a half-written note; only the
+  // list above it is redrawn, and only when it changed.
+  const noteList = h("div");
+  const noteText = h("textarea", { placeholder: "Tell the run something — how to do the work, not an answer to a gate. Its next wake reads it verbatim." });
+  const noteStanding = h("input", { type: "checkbox" });
+  const noteNow = h("input", { type: "checkbox" });
+  const noteForm = h("div.card", { style: "margin-top:10px" },
+    noteText,
+    h("div.row.spread", { style: "margin-top:10px" },
+      h("div.row",
+        h("label.check", { title: "Given to every wake until you drop it" }, noteStanding, "Standing"),
+        h("label.check", { title: "Wake the run now to read it" }, noteNow, "Wake now")),
+      h("button", {
+        onclick: (e) => busy(e.currentTarget, async () => {
+          if (!noteText.value.trim()) { toast("Write the note first", true); return; }
+          const r = await api(path + "/notes", { text: noteText.value, standing: noteStanding.checked, now: noteNow.checked });
+          const woke = r.wake ? " — waking it now" : r.notWoken ? ` — not waking it: ${r.notWoken}` : "";
+          toast(`Note ${r.note.id} recorded — ${r.delivery}${woke}`, false);
+          noteText.value = "";
+          noteStanding.checked = false;
+          noteNow.checked = false;
+          shownNotes = null;
+          refresh();
+        }),
+      }, "Leave note")));
+  let shownNotes = null;
+
+  function renderNotes(d) {
+    const over = ["done", "failed", "stopped"].includes(d.state.status);
+    const key = JSON.stringify([over, d.notes.map((n) => [n.id, n.givenToWake])]);
+    if (key === shownNotes) return;
+    shownNotes = key;
+    if (over && !d.notes.length) { notesBox.replaceChildren(); return; }
+    noteList.replaceChildren(...d.notes.map((n) => {
+      const state = n.standing ? "standing — every wake"
+        : n.givenToWake ? `given to wake ${n.givenToWake}, not yet delivered` : "not yet read";
+      return h("div.card", { style: "margin-top:10px" },
+        h("div.row.spread",
+          h("span.faint", `Note ${n.id} · ${state} · added ${relative(n.addedAt)}`),
+          h("button.ghost", {
+            title: n.standing ? "Retire it: no wake is given it again" : "Withdraw it before a wake reads it",
+            onclick: (e) => busy(e.currentTarget, async () => {
+              await api(`${path}/notes/${encodeURIComponent(n.id)}/drop`, {});
+              toast(`Dropped note ${n.id}`);
+              shownNotes = null;
+              refresh();
+            }),
+          }, "Drop")),
+        h("div.prose", n.text));
+    }));
+    notesBox.replaceChildren(
+      h("h2", "Notes"),
+      d.notes.length ? "" : h("p.muted", "No standing or undelivered notes."),
+      noteList,
+      over ? h("p.muted", "The run is over — no wake will read a new note.") : noteForm);
   }
 
   function renderActions(d) {

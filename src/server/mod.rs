@@ -73,6 +73,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runs", get(handlers::list_runs).post(handlers::start_run))
         .route("/runs/{id}", get(handlers::run_detail))
         .route("/runs/{id}/answer", post(handlers::answer))
+        .route("/runs/{id}/notes", post(handlers::add_note))
+        .route("/runs/{id}/notes/{note}/drop", post(handlers::drop_note))
         .route("/runs/{id}/stop", post(handlers::stop))
         .route("/runs/{id}/resume", post(handlers::resume))
         .route("/runs/{id}/wake", post(handlers::wake))
@@ -241,6 +243,43 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["answer"], "Approve");
         assert!(crate::state::read_run("2026-09-21-gate").unwrap().gate.is_none());
+    }
+
+    /// A note to a gated run is recorded, shown on the run, and never wakes it — the gate is
+    /// still the question, and a note is not its answer.
+    #[test]
+    fn a_note_from_the_page_is_recorded_and_can_be_dropped() {
+        let _h = TempHome::new();
+        test_init("2026-09-21-noted", "a goal").unwrap();
+        open_gate(OpenGateArgs {
+            id: "2026-09-21-noted".into(),
+            slug: "review".into(),
+            question: Some("Go?".into()),
+            question_file: None,
+            stdin: false,
+            expires_at: None,
+            expires_in: None,
+        })
+        .unwrap();
+        let (status, body) = rt().block_on(send(post_req(
+            "/api/runs/noted/notes",
+            serde_json::json!({"text": "never touch legacy/", "standing": true, "now": true}),
+        )));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["note"]["id"], "001");
+        assert!(body["wake"].is_null());
+        assert!(body["notWoken"].as_str().unwrap().contains("gate 001 is open"));
+
+        let (_, detail) = rt().block_on(send(get_req("/api/runs/noted")));
+        assert_eq!(detail["notes"][0]["text"], "never touch legacy/\n");
+        assert_eq!(detail["notes"][0]["standing"], true);
+
+        let (status, body) = rt().block_on(send(post_req("/api/runs/noted/notes/1/drop", serde_json::json!({}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(crate::state::read_run("2026-09-21-noted").unwrap().notes.is_empty());
+
+        let (status, _) = rt().block_on(send(post_req("/api/runs/noted/notes", serde_json::json!({"text": "  "}))));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[test]

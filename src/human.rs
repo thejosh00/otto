@@ -268,6 +268,10 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if let Some(explanation) = &detail.blocked_explanation {
         println!("\n{explanation}");
     }
+    if !detail.notes.is_empty() {
+        println!();
+        print_notes(&detail.notes);
+    }
 
     if let Some(gate) = &detail.gate {
         println!("\n─── open gate {} — {} ───\n", gate.id, gate.slug);
@@ -422,6 +426,88 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
     start_wake(id, detach_of(id), Some(answer))
+}
+
+// ---------------------------------------------------------------------------
+// otto note
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct NoteArgs {
+    /// The run: its id, a prefix of it, or its slug
+    pub id: String,
+    /// What to tell it, verbatim. Guidance on how to do the work — not an answer to a gate
+    #[arg(conflicts_with = "file")]
+    pub text: Option<String>,
+    /// Read the note from a file
+    #[arg(long)]
+    pub file: Option<String>,
+    /// Give it to every wake until dropped, not just the next one to complete
+    #[arg(long)]
+    pub standing: bool,
+    /// Wake the run now to read it, rather than waiting for its next wake
+    #[arg(long)]
+    pub now: bool,
+    /// Show the run's standing notes and the ones not yet delivered
+    #[arg(long, conflicts_with_all = ["text", "file", "standing", "now", "drop"])]
+    pub list: bool,
+    /// Withdraw an undelivered note, or retire a standing one, by number
+    #[arg(long, value_name = "NOTE", conflicts_with_all = ["text", "file", "standing", "now"])]
+    pub drop: Option<String>,
+}
+
+pub fn note(args: NoteArgs) -> Result<(), OttoError> {
+    if let Some(which) = &args.drop {
+        let dropped = crate::core::drop_note(&args.id, which)?;
+        let kind = if dropped.standing { "standing note" } else { "note" };
+        println!("dropped {kind} {} — no wake will be given it again", dropped.id);
+        return Ok(());
+    }
+    if args.list {
+        let detail = crate::core::run_detail(Some(&args.id))?;
+        if detail.notes.is_empty() {
+            println!("no standing or undelivered notes — `otto logs {} --event note-added` for past ones", detail.short);
+        }
+        print_notes(&detail.notes);
+        return Ok(());
+    }
+    let text = match (&args.text, &args.file) {
+        (Some(text), _) => text.clone(),
+        (_, Some(path)) => std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?,
+        (None, None) => return Err(OttoError::usage("give the note: `otto note <run> \"…\"`, or --file <path>")),
+    };
+    let outcome = crate::core::add_note(&args.id, &text, args.standing)?;
+    println!("note {} recorded — {}", outcome.note.id, outcome.delivery);
+    if !args.now {
+        return Ok(());
+    }
+    let state = read_run(&outcome.id)?;
+    match crate::core::why_not_wake_for_note(&state, LockLiveness.probe(&outcome.id).is_busy()) {
+        Some(why) => {
+            println!("not waking it: {why}");
+            Ok(())
+        }
+        None => start_wake(&outcome.id, state.launcher.detach, None),
+    }
+}
+
+/// The notes section `otto show` and `otto note --list` share.
+fn print_notes(notes: &[crate::core::NoteView]) {
+    for (i, note) in notes.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let kind = if note.standing {
+            "standing".to_string()
+        } else {
+            match note.given_to_wake {
+                Some(n) => format!("given to wake {n}, not yet delivered"),
+                None => "not yet read".to_string(),
+            }
+        };
+        println!("── note {} · {kind} · added {} ──", note.id, crate::clock::relative(note.added_at));
+        println!("{}", note.text.trim_end());
+    }
 }
 
 // ---------------------------------------------------------------------------

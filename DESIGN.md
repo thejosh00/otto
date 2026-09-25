@@ -86,6 +86,7 @@ Everything else is guidance. Guidance can be ignored; a validator cannot.
     handoff.md      ← the ONLY thing the next wake gets for free (capped)
     journal.jsonl   ← append-only, never rewritten
     gates/NNN-*.md  ← question + verbatim answer
+    notes/NNN.md    ← a person's note to the run, verbatim (§7)
     artifacts/      ← plan.md, ledger.md, test-report.md, …
       ▲
       │ spawn due · reap exited · kill past deadline
@@ -210,6 +211,7 @@ immediately and turns it into a retry.
   handoff.md        what the next wake gets for free — capped, rewritten every wake
   journal.jsonl     append-only
   gates/001-plan-review.md
+  notes/001.md
   artifacts/        plan.md · ledger.md · test-report.md · cycles/<date>/…
 ```
 
@@ -373,6 +375,29 @@ notification centre, and because no wake is around to see a gate go stale. What 
 in `run.json`'s top-level `notified` (not `facts`, §6) and journaled as `notified`; a key that
 no longer applies is dropped, so the next gate is news again. A failed send still counts as sent —
 retrying a broken `osascript` every five minutes would only fill the journal.
+
+### Notes
+
+A gate is the run asking. A **note** is the person telling, whenever they like, gated or not:
+`otto note <run> "skip the e2e suite, it's broken on main"`. Without one, the only way to steer a
+sleeping run was to wait for it to ask, or to stop and resume it.
+
+- **Verbatim, on disk first.** `notes/NNN.md`, `note-added` in the journal, and a `notes` entry in
+  `run.json` — the same rule as a gate answer, for the same reason.
+- **Delivered by the contract.** The next wake's prompt carries every pending note, and otto
+  records which (`givenToWake`). Only that wake *completing* delivers a one-off note
+  (`notes-delivered`, and it leaves `run.json`). A wake that crashes or is killed never completes,
+  so the next wake is given the note again: at-least-once, with no ack for a wake to forget. A
+  note added while a wake runs was never in its prompt, and waits for the next one.
+- **Standing notes** (`--standing`) are given to every wake until `--drop`ped, for guidance that
+  must hold for the life of the run. Otherwise it would live in the handoff, which the model
+  rewrites every wake — a paraphrase every wake. Together they are capped at 4KB, like the handoff.
+- **A note is not an answer and not an authorization.** It steers *how*; it never rewrites the
+  goal, moves `doneCondition` (§10.2), or names a source for an outward action (§14). The harness
+  tells a wake to open a gate quoting any note that asks for one of those. A note left while a gate
+  is open waits for the wake after the answer, and `otto note` says so.
+- **When.** By default the next wake that would happen anyway; `--now` starts one if nothing is
+  running and no gate is open.
 
 ## 8. Waiting
 
@@ -819,6 +844,7 @@ otto run --skill <name> | --instructions <path> [--goal "…"] \
 otto ls                        # status · goal · who is blocking · wakes spent
 otto show <run>                # state, handoff, the open question, cold-readable
 otto answer <run> --choice approve | --text "…" | --file f  [--no-wake]
+otto note <run> "…" [--standing] [--now] | --list | --drop N
 otto logs <run> [-f]           # the journal, readable
 otto attach <run>              # watch the live wake, if there is one
 otto wake <run> [--watch | --detach tmux|none] [--dry-run]

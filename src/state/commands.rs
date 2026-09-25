@@ -361,6 +361,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         updated_at: created,
         authorizations: Map::new(),
         notified: std::collections::BTreeMap::new(),
+        notes: Vec::new(),
     };
     Ok(PlannedRun { state, path })
 }

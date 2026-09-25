@@ -190,6 +190,22 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// A person left a note for the run (`otto note`). The text is in `file`, verbatim.
+    NoteAdded {
+        note: String,
+        file: String,
+        standing: bool,
+    },
+    /// A completed wake carried these one-off notes, so they are delivered and leave `run.json`.
+    NotesDelivered {
+        notes: Vec<String>,
+        wake: u32,
+    },
+    /// A person withdrew a note before delivery, or retired a standing one.
+    NoteDropped {
+        note: String,
+        standing: bool,
+    },
     /// Poke sent a desktop notification about this run — once per `key`, so the journal says
     /// when a person was told, not just when the thing happened. See `notify`.
     Notified {

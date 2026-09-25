@@ -79,6 +79,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto ls` | Every live run and what each waits on, plus a `needs you:` summary of copy-pasteable answer commands. `--all` includes finished |
 | `otto show [id]` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option. With no id: the one run waiting on you, or the only live run |
 | `otto answer [id]` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing; Enter takes the gate's stated default. With no id: the one run waiting on you |
+| `otto note <id> "…"` | Tell a run something, gated or not: its next wake reads it verbatim. `--standing` gives it to every wake until `--drop N`; `--now` wakes the run to read it; `--list` shows what is pending. A note steers how the run works — it never changes the goal or authorizes a push; a wake gates anything like that |
 | `otto logs <id>` | The journal, readably: a status line on top, local times, a rule per day, token counts rounded. `-f` to keep following, `-n` for how many (like `tail`), `--since 2h`/`--since 2026-09-15`, `--event gate-opened,gate-closed`, `--decisions` for just the turning points |
 | `otto attach <id>` | Watch the wake running right now |
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
@@ -102,7 +103,7 @@ otto serve --open        # http://127.0.0.1:7878/
 
 Everything a person does from the CLI can be done from the page: the runs list with a **needs
 you** section whose option buttons answer a gate in one click, a run's full state and question,
-answering in your own words, waking, stopping and resuming a run, starting one from a form that mirrors
+answering in your own words, leaving and dropping notes, waking, stopping and resuming a run, starting one from a form that mirrors
 `otto run`'s flags (with a dry run), the journal with filters and live follow, a read-only view of
 the wake running right now (its tmux pane, or `wake.log` for a detached wake), and the reviver:
 its status, start/stop, and poke-now.
@@ -220,7 +221,7 @@ src/
 web/             the page (plain HTML/CSS/JS, compiled into the binary — no build step)
 harness/wake.md  the operating procedure every wake is given
 workflows/*.md   prose to wrap with --instructions (dev-flow, improve-flow, upgrade-flow)
-~/.otto/runs/<id>/   run.json · handoff.md · journal.jsonl · gates/ · artifacts/   ($OTTO_HOME)
+~/.otto/runs/<id>/   run.json · handoff.md · journal.jsonl · gates/ · notes/ · artifacts/   ($OTTO_HOME)
 ```
 
 ## Tests

@@ -386,6 +386,8 @@ pub struct RunDetail {
     pub gate: Option<GateView>,
     /// Shown when no gate is open: what the last wake left for the next one.
     pub handoff: Option<String>,
+    /// Standing notes, and one-off notes not yet delivered.
+    pub notes: Vec<NoteView>,
 }
 
 /// Everything needed to answer a gate cold, in one screen: where the run stands, what it last
@@ -419,8 +421,10 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         Some(_) => None,
         None => std::fs::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok(),
     };
+    let notes = note_views(&dir, &state);
     Ok(RunDetail {
         short,
+        notes,
         status_label: status_label(&state),
         wraps_kind: crate::state::commands::kind_str(state.wraps.kind),
         running,
@@ -587,6 +591,137 @@ pub fn answer_in_background(id: &str, choice: Option<&str>, text: Option<&str>, 
 }
 
 // ---------------------------------------------------------------------------
+// notes
+// ---------------------------------------------------------------------------
+
+/// A note as a person reads it back: its text, and whether a wake has seen it yet.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteView {
+    pub id: String,
+    pub standing: bool,
+    pub added_at: crate::clock::Timestamp,
+    pub text: String,
+    /// The wake whose prompt last carried it. For a one-off note still listed, that wake has not
+    /// completed — it is running now, or it failed and the note will be given again.
+    pub given_to_wake: Option<u32>,
+}
+
+pub fn note_views(dir: &std::path::Path, state: &RunState) -> Vec<NoteView> {
+    state
+        .notes
+        .iter()
+        .map(|note| NoteView {
+            id: note.id.clone(),
+            standing: note.standing,
+            added_at: note.added_at,
+            text: crate::notes::read_text(dir, note),
+            given_to_wake: note.given_to_wake,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteOutcome {
+    pub id: String,
+    pub short: String,
+    pub note: NoteView,
+    /// When a wake will read it, in words.
+    pub delivery: String,
+    pub wake: Option<WakeStart>,
+    /// Why `now` did not start a wake, when it was asked to and didn't.
+    pub not_woken: Option<String>,
+}
+
+/// Why a wake cannot be started for a note right now, or `None` when one can.
+pub fn why_not_wake_for_note(state: &RunState, running: bool) -> Option<String> {
+    if running {
+        return Some("a wake is already running".to_string());
+    }
+    if let Some(gate) = &state.gate {
+        return Some(format!("gate {} is open — answer it and the wake that follows reads the note", gate.id));
+    }
+    None
+}
+
+/// When the wakes will see a note just added, said plainly — a note is easy to mistake for an
+/// answer, and one sitting unread behind an open gate should not be a surprise.
+pub fn note_delivery(state: &RunState, running: bool, standing: bool) -> String {
+    let next = if running {
+        "the wake running now won't see it; the next one will".to_string()
+    } else if let Some(gate) = &state.gate {
+        format!("gate {} is open, so it reaches the wake after you answer it — a note is not an answer", gate.id)
+    } else {
+        match state.next_wake_at {
+            Some(at) => format!("the next wake reads it, {}", relative(at)),
+            None => "the next wake reads it".to_string(),
+        }
+    };
+    if standing {
+        format!("standing, until you drop it; {next}")
+    } else {
+        next
+    }
+}
+
+/// Record a note, and say when it will be read. Waking for it is the caller's business, because
+/// a terminal and the web page start wakes differently.
+pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let note = crate::notes::add(&id, text, standing)?;
+    let state = read_run(&id)?;
+    let dir = crate::paths::run_dir(&id)?;
+    let running = LockLiveness.probe(&id).is_busy();
+    Ok(NoteOutcome {
+        short: short_id(&id),
+        delivery: note_delivery(&state, running, standing),
+        note: NoteView {
+            text: crate::notes::read_text(&dir, &note),
+            id: note.id,
+            standing,
+            added_at: note.added_at,
+            given_to_wake: None,
+        },
+        id,
+        wake: None,
+        not_woken: None,
+    })
+}
+
+/// `add_note`, then — when `now` — a backgrounded wake to read it.
+pub fn note_in_background(id: &str, text: &str, standing: bool, now: bool) -> Result<NoteOutcome, OttoError> {
+    let mut outcome = add_note(id, text, standing)?;
+    if !now {
+        return Ok(outcome);
+    }
+    let state = read_run(&outcome.id)?;
+    if let Some(why) = why_not_wake_for_note(&state, LockLiveness.probe(&outcome.id).is_busy()) {
+        outcome.not_woken = Some(why);
+        return Ok(outcome);
+    }
+    match start_wake(&outcome.id, Caller::Background.strategy(state.launcher.detach), None) {
+        Ok(wake) => outcome.wake = Some(wake),
+        // The note stands either way; it is on disk for whichever wake comes next.
+        Err(err) => outcome.not_woken = Some(format!("the wake did not start: {}", err.message)),
+    }
+    Ok(outcome)
+}
+
+pub fn drop_note(id: &str, note: &str) -> Result<NoteView, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let dir = crate::paths::run_dir(&id)?;
+    let note = crate::notes::drop_note(&id, note)?;
+    Ok(NoteView {
+        text: crate::notes::read_text(&dir, &note),
+        id: note.id,
+        standing: note.standing,
+        added_at: note.added_at,
+        given_to_wake: note.given_to_wake,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // wake
 // ---------------------------------------------------------------------------
 
@@ -741,6 +876,8 @@ pub const DECISION_EVENTS: &[&str] = &[
     "gate-opened",
     "gate-closed",
     "gate-expired",
+    "note-added",
+    "note-dropped",
     "budget-warning",
     "budget-exhausted",
     "wake-incomplete",
