@@ -164,6 +164,7 @@ At process exit, `otto wake` checks two things and nothing else:
 |---|---|
 | `awaiting_human`, gate open | `otto answer`, or the gate's expiry |
 | `sleeping`, `nextWakeAt` set | poke |
+| `running`, nothing pending, clean exit, fresh handoff | the parent sleeps it for `policy.periodMinutes` (§8), then poke |
 | `blocked`, gate open | a human |
 | `done` / `failed` / `stopped` | nothing; the run is over |
 
@@ -359,6 +360,20 @@ A gate open longer than `policy.gateStaleAfterHours` (default 48) → journal an
 `otto state arm-timer <id> --in 3600` sets `status: sleeping` and `nextWakeAt`. That is the
 entire mechanism. Poke wakes it.
 
+**Every run has a period** — `policy.periodMinutes`, set by `otto run --period` (default `1h`).
+It is not a second mechanism, only a default for the first: when a wake exits 0, not killed, with
+a freshly rewritten handoff, and leaves the run `running` with no gate and no `nextWakeAt`, the
+parent writes `nextWakeAt = wake.startedAt + period` (never in the past) and sets `sleeping`.
+Anchoring on the start keeps an hourly run hourly instead of drifting by each wake's length.
+Poke is unchanged; it only ever reads `nextWakeAt`.
+
+- `arm-timer --in`/`--at` is a one-shot override. Starting a wake clears `nextWakeAt`, so the
+  override never outlives the sleep it was armed for. `arm-timer` with neither uses the period.
+- A gate takes precedence: an open gate means no `nextWakeAt` is filled. The answer starts a
+  wake, and that wake's clean exit puts the run back on its period.
+- A crash, a kill, a non-zero exit or a stale handoff is never given the period. It stays the
+  stranded run of §5.2 and gets the short backoff, so a broken wake cannot hide behind an hour.
+
 **Cron is gone.** v1 chained one-shot `CronCreate` jobs — with UTC→local conversion, a nudge off
 `:00`, a warning never to use a recurring job because it expires at day 7, and the observation,
 in `improve-flow`, that *"a session rarely survives 24 hours, so most days the wake comes from
@@ -483,7 +498,7 @@ translations. Each one converts an assumption about a continuous session into so
 | The wrapped thing says | The wake does |
 |---|---|
 | "ask the user" / "confirm with them" / names `AskUserQuestion` | Open a gate (§7) and exit. The answer arrives via `otto answer` |
-| "wait", "poll", "check back in an hour", "keep watching" | `arm-timer` and exit. Poke returns |
+| "wait", "poll", "check back in an hour", "keep watching" | Exit; the period brings a wake back. `arm-timer --in` for a different gap |
 | "remember", "keep track of", "note for later" | Write it — `handoff.md` for one wake, an artifact for longer |
 | Anything assuming earlier steps are in context | Read `handoff.md` and the artifacts. There is no earlier context |
 | Reading a big diff, a whole suite, a long file | Delegate to a subagent; take back the conclusion, not the contents |
@@ -777,7 +792,7 @@ classes. Only the first is supposed to happen.
 ```bash
 # start
 otto run --skill <name> | --instructions <path> [--goal "…"] \
-         [--until "…" | --perpetual] [--repo P] [--cadence 1h] \
+         [--until "…" | --perpetual] [--repo P] [--period 1h] \
          [--budget-wakes N --budget-hours H] \
          [--permission-mode M] [--detach tmux|bg|none] [--watch]
 

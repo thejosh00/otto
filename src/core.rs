@@ -655,18 +655,8 @@ pub fn humanise(n: u64) -> String {
 /// `--since`: an age (`45m`, `2h`, `3d`), a date (midnight, local), or a full timestamp.
 pub fn parse_since(text: &str, offset: time::UtcOffset) -> Result<time::OffsetDateTime, OttoError> {
     let text = text.trim();
-    if let Some((digits, unit)) = text.char_indices().last().map(|(i, c)| (&text[..i], c)) {
-        if let Ok(n) = digits.parse::<i64>() {
-            let ago = match unit {
-                'm' => Some(time::Duration::minutes(n)),
-                'h' => Some(time::Duration::hours(n)),
-                'd' => Some(time::Duration::days(n)),
-                _ => None,
-            };
-            if let Some(ago) = ago {
-                return Ok(crate::clock::now() - ago);
-            }
-        }
+    if let Some(ago) = crate::clock::parse_age(text) {
+        return Ok(crate::clock::now() - ago);
     }
     if let Ok(dt) = crate::clock::parse_iso(text) {
         return Ok(dt);

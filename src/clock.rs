@@ -59,10 +59,9 @@ impl Timestamp {
         Timestamp(now())
     }
 
-    /// From an already-computed instant — mainly for tests that build a timestamp at an
-    /// arbitrary offset from a fixed clock, where `in_minutes`/`in_seconds` (relative to the
-    /// real `now()`) would not do.
-    #[cfg(test)]
+    /// From an already-computed instant — a wake time anchored on something other than now, or
+    /// a test building a timestamp at an arbitrary offset from a fixed clock, where
+    /// `in_minutes`/`in_seconds` (relative to the real `now()`) would not do.
     pub fn at(dt: OffsetDateTime) -> Self {
         Timestamp(truncate_to_seconds(dt))
     }
@@ -106,6 +105,31 @@ impl<'de> Deserialize<'de> for Timestamp {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         parse_iso(&text).map(Timestamp).map_err(serde::de::Error::custom)
+    }
+}
+
+/// An age or period written the way a person would: `45m`, `2h`, `3d`. `None` for anything else,
+/// so each caller can say in its own words what it expected.
+pub fn parse_age(text: &str) -> Option<time::Duration> {
+    let text = text.trim();
+    let (i, unit) = text.char_indices().last()?;
+    let n = text[..i].parse::<i64>().ok()?;
+    match unit {
+        'm' => Some(time::Duration::minutes(n)),
+        'h' => Some(time::Duration::hours(n)),
+        'd' => Some(time::Duration::days(n)),
+        _ => None,
+    }
+}
+
+/// The inverse of `parse_age` for whole minutes: the largest unit that divides evenly.
+pub fn format_minutes(minutes: u64) -> String {
+    if minutes > 0 && minutes % (24 * 60) == 0 {
+        format!("{}d", minutes / (24 * 60))
+    } else if minutes > 0 && minutes % 60 == 0 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{minutes}m")
     }
 }
 
@@ -172,6 +196,18 @@ pub fn slugify(text: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use time::macros::datetime;
+
+    #[test]
+    fn ages_parse_and_minutes_format_in_the_largest_even_unit() {
+        assert_eq!(parse_age("45m"), Some(time::Duration::minutes(45)));
+        assert_eq!(parse_age("2h"), Some(time::Duration::hours(2)));
+        assert_eq!(parse_age("3d"), Some(time::Duration::days(3)));
+        assert_eq!(parse_age("hourly"), None);
+        assert_eq!(parse_age(""), None);
+        assert_eq!(format_minutes(60), "1h");
+        assert_eq!(format_minutes(90), "90m");
+        assert_eq!(format_minutes(1440), "1d");
+    }
 
     #[test]
     fn slugify_collapses_and_trims() {

@@ -288,6 +288,31 @@ fn finish_wake(
         Ok(())
     })?;
 
+    // A wake that finished cleanly and left nothing pending sleeps for the run's period. Only a
+    // clean exit that rewrote the handoff: a crash, a kill mid-work, or a wake that did nothing
+    // at all is exactly the stranded run the contract exists to catch, and it gets the backoff,
+    // not a full period. A wake that armed its own timer (the start of this wake cleared the last
+    // one) or opened a gate has already said what comes next.
+    if output.code == 0 && !output.timed_out {
+        transaction(id, |path, state| {
+            let cap = state.policy.handoff_max_bytes as usize;
+            if state.status == Status::Running
+                && state.gate.is_none()
+                && state.next_wake_at.is_none()
+                && contract::handoff_is_fresh(path, started_at, cap).is_ok()
+            {
+                let next = state.period_wake_at();
+                state.status = Status::Sleeping;
+                state.next_wake_at = Some(next);
+                crate::event::record(
+                    path,
+                    &Event::TimerArmed { next_wake_at: next, note: Some("period".to_string()) },
+                )?;
+            }
+            Ok(())
+        })?;
+    }
+
     // Re-read: the wake wrote to run.json while it ran, and that is what gets validated.
     let state = crate::state::read_run(id)?;
     let mut outcome = contract::validate(run_path, &state, started_at);
@@ -584,6 +609,7 @@ mod tests {
     fn a_wake_that_leaves_the_run_running_is_incomplete_and_backs_off() {
         let _h = TempHome::new();
         test_init("w-strand", "a goal").unwrap();
+        age_handoff("w-strand");
         let mut exec = FakeExec::new();
         exec.on_exec(|| leave_transcript("w-strand", 3, 50, 5, 0));
         run_wake(&args("w-strand"), &mut exec).unwrap();
@@ -597,6 +623,94 @@ mod tests {
         assert_eq!(state.budget.spent_wakes, 1);
         let journal = std::fs::read_to_string(crate::paths::run_dir("w-strand").unwrap().join("journal.jsonl")).unwrap();
         assert!(journal.contains("\"inputTokens\":150"), "usage is accounted even when the contract fails");
+    }
+
+    /// `init` writes a handoff moments before a test's wake starts, which the freshness
+    /// tolerance would count as this wake's. Backdate it so a wake that writes nothing is seen
+    /// to have written nothing.
+    fn age_handoff(id: &str) {
+        let path = crate::paths::run_dir(id).unwrap().join(HANDOFF_FILE);
+        let file = std::fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(std::time::SystemTime::now() - Duration::from_secs(3600)).unwrap();
+    }
+
+    fn write_handoff_only(id: &str) {
+        let path = crate::paths::run_dir(id).unwrap();
+        std::fs::write(path.join(HANDOFF_FILE), "# handoff\n## Next wake must\nCarry on.\n").unwrap();
+    }
+
+    fn minutes_until(at: Timestamp) -> i64 {
+        (at.dt() - crate::clock::now()).whole_minutes()
+    }
+
+    /// The period: a wake that did its work and said nothing about when to come back sleeps
+    /// for the run's own period, measured from when it started.
+    #[test]
+    fn a_clean_wake_that_arms_nothing_sleeps_for_the_period() {
+        let _h = TempHome::new();
+        test_init("w-period", "a goal").unwrap();
+        transaction("w-period", |_p, state| {
+            state.policy.period_minutes = 90;
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| write_handoff_only("w-period"));
+        run_wake(&args("w-period"), &mut exec).unwrap();
+
+        let state = read_run("w-period").unwrap();
+        assert_eq!(state.wake.as_ref().unwrap().outcome, Some(WakeOutcome::Complete));
+        assert_eq!(state.status, Status::Sleeping);
+        let expected = state.wake.as_ref().unwrap().started_at.dt() + time::Duration::minutes(90);
+        assert_eq!(state.next_wake_at.unwrap().dt(), expected, "anchored on the wake's start");
+    }
+
+    /// `arm-timer --in` is a one-off override: the wake's own choice stands for this sleep.
+    #[test]
+    fn a_wake_that_armed_its_own_timer_keeps_it() {
+        let _h = TempHome::new();
+        test_init("w-override", "a goal").unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-override"));
+        run_wake(&args("w-override"), &mut exec).unwrap();
+
+        let state = read_run("w-override").unwrap();
+        let minutes = minutes_until(state.next_wake_at.unwrap());
+        assert!((28..=30).contains(&minutes), "the wake asked for 30m, not the 60m period; got {minutes}m");
+    }
+
+    /// A crash is not a clean finish: it takes the short backoff, never a whole period, and it
+    /// still counts as incomplete.
+    #[test]
+    fn a_crashed_wake_backs_off_instead_of_sleeping_for_the_period() {
+        let _h = TempHome::new();
+        test_init("w-crash", "a goal").unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| write_handoff_only("w-crash"));
+        exec.queue(Output { code: 1, stdout: String::new(), stderr: "boom".into(), timed_out: false });
+        run_wake(&args("w-crash"), &mut exec).unwrap();
+
+        let state = read_run("w-crash").unwrap();
+        assert_eq!(state.incomplete_wakes, 1);
+        let minutes = minutes_until(state.next_wake_at.unwrap());
+        assert!(minutes <= crate::poke::backoff_minutes(1), "got {minutes}m");
+    }
+
+    /// A gate takes precedence over the period; the period resumes after it is answered.
+    #[test]
+    fn a_wake_that_opens_a_gate_does_not_also_sleep() {
+        let _h = TempHome::new();
+        test_init("w-gated", "a goal").unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| {
+            write_handoff_only("w-gated");
+            crate::state::ops::open_gate("w-gated", "approve", "Ship it?", None).unwrap();
+        });
+        run_wake(&args("w-gated"), &mut exec).unwrap();
+
+        let state = read_run("w-gated").unwrap();
+        assert_eq!(state.status, Status::AwaitingHuman);
+        assert!(state.next_wake_at.is_none(), "a gate waits on a person, not a clock");
     }
 
     /// The signal poke's backoff depends on. A wake starting is the only proof its spawn worked,
@@ -634,6 +748,7 @@ mod tests {
     fn repeated_failures_stop_retrying_and_open_a_gate() {
         let _h = TempHome::new();
         test_init("w-stuck", "a goal").unwrap();
+        age_handoff("w-stuck");
         transaction("w-stuck", |_p, state| {
             state.policy.max_incomplete_wakes = 2;
             Ok(())

@@ -88,6 +88,10 @@ pub struct InitArgs {
     /// Never: the run is retired with `otto stop`, not finished
     #[arg(long, help_heading = "When it is done")]
     pub perpetual: bool,
+    /// How often it wakes when a wake doesn't ask for something else: `30m`, `1h`, `1d`.
+    /// Measured from the start of one wake to the start of the next [default: 1h]
+    #[arg(long, value_name = "AGE", help_heading = "When it is done")]
+    pub period: Option<String>,
     /// Block with a gate after this many wakes (0: unlimited)
     #[arg(long = "budget-wakes", value_name = "N", default_value_t = 0, help_heading = "When it is done")]
     pub budget_wakes: u32,
@@ -151,6 +155,7 @@ impl Default for InitArgs {
             instructions: None,
             until: None,
             perpetual: false,
+            period: None,
             target: None,
             id: None,
             slug: None,
@@ -277,6 +282,17 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
     }
     for (k, v) in parse_kv(&args.policy, "--policy")? {
         policy.set(k, v);
+    }
+    // After `--policy`, so the dedicated flag wins over a `periodMinutes=` said the long way.
+    if let Some(period) = &args.period {
+        policy.period_minutes = match crate::clock::parse_age(period) {
+            Some(d) if d.whole_minutes() > 0 => d.whole_minutes() as u64,
+            _ => {
+                return Err(OttoError::usage(format!(
+                    "--period takes a length of time (30m, 1h, 1d), not {period:?}"
+                )))
+            }
+        };
     }
 
     let mut facts = Map::new();
@@ -638,10 +654,10 @@ pub fn close_gate(args: CloseGateArgs) -> Result<(), OttoError> {
 #[derive(clap::Args, Debug)]
 pub struct ArmTimerArgs {
     pub id: String,
-    /// ISO-8601 wake time
-    #[arg(long)]
+    /// ISO-8601 wake time. Give neither this nor `--in` to sleep for the run's own period
+    #[arg(long, conflicts_with = "seconds")]
     pub at: Option<String>,
-    /// seconds from now
+    /// seconds from now — a one-off override of the run's period, for this sleep only
     #[arg(long = "in", value_name = "SECONDS")]
     pub seconds: Option<i64>,
     #[arg(long, value_enum, default_value = "sleeping")]
@@ -659,15 +675,16 @@ pub struct ArmTimerArgs {
 }
 
 pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
-    if args.at.is_none() == args.seconds.is_none() {
-        return Err(OttoError::usage("give exactly one of --at or --in"));
+    if args.at.is_some() && args.seconds.is_some() {
+        return Err(OttoError::usage("give at most one of --at or --in"));
     }
     if args.check_script.is_some() != args.check_every.is_some() {
         return Err(OttoError::usage("give both --check-script and --check-every, or neither"));
     }
-    let wake = match &args.at {
-        Some(at) => Timestamp::parse(at)?,
-        None => Timestamp::in_seconds(args.seconds.unwrap()),
+    let wake = match (&args.at, args.seconds) {
+        (Some(at), _) => Timestamp::parse(at)?,
+        (None, Some(seconds)) => Timestamp::in_seconds(seconds),
+        (None, None) => read_run(&args.id)?.period_wake_at(),
     };
     let check = match (&args.check_script, args.check_every) {
         (Some(script), Some(every)) => {
@@ -1080,6 +1097,53 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("both --check-script and --check-every"), "got: {err}");
+    }
+
+    #[test]
+    fn arm_timer_with_no_time_sleeps_for_the_period() {
+        let _home = TempHome::new();
+        test_init("run-period", "hello-flow").unwrap();
+        transaction("run-period", |_p, state| {
+            state.policy.period_minutes = 120;
+            Ok(())
+        })
+        .unwrap();
+        arm_timer(ArmTimerArgs {
+            id: "run-period".to_string(),
+            at: None,
+            seconds: None,
+            status: Status::Sleeping,
+            note: None,
+            check_script: None,
+            check_every: None,
+        })
+        .unwrap();
+        let at = read_run("run-period").unwrap().next_wake_at.unwrap();
+        let minutes = (at.dt() - crate::clock::now()).whole_minutes();
+        assert!((118..=120).contains(&minutes), "got {minutes}m");
+    }
+
+    #[test]
+    fn period_defaults_to_an_hour_and_takes_an_age() {
+        let _home = TempHome::new();
+        test_init("run-p-default", "g").unwrap();
+        assert_eq!(read_run("run-p-default").unwrap().policy.period_minutes, 60);
+        init(InitArgs {
+            goal: "g".into(),
+            id: Some("run-p-day".into()),
+            period: Some("1d".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(read_run("run-p-day").unwrap().policy.period_minutes, 24 * 60);
+        let err = init(InitArgs {
+            goal: "g".into(),
+            id: Some("run-p-bad".into()),
+            period: Some("hourly".into()),
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("--period takes a length of time"), "got: {err}");
     }
 
     #[test]

@@ -344,6 +344,13 @@ function runView(id) {
       pill(d.statusLabel, d.running)));
   }
 
+  // Mirrors clock::format_minutes: the largest unit that divides evenly.
+  function formatMinutes(m) {
+    if (m % 1440 === 0) return `${m / 1440}d`;
+    if (m % 60 === 0) return `${m / 60}h`;
+    return `${m}m`;
+  }
+
   function renderFacts(d) {
     const s = d.state;
     const rows = [
@@ -361,6 +368,7 @@ function runView(id) {
     rows.push(["Used", used]);
     if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
     if (s.nextWakeAt) rows.push(["Next wake", `${relative(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`]);
+    rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     if (s.check) {
       rows.push(["Check", `${s.check.script} every ${s.check.everySeconds}s, next ${relative(s.check.nextCheckAt)} — last: ${s.check.lastResult || "not run yet"}`]);
     }
@@ -566,6 +574,7 @@ function newRunView() {
     h("fieldset", h("legend", "When it is done"),
       field("until", "Done when", h("input", { placeholder: "Otherwise the first wake proposes one and asks" })),
       h("label.check", { style: "margin-top:10px" }, (f.perpetual = h("input", { type: "checkbox" })), "Perpetual — never done; retired by stopping it"),
+      field("period", "Wakes every", h("input", { placeholder: "1h" }), "30m, 1h, 1d. How often it wakes when a wake doesn't ask for something else."),
       h("div.grid2",
         field("budgetWakes", "Wake budget", h("input", { type: "number", min: 0, value: 0 }), "Block with a gate after this many wakes. 0: unlimited."),
         field("budgetHours", "Hours budget", h("input", { type: "number", min: 0, value: 0 }), "0: unlimited."))),
@@ -611,6 +620,7 @@ function newRunView() {
       skillDirs: lines(f.skillDirs),
       until: text("until"),
       perpetual: f.perpetual.checked,
+      period: text("period"),
       budgetWakes: Number(f.budgetWakes.value) || 0,
       budgetHours: Number(f.budgetHours.value) || 0,
       launcher: f.launcher.value,

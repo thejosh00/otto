@@ -300,6 +300,9 @@ fn default_max_wake_minutes() -> u64 {
 fn default_max_incomplete_wakes() -> u32 {
     5
 }
+fn default_period_minutes() -> u64 {
+    60
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -318,6 +321,12 @@ pub struct Policy {
     pub max_incomplete_wakes: u32,
     #[serde(default)]
     pub perpetual: bool,
+    /// How long after a wake starts the next one is due, when the wake did not say otherwise.
+    /// The parent fills `nextWakeAt` from this for a wake that finished cleanly with nothing
+    /// pending, and `arm-timer` without `--in`/`--at` uses it too. A gate takes precedence;
+    /// once it is answered, the period resumes.
+    #[serde(rename = "periodMinutes", default = "default_period_minutes")]
+    pub period_minutes: u64,
     /// Anything `--policy` set that isn't one of the fields above.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -333,6 +342,7 @@ impl Default for Policy {
             max_wake_minutes: default_max_wake_minutes(),
             max_incomplete_wakes: default_max_incomplete_wakes(),
             perpetual: false,
+            period_minutes: default_period_minutes(),
             extra: Map::new(),
         }
     }
@@ -380,6 +390,12 @@ impl Policy {
             "perpetual" => match value.as_bool() {
                 Some(b) => self.perpetual = b,
                 None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "periodMinutes" => match value.as_u64() {
+                Some(n) if n > 0 => self.period_minutes = n,
+                _ => {
                     self.extra.insert(key, value);
                 }
             },
@@ -627,6 +643,22 @@ where
 }
 
 impl RunState {
+    /// When the next wake is due by `policy.periodMinutes` alone. Anchored on the start of the
+    /// wake in progress, so an hourly run stays hourly instead of drifting by each wake's own
+    /// length; with no wake in progress (a person arming it by hand), anchored on now. Never in
+    /// the past: a wake that outlived its period is due immediately, not retroactively.
+    pub fn period_wake_at(&self) -> crate::clock::Timestamp {
+        let period = time::Duration::minutes(self.policy.period_minutes as i64);
+        let now = crate::clock::Timestamp::now();
+        match &self.wake {
+            Some(wake) if wake.outcome.is_none() => {
+                let due = crate::clock::Timestamp::at(wake.started_at.dt() + period);
+                if due.dt() > now.dt() { due } else { now }
+            }
+            _ => crate::clock::Timestamp::at(now.dt() + period),
+        }
+    }
+
     /// Enter `blocked`, saying why. The only way in, so a blocked run always carries its reason;
     /// the caller still owes it a gate (`wake::contract`: blocked without one is stranded).
     pub fn block(&mut self, cause: BlockedCause, detail: Option<String>) {

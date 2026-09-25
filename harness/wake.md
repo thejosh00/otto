@@ -64,23 +64,32 @@ to bring the run back from:
 |---|---|
 | `awaiting_human` with a gate open | the person's answer |
 | `sleeping` with `nextWakeAt` set | the timer |
+| `running`, with `handoff.md` rewritten and a clean exit | the run's period — otto sleeps it for you |
 | `blocked` **with a gate open** | the person |
 | `done` / `failed` / `stopped` | nothing — the run is over |
 
-**A run left `running` with no gate and no wake time is stranded.** Nobody has been asked
-anything, no timer will fire, nothing will restart it, and `status` still says `running` so it
-looks fine. otto checks for this when you exit and treats it as a crash — the wake is recorded
-as incomplete and retried, which wastes the whole wake. Never let it happen.
+**Every run has a period** (`policy.periodMinutes`, an hour unless the run was started with
+`--period`). If you finish cleanly, rewrite the handoff, and leave the run `running` with no gate
+and no timer, otto puts it to sleep until one period after this wake *started*. That is the
+normal way to say "carry on as usual." Arm a timer only when this sleep should be different —
+`arm-timer --in 600` because CI takes ten minutes, `--at` for tomorrow morning. That override
+lasts one sleep; the wake after it is back on the period.
+
+**A wake that crashes, is killed at its deadline, or never rewrites the handoff is not given
+the period.** otto treats it as a crash — the wake is recorded as incomplete and retried on a
+short backoff, which wastes the whole wake.
 
 **Before you stop, in this order:**
 
 1. Write everything durable — artifacts, commits, notes.
 2. Rewrite `handoff.md` (below). This is not optional; otto checks for it.
-3. Set the stopping state: open a gate, arm a timer, or set a terminal status.
+3. Set the stopping state: open a gate, arm a timer if the period is wrong for this sleep, set a
+   terminal status — or do none of these and let the period bring you back.
 
 If you run out of road mid-work — something ambiguous turned up, you are near the wake's
-deadline, the budget is nearly spent — that is fine, but **open a gate or arm a short timer
-first**. Stopping is always allowed. Stopping *silently* is not.
+deadline, the budget is nearly spent — that is fine, but **rewrite the handoff first**, and
+open a gate or arm a short timer if waiting a whole period would be wrong. Stopping is always
+allowed. Stopping *silently* is not.
 
 ## handoff.md
 
@@ -113,7 +122,7 @@ you are wrapping assumes something a wake cannot provide, translate it:
 | It says | You do |
 |---|---|
 | "ask the user", "confirm with them", or names `AskUserQuestion` | Open a gate and stop. The answer arrives in a later wake |
-| "wait", "poll", "check back in an hour", "keep watching" | `otto state arm-timer` and stop. A wake returns |
+| "wait", "poll", "check back in an hour", "keep watching" | Stop; the period brings a wake back. `otto state arm-timer --in` if it needs a different gap |
 | "remember this", "keep track of", "note for later" | Write it — the handoff for one wake, an artifact for longer |
 | Anything assuming earlier steps are still in context | Read the handoff and the artifacts. There is no earlier context |
 | Reading a big diff, a whole test suite, a long file | Delegate to a subagent; keep the conclusion, not the contents |
@@ -159,12 +168,14 @@ it. If it turns out to be wrong, say so at a gate and let a person change it.
 
 ## Waiting
 
-`otto state arm-timer <id> --in <seconds>` sets `sleeping` and a wake time. That is the whole
-mechanism — poke wakes you. There is no cron to schedule and no gate to open for a wait; a
+The run's period is the default: finish cleanly with nothing pending and poke wakes you one
+period after this wake started. `otto state arm-timer <id> --in <seconds>` (or `--at`) overrides
+it for one sleep; `arm-timer <id>` with neither sleeps for the period explicitly. Either way poke
+wakes you. There is no cron to schedule and no gate to open for a wait; a
 timer gate would mean closing and reopening the same question forever.
 
 Ticks must be cheap: one status check, then `otto state tick <id>` (add `--progress` when
-something actually changed), re-arm, stop. Only a real change deserves real work.
+something actually changed), rewrite the handoff, stop. Only a real change deserves real work.
 
 **Progress means durable state changed**, not that the goal was reached. A proposal recorded
 and rejected is progress. When `tick` reports `exhausted`, stop sleeping: set `blocked`
@@ -204,8 +215,8 @@ a timeout — is treated as "changed" too: poke fails open to a real wake rather
 that might be lying, so write yours defensively (`set -e`, a clear final exit) rather than
 whatever the last command happened to return.
 
-This is purely an accessory to the sleep you'd arm anyway — the `--in <seconds>` you'd already be
-setting is untouched and still fires a real wake regardless of what the check has been reporting.
+This is purely an accessory to the sleep itself — the period, or the `--in <seconds>` you give
+alongside it, is untouched and still fires a real wake regardless of what the check has been reporting.
 That's on purpose: it's the same re-derivation guarantee every wake already gets, not a new one,
 and it's what catches a check script that's gone stale or wrong. Skip this entirely for anything
 that isn't genuinely cheap to check outside an LLM — a plain `arm-timer` is the right default, and

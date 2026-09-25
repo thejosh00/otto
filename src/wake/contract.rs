@@ -78,7 +78,7 @@ pub fn stopping_state_is_legal(state: &RunState) -> Result<(), String> {
 /// Did *this* wake write the handoff? An untouched file from three wakes ago is worse than a
 /// missing one: it reads as current and quietly sends the next wake back to stale instructions.
 /// Compared by mtime against when the wake started, so rewriting identical content still counts.
-fn handoff_is_fresh(run_path: &Path, started_at: std::time::SystemTime, cap: usize) -> Result<(), String> {
+pub fn handoff_is_fresh(run_path: &Path, started_at: std::time::SystemTime, cap: usize) -> Result<(), String> {
     let path = run_path.join(crate::state::commands::HANDOFF_FILE);
     let meta = match std::fs::metadata(&path) {
         Ok(meta) => meta,

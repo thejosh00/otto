@@ -237,6 +237,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if let Some(at) = state.next_wake_at {
         println!("  next wake {} ({at})", crate::clock::relative(at));
     }
+    println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
     if let Some(check) = &state.check {
         // Opt-in only (DESIGN.md §8) — kept cold-readable like everything else here, since a
         // check script's whole point is to run where nobody is watching.

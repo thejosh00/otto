@@ -126,6 +126,12 @@ no table to validate against. At the moment a wake's process exits, it checks tw
    or terminal.
 2. **This wake rewrote `handoff.md`**, within its cap.
 
+Every run has a **period** (`--period`, default `1h`). A wake that exits cleanly, rewrote the
+handoff, and left the run `running` with nothing pending is put to sleep by otto until one period
+after it started — so "carry on as usual" needs no timer at all. `arm-timer --in`/`--at` overrides
+the period for a single sleep; a gate takes precedence over it, and once answered the period
+resumes. A crash or a kill never earns the period: it gets the backoff below.
+
 Pass and it is `wake-complete`. Fail — for any reason, including a crash, a kill at its deadline,
 or a model that simply stopped talking — and it is `wake-incomplete`: backoff, retry, and after
 enough consecutive failures, `blocked` plus a gate explaining what has been happening.
