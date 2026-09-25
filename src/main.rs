@@ -1,5 +1,6 @@
 mod cli;
 mod clock;
+mod core;
 mod detach;
 mod error;
 mod event;
@@ -11,6 +12,7 @@ mod launchd;
 mod liveness;
 mod paths;
 mod poke;
+mod server;
 mod spawner;
 mod state;
 mod wake;
@@ -40,6 +42,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Attach(args) => human::attach(args),
         Command::Stop(args) => human::stop(args),
         Command::Install(args) => install::install(args),
+        Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {
             AgentCommand::Start => launchd::start(),
             AgentCommand::Stop => launchd::stop(),

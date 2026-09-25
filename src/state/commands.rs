@@ -54,7 +54,11 @@ fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, cr
 
 /// Everything that describes a run. Grouped in `--help` the way a person decides them: what to
 /// run, when it is finished, where it runs, what it may do — and the knobs almost nobody sets.
-#[derive(clap::Args, Debug)]
+///
+/// Also what the web page's new-run form posts, as camelCase JSON: any field left out takes the
+/// same default the flag does, so a run started from either place is the same run.
+#[derive(clap::Args, Debug, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitArgs {
     /// What this run is trying to achieve. The only thing that survives every wake unaltered,
     /// and the only thing that can say when to stop

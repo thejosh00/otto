@@ -28,6 +28,18 @@ impl OttoError {
     }
 }
 
+impl OttoError {
+    /// The same distinctions as the exit code, for a caller answering over HTTP.
+    pub fn http_status(&self) -> u16 {
+        match self.code {
+            1 => 400,
+            2 => 409,
+            3 => 404,
+            _ => 500,
+        }
+    }
+}
+
 impl fmt::Display for OttoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)

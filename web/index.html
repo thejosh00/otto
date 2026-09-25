@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>otto</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/" aria-label="otto — runs">
+      <svg viewBox="0 0 92 110" width="20" height="24" aria-hidden="true">
+        <path class="brand-ink" d="M14 20 H78 M14 20 V90 M78 20 V90" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="46" cy="56" r="9" fill="var(--accent)"/>
+      </svg>
+      <span>otto</span>
+    </a>
+    <nav>
+      <a href="#/" data-nav="runs">Runs</a>
+      <a href="#/new" data-nav="new">New run</a>
+      <a href="#/agent" data-nav="agent">Reviver</a>
+    </nav>
+  </header>
+  <main id="view" aria-live="polite"></main>
+  <footer class="foot"><span id="home"></span></footer>
+  <div id="toast" role="status" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

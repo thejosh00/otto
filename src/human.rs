@@ -1,5 +1,6 @@
-//! The commands a person uses. `otto state` remains the machine surface a wake writes through;
-//! everything here is a thin composition over it plus formatting.
+//! The commands a person uses in a terminal. `otto state` remains the machine surface a wake
+//! writes through; what each command *does* lives in `core`, shared with the web server, and
+//! everything here is how it reads in a terminal: formatting, and the one interactive prompt.
 //!
 //! This is where v2 differs most visibly from v1. A run used to be driven from *inside* a Claude
 //! Code session: you typed `/otto start`, and answering a gate meant attaching to tmux and
@@ -10,14 +11,22 @@
 //! to find out a run is waiting, and `otto answer` works from a script, over ssh, or from a phone.
 //! tmux becomes somewhere to *look* rather than the interface.
 
-use crate::clock::relative;
+use crate::core::{Caller, LogQuery};
 use crate::error::OttoError;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::commands::InitArgs;
-use crate::paths::{short_id, short_id_among};
-use crate::state::{read_all_runs, read_run, Blocked, BlockedCause, CheckResult, Detach, RunEntry, RunState, Status};
-use serde_json::Value;
+use crate::state::{read_run, CheckResult, Detach};
 use std::io::{IsTerminal, Write as _};
+
+#[cfg(test)]
+use crate::core::{
+    blocked_explanation, blocking, humanise, implied_run, logs_header, parse_line, parse_since, Filter, Line, Renderer,
+    DECISION_EVENTS,
+};
+#[cfg(test)]
+use crate::state::{BlockedCause, Status};
+
+pub(crate) use crate::core::detach_of;
 
 // ---------------------------------------------------------------------------
 // otto run
@@ -43,42 +52,14 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
     }
     let detach = args.init.detach;
     if args.dry_run {
-        // Everything `init_run` would decide, and the same refusals, with nothing on disk — so a
-        // flag can be checked before it costs a run directory and a wake.
-        let planned = crate::state::commands::plan_run(&args.init)?;
-        crate::wake::launcher::check_resolvable(&planned.state)?;
-        println!("{}", planned.state.id);
-        println!("{}", crate::wake::first_wake_dry_run_line(&planned.state, &planned.path));
+        let planned = crate::core::plan_run(&args.init)?;
+        println!("{}", planned.id);
+        println!("{}", planned.first_wake);
         return Ok(());
     }
-    let id = crate::state::commands::init_run(args.init)?;
+    let id = crate::core::create_run(args.init)?;
     println!("{id}");
-    // Fail before the first wake rather than after it: a launcher that cannot resolve what the
-    // run wraps produces a wake that spends money and achieves nothing.
-    crate::wake::launcher::check_resolvable(&read_run(&id)?)?;
     start_wake(&id, detach, None)
-}
-
-/// Wait for an in-flight wake to finish, bounded.
-///
-/// A wake writes its gate to disk and then spends a few more seconds on its handoff and exit, so
-/// `otto ls` can show a question as open while the wake that asked it is still running. Answering
-/// in that window used to fail: `close_gate` succeeded, then the spawn hit the wake lock and
-/// reported "a wake is already running", which looks like the answer was rejected when it was
-/// safely recorded. Waiting is the honest fix — the work is nearly done, and the alternative
-/// (spawning anyway) is two wakes on one run.
-fn wait_for_wake_to_finish(id: &str) -> bool {
-    if !LockLiveness.probe(id).is_busy() {
-        return true;
-    }
-    println!("a wake is still finishing — waiting for it before continuing the run");
-    for _ in 0..(crate::spawner::CONFIRM_SECONDS * 4) {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        if !LockLiveness.probe(id).is_busy() {
-            return true;
-        }
-    }
-    false
 }
 
 /// `otto wake <id>` — force one wake now, backgrounded however the run asks for.
@@ -103,17 +84,7 @@ pub fn wake_command(mut args: crate::wake::WakeArgs) -> Result<(), OttoError> {
         // ones — `--dry-run` and `--answer` both have to survive.
         Detach::None => crate::wake::wake(args),
         Detach::Tmux => {
-            if LockLiveness.probe(&args.id).is_busy() {
-                // The foreground path gets this from the wake lock. The background path would not:
-                // the child would die on the lock while `spawner::wait_for_hold` saw that very lock
-                // and reported success, so a busy run has to be refused out here instead.
-                return Err(OttoError::conflict(format!(
-                    "a wake is already running for {} — `otto attach {}` to watch it, or wait for \
-                     it to finish",
-                    args.id,
-                    short_id(&args.id)
-                )));
-            }
+            crate::core::refuse_if_busy(&args.id)?;
             start_wake(&args.id, Detach::Tmux, args.answer)
         }
     }
@@ -147,33 +118,11 @@ fn wake_destination(args: &crate::wake::WakeArgs, state: &crate::state::RunState
 /// `spawner::Strategy::Foreground` — never the detached-background strategy poke uses for the
 /// same preference; see `spawner`'s module doc for why those used to be conflated.
 fn start_wake(id: &str, detach: Detach, answer: Option<String>) -> Result<(), OttoError> {
-    let mut exec = crate::exec::RealExec;
-    match detach {
-        Detach::None => crate::spawner::start(id, crate::spawner::Strategy::Foreground, answer.as_deref(), &mut exec)
-            .map(|_| ()),
-        Detach::Tmux => {
-            let before = crate::spawner::wake_number(id);
-            let handle = crate::spawner::start(id, crate::spawner::Strategy::Tmux, answer.as_deref(), &mut exec)?;
-            // Confirm it actually started. A detached wake that dies immediately — a bad PATH,
-            // a lost $OTTO_HOME, a missing binary — takes its tmux session with it and writes
-            // nothing anywhere, so "wake started" would be a lie nobody could check. Waiting for
-            // the wake number to move is definitive: `otto wake` records it before spawning.
-            if !crate::spawner::wait_for_hold(id, before) {
-                return Err(OttoError::usage(format!(
-                    "started tmux session {} but no wake took hold within {}s — the wake \
-                     process exited immediately. Run `otto wake {} --watch` in this terminal to \
-                     see why.",
-                    handle.session.unwrap_or_default(),
-                    crate::spawner::CONFIRM_SECONDS,
-                    short_id(id)
-                )));
-            }
-            if let Some(note) = handle.description {
-                println!("{note}");
-            }
-            Ok(())
-        }
+    let started = crate::core::start_wake(id, Caller::Terminal.strategy(detach), answer.as_deref())?;
+    if let Some(note) = started.note {
+        println!("{note}");
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -187,116 +136,9 @@ pub struct LsArgs {
     pub all: bool,
 }
 
-/// Whatever the run is waiting on, in a few words. This is the column that answers "which of my
-/// runs needs me?", so a gate names its question rather than just its id.
-fn blocking(state: &RunState, wake_running: bool) -> String {
-    if let Some(gate) = &state.gate {
-        // The wake that opened this gate does not always exit right away — a model that keeps
-        // working past "stop there" leaves the lock held. Without this, `otto ls` reads as
-        // "waiting on you" when a wake is in fact still alive and could race an answer.
-        return if wake_running {
-            format!("you: gate {} {} (wake {} still running)", gate.id, gate.slug, state.wake.as_ref().map(|w| w.n).unwrap_or(0))
-        } else {
-            format!("you: gate {} {}", gate.id, gate.slug)
-        };
-    }
-    if wake_running {
-        let n = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
-        return format!("working (wake {n})");
-    }
-    match state.status {
-        Status::Sleeping => match state.next_wake_at {
-            Some(at) => format!("timer: {}", relative(at)),
-            None => "nothing — sleeping with no wake time".to_string(),
-        },
-        Status::Done | Status::Failed | Status::Stopped => "—".to_string(),
-        // Not running and nothing pending. The validator turns this into a retry, so seeing it
-        // here means a wake is between attempts, or something went wrong outside a wake.
-        _ => "nothing scheduled".to_string(),
-    }
-}
-
-/// The status as a person should read it. `blocked` on its own sends them to the logs; the
-/// cause says whether that is even the right place to look.
-fn status_label(state: &RunState) -> String {
-    if state.status == Status::Blocked {
-        format!("blocked ({})", blocked_record(state).0.cause.label())
-    } else {
-        crate::state::commands::status_str(state.status).to_string()
-    }
-}
-
-struct LsRow {
-    id: String,
-    short: String,
-    status: String,
-    phase: String,
-    blocking: String,
-    wakes: String,
-}
-
 pub fn ls(args: LsArgs) -> Result<(), OttoError> {
-    let liveness = LockLiveness;
-    let all_ids = crate::paths::all_run_ids();
-    let mut rows: Vec<LsRow> = Vec::new();
-    // Gates a person can act on right now, and sleeping runs — the two things `otto ls` exists
-    // to surface: what needs you, and (paired with the reviver check below) what might silently
-    // never come back to you at all.
-    let mut needs_you: Vec<(String, String, Vec<String>)> = Vec::new();
-    let mut sleeping_count = 0usize;
-    for entry in read_all_runs()? {
-        let state = match entry {
-            crate::state::RunEntry::Readable(state) => state,
-            crate::state::RunEntry::Unreadable { id } => {
-                if args.all {
-                    let short = short_id_among(&id, &all_ids);
-                    rows.push(LsRow {
-                        id,
-                        short,
-                        status: "unreadable".to_string(),
-                        phase: "?".to_string(),
-                        blocking: "a person needs to look".to_string(),
-                        wakes: "?".to_string(),
-                    });
-                }
-                continue;
-            }
-        };
-        if state.status.is_terminal() && !args.all {
-            continue;
-        }
-        let running = liveness.probe(&state.id).is_busy();
-        if let Some(gate) = &state.gate {
-            let dir = crate::paths::run_dir(&state.id).ok();
-            let question = dir.and_then(|d| crate::gate::read_question(&d, gate).ok()).unwrap_or_default();
-            // The default leads, so the command printed first is the one the wake recommended.
-            let options = crate::gate::options_default_first(&question);
-            needs_you.push((short_id_among(&state.id, &all_ids), format!("gate {} {}", gate.id, gate.slug), options));
-        } else if !running && state.status == Status::Sleeping {
-            sleeping_count += 1;
-        }
-        // Wakes, not dollars. There is no per-wake cost to show since otto stopped passing `-p`
-        // (see `wake::launcher`), and a `$0.00` column that can never change is worse than no
-        // column — it reads as a run that has cost nothing. Wakes against their budget is the
-        // number that still means something at a glance; tokens are per-wake and live in the
-        // journal, which is where a question about one wake belongs.
-        let spent = state.budget.spent_wakes;
-        let limit = state.budget.wakes;
-        let wakes = if limit > 0 {
-            format!("{spent}/{limit}")
-        } else {
-            spent.to_string()
-        };
-        let short = short_id_among(&state.id, &all_ids);
-        rows.push(LsRow {
-            id: state.id.clone(),
-            short,
-            status: status_label(&state),
-            phase: state.phase.clone(),
-            blocking: blocking(&state, running),
-            wakes,
-        });
-    }
+    let view = crate::core::list_runs(args.all)?;
+    let rows = &view.rows;
     if rows.is_empty() {
         println!("no runs{}", if args.all { "" } else { " (--all includes finished ones)" });
         return Ok(());
@@ -310,24 +152,23 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  WAKES",
         "ID", "SHORT", "STATUS", "PHASE", "WAITING ON"
     );
-    for row in &rows {
+    for row in rows {
         println!(
             "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {}",
             row.id, row.short, row.status, row.phase, row.blocking, row.wakes
         );
     }
-    if sleeping_count > 0 {
-        if let Some(false) = crate::launchd::is_loaded() {
-            println!(
-                "\nwarning: {sleeping_count} run(s) are sleeping on a timer, but the reviver is \
-                 not registered — `otto agent start` to fix, or they will never wake on their own"
-            );
-        }
+    if let Some(sleeping_count) = view.stranded_sleepers {
+        println!(
+            "\nwarning: {sleeping_count} run(s) are sleeping on a timer, but the reviver is \
+             not registered — `otto agent start` to fix, or they will never wake on their own"
+        );
     }
-    if !needs_you.is_empty() {
+    if !view.needs_you.is_empty() {
         println!("\nneeds you:");
-        for (id, label, options) in &needs_you {
-            match options.as_slice() {
+        for needs in &view.needs_you {
+            let (id, label) = (&needs.short, &needs.label);
+            match needs.options.as_slice() {
                 [] => println!("  otto answer {id} --choice <option>   # {label} — `otto show {id}` for the question"),
                 [only] => println!("  otto answer {id} --choice \"{only}\"   # {label}"),
                 [first, rest @ ..] => {
@@ -351,55 +192,13 @@ pub struct ShowArgs {
     pub id: Option<String>,
 }
 
-/// The run a command means when none is named. With one gate open anywhere, it is that run —
-/// `otto ls` said "needs you", and this is the reply. Otherwise, only when `or_only_live` and
-/// exactly one run is live, that one. Anything else is a question back, naming what to type.
-fn implied_run(verb: &str, or_only_live: bool) -> Result<String, OttoError> {
-    let mut waiting: Vec<String> = Vec::new();
-    let mut live: Vec<String> = Vec::new();
-    for entry in read_all_runs()? {
-        let RunEntry::Readable(state) = entry else { continue };
-        if state.status.is_terminal() {
-            continue;
-        }
-        if state.gate.is_some() {
-            waiting.push(state.id.clone());
-        }
-        live.push(state.id);
-    }
-    let ids = crate::paths::all_run_ids();
-    let name_each = |runs: &[String]| -> String {
-        runs.iter().map(|id| format!("`otto {verb} {}`", short_id_among(id, &ids))).collect::<Vec<_>>().join(", ")
-    };
-    match (waiting.as_slice(), live.as_slice()) {
-        ([only], _) => Ok(only.clone()),
-        ([], [only]) if or_only_live => Ok(only.clone()),
-        ([], []) => Err(OttoError::conflict("no run is live — `otto ls --all` to see finished ones")),
-        ([], _) => Err(OttoError::conflict(format!(
-            "no run is waiting on you — say which: {}",
-            name_each(&live)
-        ))),
-        (several, _) => Err(OttoError::usage(format!(
-            "{} runs are waiting on you — say which: {}",
-            several.len(),
-            name_each(several)
-        ))),
-    }
-}
-
 /// Everything needed to answer a gate cold, in one screen: where the run stands, what it last
-/// did, and the question in full. Someone arriving eight hours later has no transcript, because
-/// the session that asked is gone.
+/// did, and the question in full.
 pub fn show(args: ShowArgs) -> Result<(), OttoError> {
-    let id = match args.id {
-        Some(id) => crate::paths::resolve_run_id(&id)?,
-        None => implied_run("show", true)?,
-    };
-    let state = read_run(&id)?;
-    let dir = crate::paths::run_dir(&id)?;
-    let running = LockLiveness.probe(&id).is_busy();
+    let detail = crate::core::run_detail(args.id.as_deref())?;
+    let state = &detail.state;
     // The full id leads the screen; the commands below it use the short form `otto ls` shows.
-    let short = short_id(&id);
+    let short = &detail.short;
 
     println!("{}  ({:?})", state.id, state.status);
     println!("  goal      {}", state.goal);
@@ -410,17 +209,13 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         }
         None => println!("  done when (not yet decided — the next wake proposes one and asks)"),
     }
-    println!(
-        "  wraps     {} {}",
-        crate::state::commands::kind_str(state.wraps.kind),
-        state.wraps.reference.as_deref().unwrap_or("")
-    );
+    println!("  wraps     {} {}", detail.wraps_kind, state.wraps.reference.as_deref().unwrap_or(""));
     println!("  phase     {}", state.phase);
     if let Some(wake) = &state.wake {
         println!(
             "  wake      {} — {}{}",
             wake.n,
-            if running { "running now" } else { "finished" },
+            if detail.running { "running now" } else { "finished" },
             wake.outcome
                 .map(|o| format!(", {}", format!("{o:?}").to_lowercase()))
                 .unwrap_or_default()
@@ -440,7 +235,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         println!("  failed    {} wake(s) in a row did not finish", state.incomplete_wakes);
     }
     if let Some(at) = state.next_wake_at {
-        println!("  next wake {} ({at})", relative(at));
+        println!("  next wake {} ({at})", crate::clock::relative(at));
     }
     if let Some(check) = &state.check {
         // Opt-in only (DESIGN.md §8) — kept cold-readable like everything else here, since a
@@ -455,90 +250,37 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
             "  check     {} every {}s, next {} — last: {}",
             check.script,
             check.every_seconds,
-            relative(check.next_check_at),
+            crate::clock::relative(check.next_check_at),
             last
         );
     }
-    if state.status == Status::Blocked {
-        println!("\n{}", blocked_explanation(&state, &short));
+    if let Some(explanation) = &detail.blocked_explanation {
+        println!("\n{explanation}");
     }
 
-    if let Some(gate) = &state.gate {
+    if let Some(gate) = &detail.gate {
         println!("\n─── open gate {} — {} ───\n", gate.id, gate.slug);
-        match std::fs::read_to_string(dir.join(&gate.file)) {
-            Ok(text) => println!("{}", text.trim_end()),
-            Err(_) => println!("(gate file {} is missing)", gate.file),
+        match &gate.text {
+            Some(text) => println!("{}", text.trim_end()),
+            None => println!("(gate file {} is missing)", gate.file),
         }
-        let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
-        let options = crate::gate::parse_options(&question);
-        let default = crate::gate::parse_default(&question, &options);
         println!("\nAnswer it with:");
-        if options.is_empty() {
+        if gate.options.is_empty() {
             println!("  otto answer {short} --choice <option>");
         } else {
-            for option in &options {
-                let mark = if default.as_deref() == Some(option) { "   # default" } else { "" };
+            for option in &gate.options {
+                let mark = if gate.default.as_deref() == Some(option) { "   # default" } else { "" };
                 println!("  otto answer {short} --choice \"{option}\"{mark}");
             }
         }
         println!("  otto answer {short} --text \"…\"");
     } else {
-        let handoff = dir.join(crate::state::commands::HANDOFF_FILE);
-        match std::fs::read_to_string(&handoff) {
-            Ok(text) => println!("\n─── handoff ───\n{}", text.trim_end()),
-            Err(_) => println!("\n(no handoff yet)"),
+        match &detail.handoff {
+            Some(text) => println!("\n─── handoff ───\n{}", text.trim_end()),
+            None => println!("\n(no handoff yet)"),
         }
     }
     Ok(())
-}
-
-/// Why the run is blocked and what to do about it, in one line, matched to the cause. This used
-/// to say "blocked after repeated wake failures — see the logs, then retry the wake" for every
-/// blocked run, and was seen saying it to a run whose wakes had all completed: it had stalled,
-/// nothing had failed, and retrying was the one thing that could not help.
-fn blocked_explanation(state: &RunState, short: &str) -> String {
-    let gate = match &state.gate {
-        Some(gate) => format!("answer gate {} below", gate.id),
-        // The contract forbids this state; if it is seen anyway, say what to do rather than nothing.
-        None => format!("no gate is open, so nothing can unblock it — `otto wake {short} --watch` or `otto stop {short}`"),
-    };
-    let (blocked, inferred) = blocked_record(state);
-    let detail = blocked.detail.as_deref();
-    let line = match blocked.cause {
-        BlockedCause::WakeFailures => format!(
-            "blocked: {} wake(s) in a row did not finish{} — `otto logs {short}` for what happened, \
-             `otto wake {short} --watch` to retry one in this terminal, or {gate}",
-            state.incomplete_wakes,
-            detail.map(|d| format!(" (last: {d})")).unwrap_or_default()
-        ),
-        BlockedCause::Budget => format!(
-            "blocked: {} — nothing is wrong with the work; {gate}",
-            detail.unwrap_or("a budget ceiling was reached")
-        ),
-        BlockedCause::Stall => format!(
-            "blocked: {} tick(s) in a row changed nothing (policy maxTicksWithoutProgress = {}) — nothing \
-             failed, the run is asking whether to keep going; {gate}",
-            state.ticks_without_progress, state.policy.max_ticks_without_progress
-        ),
-        BlockedCause::Instructions => format!(
-            "blocked by its instructions{} — {gate}",
-            detail.map(|d| format!(": {d}")).unwrap_or_default()
-        ),
-    };
-    if inferred {
-        format!("{line}\n(cause inferred from the run's counters: it was blocked before otto recorded reasons)")
-    } else {
-        line
-    }
-}
-
-/// The blocked record, or — for a run blocked before otto kept one — the same inference
-/// `set-status` makes today, flagged as such. The `bool` is "inferred".
-fn blocked_record(state: &RunState) -> (Blocked, bool) {
-    match &state.blocked {
-        Some(blocked) => (blocked.clone(), false),
-        None => (Blocked { cause: state.inferred_block_cause(), detail: None, at: state.updated_at }, true),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -562,24 +304,6 @@ pub struct AnswerArgs {
     /// Record the answer but don't wake the run yet
     #[arg(long = "no-wake")]
     pub no_wake: bool,
-}
-
-/// Match `choice` against the gate's own options, case-insensitively, and record the gate's
-/// casing rather than the user's — so the journal always shows the option exactly as named in
-/// the question, whichever case someone typed. An empty `options` (a question with no parseable
-/// list) skips validation entirely: most gates are free-form prose from an arbitrary wrapped
-/// skill, and refusing those would break far more than it catches.
-fn resolve_choice(choice: &str, options: &[String]) -> Result<String, OttoError> {
-    if options.is_empty() {
-        return Ok(choice.to_string());
-    }
-    match options.iter().find(|o| o.eq_ignore_ascii_case(choice.trim())) {
-        Some(matched) => Ok(matched.clone()),
-        None => Err(OttoError::usage(format!(
-            "\"{choice}\" is not one of this gate's options: {}",
-            options.join(", ")
-        ))),
-    }
 }
 
 /// Print the question and, when the gate lists options, a numbered menu; read one line from
@@ -635,34 +359,22 @@ fn stdin_is_terminal() -> bool {
 }
 
 pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
-    let id = match &args.id {
-        Some(id) => crate::paths::resolve_run_id(id)?,
-        None => implied_run("answer", false)?,
-    };
-    let short = short_id(&id);
-    let state = read_run(&id)?;
-    let gate = state.gate.as_ref().ok_or_else(|| {
-        OttoError::conflict(format!(
-            "{id} has no gate open — nothing is being asked. `otto show {short}` for where it stands"
-        ))
-    })?;
-    let slug = gate.slug.clone();
-    let dir = crate::paths::run_dir(&id)?;
-    let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
-    let options = crate::gate::parse_options(&question);
+    let pending = crate::core::pending_gate(args.id.as_deref())?;
+    let (id, short) = (&pending.id, &pending.short);
+    let options = &pending.options;
 
     // Resolve the answer once, whichever way it arrived, so there is exactly one reading of it:
     // what gets recorded verbatim and what the wake sees are the same string.
     let answer = match (&args.choice, &args.text, &args.file) {
-        (Some(choice), _, _) => resolve_choice(choice, &options)?,
+        (Some(choice), _, _) => crate::core::resolve_choice(choice, options)?,
         (_, Some(text), _) => text.clone(),
         (_, _, Some(path)) => {
             std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?
         }
         (None, None, None) => {
             if stdin_is_terminal() {
-                let default = crate::gate::parse_default(&question, &options);
-                interactive_prompt(&question, &options, default.as_deref())?
+                let default = crate::gate::parse_default(&pending.question, options);
+                interactive_prompt(&pending.question, options, default.as_deref())?
             } else if options.is_empty() {
                 return Err(OttoError::usage(
                     "give the answer: --choice <option>, --text \"…\", or --file <path>".to_string(),
@@ -676,20 +388,19 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
         }
     };
 
-    // `ops::close_gate` records the answer verbatim and returns `running`, so the wake that
-    // follows sees an answered gate. It takes the run lock inside its own transaction and
-    // releases it on return, so the wake below is sequential rather than nested — `RunLock` is
-    // not reentrant and holding it across the wake would deadlock the wake's own first write.
-    crate::state::ops::close_gate(&id, Some(&answer), Status::Running)?;
-    println!("recorded against gate {} ({slug})", gate.id);
+    crate::core::record_answer(&pending, &answer)?;
+    println!("recorded against gate {} ({})", pending.gate_id, pending.slug);
 
     if args.no_wake {
         println!("not waking it — `otto wake {short}` when you want it to continue");
         return Ok(());
     }
+    if LockLiveness.probe(id).is_busy() {
+        println!("a wake is still finishing — waiting for it before continuing the run");
+    }
     // The answer is already on disk, so if a wake is somehow still running after the wait, saying
     // so is better than failing: poke will carry the run on from here either way.
-    if !wait_for_wake_to_finish(&id) {
+    if !crate::core::wait_for_wake_to_finish(id) {
         println!(
             "a wake is still running after {}s — your answer is recorded, and the \
              run will act on it. `otto ls` to watch, or `otto wake {short}` once it is idle.",
@@ -699,12 +410,7 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
     }
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
-    start_wake(&id, detach_of(&id), Some(answer))
-}
-
-/// How this run's wakes are backgrounded, as configured when the run was created.
-fn detach_of(id: &str) -> Detach {
-    read_run(id).ok().map(|s| s.launcher.detach).unwrap_or(Detach::Tmux)
+    start_wake(id, detach_of(id), Some(answer))
 }
 
 // ---------------------------------------------------------------------------
@@ -733,233 +439,24 @@ pub struct LogsArgs {
     pub follow: bool,
 }
 
-/// What `--decisions` keeps: the lines that changed what the run is doing, as opposed to the
-/// wake-started/spent/complete rhythm that surrounds every one of them.
-const DECISION_EVENTS: &[&str] = &[
-    "run-created",
-    "phase-changed",
-    "status-changed",
-    "gate-opened",
-    "gate-closed",
-    "gate-expired",
-    "budget-warning",
-    "budget-exhausted",
-    "wake-incomplete",
-    "wake-killed",
-    "spawn-abandoned",
-    "authorized",
-    "lock-broken",
-    "lock-lost",
-];
-
-/// The `wake-spent` counters. Six-digit cache reads are the norm and nobody compares them to
-/// the token; `359k` is what a person actually reads off the line.
-const TOKEN_KEYS: &[&str] = &["inputTokens", "outputTokens", "cacheRead", "cacheCreation"];
-
-fn humanise(n: u64) -> String {
-    match n {
-        n if n < 10_000 => n.to_string(),
-        n if n < 1_000_000 => format!("{}k", (n as f64 / 1_000.0).round() as u64),
-        n => format!("{:.1}M", n as f64 / 1_000_000.0),
-    }
-}
-
-/// `--since`: an age (`45m`, `2h`, `3d`), a date (midnight, local), or a full timestamp.
-fn parse_since(text: &str, offset: time::UtcOffset) -> Result<time::OffsetDateTime, OttoError> {
-    let text = text.trim();
-    if let Some((digits, unit)) = text.char_indices().last().map(|(i, c)| (&text[..i], c)) {
-        if let Ok(n) = digits.parse::<i64>() {
-            let ago = match unit {
-                'm' => Some(time::Duration::minutes(n)),
-                'h' => Some(time::Duration::hours(n)),
-                'd' => Some(time::Duration::days(n)),
-                _ => None,
-            };
-            if let Some(ago) = ago {
-                return Ok(crate::clock::now() - ago);
-            }
-        }
-    }
-    if let Ok(dt) = crate::clock::parse_iso(text) {
-        return Ok(dt);
-    }
-    let day = time::macros::format_description!("[year]-[month]-[day]");
-    if let Ok(date) = time::Date::parse(text, &day) {
-        return Ok(date.midnight().assume_offset(offset));
-    }
-    Err(OttoError::usage(format!(
-        "--since takes an age (45m, 2h, 3d), a date (2026-09-15) or a timestamp, not {text:?}"
-    )))
-}
-
-/// One parsed journal line: the JSON, and its instant, when it has one.
-struct Line {
-    value: Value,
-    at: Option<time::OffsetDateTime>,
-}
-
-fn parse_line(raw: &str) -> Option<Line> {
-    let value: Value = serde_json::from_str(raw).ok()?;
-    let at = value.get("ts").and_then(Value::as_str).and_then(|ts| crate::clock::parse_iso(ts).ok());
-    Some(Line { value, at })
-}
-
-/// What `logs` keeps, from `--since`, `--event` and `--decisions`. Filters compose as "and".
-struct Filter {
-    since: Option<time::OffsetDateTime>,
-    events: Vec<String>,
-}
-
-impl Filter {
-    fn keeps(&self, line: &Line) -> bool {
-        if let Some(since) = self.since {
-            match line.at {
-                Some(at) if at >= since => {}
-                _ => return false,
-            }
-        }
-        if !self.events.is_empty() {
-            let event = line.value.get("event").and_then(Value::as_str).unwrap_or("");
-            if !self.events.iter().any(|e| e == event) {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-/// Turns journal lines into what a person reads: local times, a rule wherever the date changes
-/// (forty lines can span days, and a bare `05:51` on each does not say which), timestamps inside
-/// a line shown in the same clock, and token counts rounded to what the eye takes in. The journal
-/// is JSON because a wake writes it; this is for reading.
-struct Renderer {
-    offset: time::UtcOffset,
-    last_day: Option<time::Date>,
-}
-
-impl Renderer {
-    fn new(offset: time::UtcOffset) -> Self {
-        Renderer { offset, last_day: None }
-    }
-
-    fn render(&mut self, line: &Line) -> String {
-        let mut out = String::new();
-        let local = line.at.map(|at| at.to_offset(self.offset));
-        let day = local.map(|dt| dt.date());
-        if let Some(d) = day.filter(|_| day != self.last_day) {
-            let weekday = d.weekday().to_string();
-            out.push_str(&format!("── {} {d} ──\n", &weekday[..3]));
-            self.last_day = day;
-        }
-        let hms = time::macros::format_description!("[hour]:[minute]:[second]");
-        let time = match local {
-            Some(dt) => dt.format(&hms).unwrap_or_default(),
-            None => line.value.get("ts").and_then(Value::as_str).unwrap_or("").to_string(),
-        };
-        let event = line.value.get("event").and_then(Value::as_str).unwrap_or("?");
-        let mut rest: Vec<String> = Vec::new();
-        if let Value::Object(map) = &line.value {
-            for (key, val) in map {
-                if key == "ts" || key == "event" {
-                    continue;
-                }
-                rest.push(format!("{key}={}", self.shown(key, val, day)));
-            }
-        }
-        out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));
-        out
-    }
-
-    /// One field's value. `day` is the line's own date, so a timestamp on the same day is just a
-    /// time and one on another day says which.
-    fn shown(&self, key: &str, val: &Value, day: Option<time::Date>) -> String {
-        match val {
-            Value::String(s) => {
-                if let Ok(at) = crate::clock::parse_iso(s) {
-                    let local = at.to_offset(self.offset);
-                    let fmt = if Some(local.date()) == day {
-                        time::macros::format_description!("[hour]:[minute]:[second]")
-                    } else {
-                        time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]")
-                    };
-                    return local.format(&fmt).unwrap_or_else(|_| s.clone());
-                }
-                // Long prose (a goal, a verbatim answer) makes the log unreadable as a sequence;
-                // `otto show` is where full text belongs.
-                if s.chars().count() > 80 {
-                    format!("{}…", s.chars().take(77).collect::<String>())
-                } else {
-                    s.clone()
-                }
-            }
-            Value::Number(n) if TOKEN_KEYS.contains(&key) => n.as_u64().map(humanise).unwrap_or_else(|| n.to_string()),
-            other => other.to_string(),
-        }
-    }
-}
-
-/// The line above the log: where the run stands, so the tail below it has a frame. Someone
-/// arriving cold otherwise reads forty lines of wake rhythm and still has to ask `otto show`.
-fn logs_header(state: &RunState, short: &str, offset: time::UtcOffset) -> String {
-    let since = state.created_at.dt().to_offset(offset).date();
-    let days = (crate::clock::now() - state.created_at.dt()).whole_days();
-    let age = if days == 0 { "today".to_string() } else { format!("{days}d") };
-    let last = match &state.wake {
-        Some(wake) => format!("last wake {}", relative(wake.started_at)),
-        None => "no wake yet".to_string(),
-    };
-    let gate = match &state.gate {
-        Some(gate) => format!(", gate {} {} open", gate.id, gate.slug),
-        None => String::new(),
-    };
-    format!(
-        "# {short} · {} wake(s) since {since} ({age}) · {last} · {}{gate} · times {}",
-        state.budget.spent_wakes,
-        status_label(state),
-        crate::clock::offset_label(offset)
-    )
-}
-
-pub fn logs(mut args: LogsArgs) -> Result<(), OttoError> {
+pub fn logs(args: LogsArgs) -> Result<(), OttoError> {
     // First, before anything could start a thread: see `clock::local_offset`.
     let offset = crate::clock::local_offset();
-    args.id = crate::paths::resolve_run_id(&args.id)?;
-    let state = read_run(&args.id)?;
-    let path = crate::paths::run_dir(&args.id)?.join("journal.jsonl");
-
-    let mut events: Vec<String> = args.event.iter().map(|e| e.trim().to_string()).filter(|e| !e.is_empty()).collect();
-    if args.decisions {
-        events.extend(DECISION_EVENTS.iter().map(|e| e.to_string()));
-    }
-    let filter = Filter {
-        since: args.since.as_deref().map(|s| parse_since(s, offset)).transpose()?,
-        events,
-    };
-    // `--since` says where to start, so it shows everything from there unless -n says otherwise.
-    let limit = args.lines.unwrap_or(if filter.since.is_some() { usize::MAX } else { 40 });
-
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let kept: Vec<Line> = text.lines().filter_map(parse_line).filter(|l| filter.keeps(l)).collect();
-    let start = kept.len().saturating_sub(limit);
-    let mut renderer = Renderer::new(offset);
-    println!("{}", logs_header(&state, &short_id(&args.id), offset));
-    for line in &kept[start..] {
-        println!("{}", renderer.render(line));
+    let query = LogQuery { lines: args.lines, since: args.since, events: args.event, decisions: args.decisions };
+    let mut page = crate::core::read_logs(&args.id, &query, offset)?;
+    println!("{}", page.header);
+    for line in &page.lines {
+        println!("{}", line.text);
     }
     if !args.follow {
         return Ok(());
     }
     // Poll rather than notify: a journal is append-only and a run writes to it a few times a
     // minute at most, so this costs nothing and needs no platform-specific watching.
-    let mut seen = text.len();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        if text.len() > seen {
-            for line in text[seen..].lines().filter_map(parse_line).filter(|l| filter.keeps(l)) {
-                println!("{}", renderer.render(&line));
-            }
-            seen = text.len();
+        for line in page.cursor.poll() {
+            println!("{}", line.text);
         }
     }
 }
@@ -978,42 +475,18 @@ pub struct StopArgs {
     pub failed: bool,
 }
 
-/// Retiring a healthy run is `stopped`, not `failed` — `failed` in the audit trail would be a
-/// lie about a run that worked and simply is not wanted any more.
 pub fn stop(args: StopArgs) -> Result<(), OttoError> {
     let mut exec = crate::exec::RealExec;
     stop_with(args, &mut exec)
 }
 
 /// The body, with the killer's `Exec` injected so the kill path is testable without shelling out.
-fn stop_with(mut args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), OttoError> {
-    // Resolve before anything else: `spawner::kill` names a tmux session directly from `args.id`,
-    // never through `paths::run_dir`, so an unresolved prefix would go looking for a session that
-    // was never named that.
-    args.id = crate::paths::resolve_run_id(&args.id)?;
-    let reason = args.reason.unwrap_or_else(|| "stopped by hand".to_string());
-    let status = if args.failed { Status::Failed } else { Status::Stopped };
-    crate::state::commands::set_status(crate::state::commands::SetStatusArgs {
-        id: args.id.clone(),
-        status,
-        reason: Some(reason.clone()),
-        because: None,
-    })?;
-    // Release locks on the way out, or the next run against that repo waits on a corpse.
-    let _ = crate::state::locks::unlock(crate::state::locks::UnlockArgs {
-        id: args.id.clone(),
-        repo: None,
-    });
-    // A wake still running would keep working on a run nobody wants — kill it however it was
-    // started. This used to check only for a tmux session, which missed a `--detach none` run's
-    // detached process entirely: it kept going, unsupervised, until it hit its own deadline.
-    if let Ok(state) = read_run(&args.id) {
-        let outcome = crate::spawner::kill(&state, &args.id, exec);
-        if outcome.did_anything() {
-            println!("killed the live wake for {}", args.id);
-        }
+fn stop_with(args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), OttoError> {
+    let outcome = crate::core::stop_run(&args.id, args.reason, args.failed, exec)?;
+    if outcome.killed_wake {
+        println!("killed the live wake for {}", outcome.id);
     }
-    println!("{} is {:?} — {reason}", args.id, status);
+    println!("{} is {:?} — {}", outcome.id, outcome.status, outcome.reason);
     Ok(())
 }
 

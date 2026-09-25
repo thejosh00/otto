@@ -2,6 +2,7 @@
 //! done, and drives spawning/killing/reaping accordingly.
 
 use crate::clock::Timestamp;
+use serde::Serialize;
 use crate::event::Event;
 use crate::exec::{Exec, RealExec};
 use crate::liveness::{Liveness, LockLiveness};
@@ -472,35 +473,59 @@ pub struct PokeArgs {
     pub deadline_grace: i64,
 }
 
-/// The `otto poke` entrypoint. Returns the exit code directly (0/1/2) rather than routing
-/// through `OttoError` — there's no single "otto: <message>" to print, because the decisions
-/// themselves are the output.
-pub fn poke_run(args: PokeArgs) -> i32 {
+/// What one poke pass said, and the exit code it ends with (0 fine, 1 a decision errored, 2 poke
+/// itself could not run).
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PokeReport {
+    pub lines: Vec<String>,
+    pub errors: Vec<String>,
+    pub code: i32,
+}
+
+impl Default for PokeArgs {
+    fn default() -> Self {
+        PokeArgs {
+            dry_run: false,
+            verbose: false,
+            max_starts: MAX_STARTS,
+            grace: GRACE_MINUTES,
+            max_attempts: MAX_SPAWN_ATTEMPTS,
+            deadline_grace: DEADLINE_GRACE_MINUTES,
+        }
+    }
+}
+
+/// One pass: start the wakes that are due and clean up after the ones that are over. Shared by
+/// `otto poke` (launchd, or by hand) and the web page's "poke now".
+pub fn poke_pass(args: &PokeArgs) -> PokeReport {
+    let mut report = PokeReport::default();
     let runs_dir = crate::paths::runs_dir();
     if !runs_dir.is_dir() {
-        println!("otto poke: no runs directory — nothing to do");
-        return 0;
+        report.lines.push("otto poke: no runs directory — nothing to do".to_string());
+        return report;
     }
 
     let lock_path = match crate::paths::poke_lock_path() {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("otto poke: cannot create the poke lock directory: {e}");
-            return 2;
+            report.errors.push(format!("otto poke: cannot create the poke lock directory: {e}"));
+            report.code = 2;
+            return report;
         }
     };
     let lock_file = match std::fs::OpenOptions::new().create(true).append(true).open(&lock_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("otto poke: cannot open {}: {e}", lock_path.display());
-            return 2;
+            report.errors.push(format!("otto poke: cannot open {}: {e}", lock_path.display()));
+            report.code = 2;
+            return report;
         }
     };
     // Poke is typically invoked on a timer; the lock keeps overlapping invocations from double-
     // spawning the same stranded run instead of one just waiting its turn.
     if fs4::fs_std::FileExt::try_lock_exclusive(&lock_file).is_err() {
-        println!("otto poke: another pass is still running — skipping this one");
-        return 0;
+        report.lines.push("otto poke: another pass is still running — skipping this one".to_string());
+        return report;
     }
 
     let runs = crate::state::read_all_runs().unwrap_or_default();
@@ -521,16 +546,29 @@ pub fn poke_run(args: PokeArgs) -> i32 {
     let stamp = crate::clock::format_iso(crate::clock::now());
     let shown: Vec<&Decision> = decisions.iter().filter(|d| args.verbose || d.action != Action::Skip).collect();
     for decision in &shown {
-        println!("{stamp} {}", decision.line());
+        report.lines.push(format!("{stamp} {}", decision.line()));
     }
     if shown.is_empty() {
-        println!("{stamp} nothing due ({} run(s) checked)", decisions.len());
+        report.lines.push(format!("{stamp} nothing due ({} run(s) checked)", decisions.len()));
     }
     if decisions.iter().any(|d| d.action == Action::Error) {
-        1
-    } else {
-        0
+        report.code = 1;
     }
+    report
+}
+
+/// The `otto poke` entrypoint. Returns the exit code directly (0/1/2) rather than routing
+/// through `OttoError` — there's no single "otto: <message>" to print, because the decisions
+/// themselves are the output.
+pub fn poke_run(args: PokeArgs) -> i32 {
+    let report = poke_pass(&args);
+    for line in &report.lines {
+        println!("{line}");
+    }
+    for line in &report.errors {
+        eprintln!("{line}");
+    }
+    report.code
 }
 
 #[cfg(test)]

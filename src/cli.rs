@@ -40,6 +40,8 @@ pub enum Command {
         #[command(subcommand)]
         command: AgentCommand,
     },
+    /// The web UI: everything above, in a browser, on 127.0.0.1.
+    Serve(crate::server::ServeArgs),
     /// Symlink otto's Claude Code skills into ~/.claude/skills/.
     Install(crate::install::InstallArgs),
     /// The only writer of a run's durable state.

@@ -140,6 +140,11 @@ pub fn short_id(id: &str) -> String {
 /// is what makes this actually useful from a phone: `2026-09-11-verify-1789130664`'s date tells
 /// you nothing to type, but `verify` does.
 pub fn resolve_run_id(input: &str) -> Result<String, OttoError> {
+    // An id is one directory name. Anything that could step out of `runs/` names no run — which
+    // matters most for the web server, where the id arrives in a URL.
+    if input.is_empty() || input.contains('/') || input.contains('\\') || input.starts_with('.') {
+        return Err(OttoError::not_found(format!("no such run: {input}")));
+    }
     // Exact match is the common case — every internal caller (poke, a wake resuming itself)
     // already has the canonical id — so it costs nothing: no directory scan at all.
     if runs_dir().join(input).is_dir() {

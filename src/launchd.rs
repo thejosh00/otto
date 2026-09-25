@@ -10,6 +10,7 @@
 //! across macOS versions before.
 
 use crate::error::OttoError;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 const LABEL: &str = "com.joshuahill.otto-poke";
@@ -86,9 +87,19 @@ fn gui_domain() -> Result<String, OttoError> {
     Ok(format!("gui/{uid}"))
 }
 
+/// What `start_agent` did, for the caller to report.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Started {
+    pub target: String,
+    pub binary: String,
+    pub plist: String,
+    pub log: String,
+}
+
 /// Write (or rewrite) the plist and ensure the launchd agent is registered and running.
 /// Installs it from scratch if it isn't there yet.
-pub fn start() -> Result<(), OttoError> {
+pub fn start_agent() -> Result<Started, OttoError> {
     let binary = crate::paths::current_exe()?;
     let otto_home = crate::paths::otto_home();
     let log_path = crate::paths::poke_log_path()?;
@@ -112,11 +123,20 @@ pub fn start() -> Result<(), OttoError> {
         )));
     }
     let _ = std::process::Command::new("launchctl").args(["enable", &target]).output();
+    Ok(Started {
+        target,
+        binary: binary.display().to_string(),
+        plist: plist_path().display().to_string(),
+        log: log_path.display().to_string(),
+    })
+}
 
-    println!("otto: the reviver is running ({target})");
-    println!("  binary: {}", binary.display());
-    println!("  plist:  {}", plist_path().display());
-    println!("  log:    {}", log_path.display());
+pub fn start() -> Result<(), OttoError> {
+    let started = start_agent()?;
+    println!("otto: the reviver is running ({})", started.target);
+    println!("  binary: {}", started.binary);
+    println!("  plist:  {}", started.plist);
+    println!("  log:    {}", started.log);
     Ok(())
 }
 
@@ -146,11 +166,35 @@ fn last_poke() -> Option<crate::clock::Timestamp> {
     crate::clock::Timestamp::parse(stamp).ok()
 }
 
+/// Whether the reviver is loaded and when it last actually ran.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatus {
+    /// `None`: could not tell (launchctl or id failed) — never the same as "not loaded".
+    pub loaded: Option<bool>,
+    pub last_poke: Option<crate::clock::Timestamp>,
+    pub last_poke_relative: Option<String>,
+    pub plist: String,
+    pub log: String,
+}
+
+pub fn agent_status() -> Result<AgentStatus, OttoError> {
+    let last = last_poke();
+    Ok(AgentStatus {
+        loaded: is_loaded(),
+        last_poke: last,
+        last_poke_relative: last.map(crate::clock::relative),
+        plist: plist_path().display().to_string(),
+        log: crate::paths::poke_log_path()?.display().to_string(),
+    })
+}
+
 /// `otto agent status` — is the reviver loaded, and when did it last actually run? The README
 /// says a sleeping run never wakes without it; this is how to find out it stopped being true
 /// before a run has been silently stuck for days.
 pub fn status() -> Result<(), OttoError> {
-    match is_loaded() {
+    let status = agent_status()?;
+    match status.loaded {
         Some(true) => println!("otto: the reviver is loaded"),
         Some(false) => {
             println!("otto: the reviver is NOT loaded — sleeping runs will never wake on their own");
@@ -158,27 +202,40 @@ pub fn status() -> Result<(), OttoError> {
         }
         None => println!("otto: could not tell whether the reviver is loaded (launchctl or id failed)"),
     }
-    match last_poke() {
-        Some(at) => println!("  last poke: {} ({})", crate::clock::relative(at), at),
-        None => println!("  last poke: never (no log yet)"),
+    match (status.last_poke, &status.last_poke_relative) {
+        (Some(at), Some(relative)) => println!("  last poke: {relative} ({at})"),
+        _ => println!("  last poke: never (no log yet)"),
     }
-    println!("  plist:     {}", plist_path().display());
-    println!("  log:       {}", crate::paths::poke_log_path()?.display());
+    println!("  plist:     {}", status.plist);
+    println!("  log:       {}", status.log);
     Ok(())
 }
 
+/// What `stop_agent` found.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stopped {
+    pub target: String,
+    pub was_running: bool,
+}
+
 /// Unregister the launchd agent. Safe to call whether or not it was running.
-pub fn stop() -> Result<(), OttoError> {
+pub fn stop_agent() -> Result<Stopped, OttoError> {
     let domain = gui_domain()?;
     let target = format!("{domain}/{LABEL}");
     let output = std::process::Command::new("launchctl")
         .args(["bootout", &target])
         .output()
         .map_err(|e| OttoError::usage(format!("cannot run launchctl: {e}")))?;
-    if output.status.success() {
-        println!("otto: stopped the reviver ({target})");
+    Ok(Stopped { target, was_running: output.status.success() })
+}
+
+pub fn stop() -> Result<(), OttoError> {
+    let stopped = stop_agent()?;
+    if stopped.was_running {
+        println!("otto: stopped the reviver ({})", stopped.target);
     } else {
-        println!("otto: the reviver was not running ({target})");
+        println!("otto: the reviver was not running ({})", stopped.target);
     }
     Ok(())
 }

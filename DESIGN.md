@@ -795,11 +795,19 @@ otto stop <run> [--reason "…"]  # terminal: stopped
 otto poke [--dry-run --verbose]   # launchd, every ~5 min
 otto start | stop                  # register / unregister the launchd agent
 otto state <cmd>                   # the wake's writer surface (§5.3)
+otto serve [--port 7878]           # the same human commands, in a browser
 ```
 
 `otto state` is unchanged in role: the only writer, used by a wake, atomic per call. The human
 commands above are thin formatters over the same operations — `otto answer` *is* `close-gate`
 plus a spawn. Exit codes stay: `2` state conflict, `3` no such run; both mean stop and report.
+
+`otto serve` is a second rendering of the same human commands, not a second system. The logic
+lives once, in `core`; `human.rs` formats it for a terminal and `server/` serves it as JSON to an
+embedded page. The server holds no state and owns no run — it reads and writes the run
+directory exactly as the CLI does — so the "no daemon owns a run" principle survives it: stop the
+server and nothing about any run changes. It binds 127.0.0.1 only and refuses cross-site
+requests, because a POST to it can start a wake.
 
 **`/otto` the skill is gone.** A run is not driven from inside a session any more, so there is no
 conductor skill to invoke. What replaces it is the harness prompt (§10.1), which is otto's own

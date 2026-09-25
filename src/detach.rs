@@ -46,6 +46,13 @@ pub fn session_exists(exec: &mut dyn Exec, name: &str) -> bool {
     tmux(exec, &["tmux", "has-session", "-t", name]).code == 0
 }
 
+/// What a session's pane shows right now, colour escapes included — a read-only `attach` for a
+/// caller with no terminal to attach. `None` when there is no such session.
+pub fn capture_pane(exec: &mut dyn Exec, name: &str) -> Option<String> {
+    let out = tmux(exec, &["tmux", "capture-pane", "-p", "-e", "-J", "-t", name]);
+    (out.code == 0).then_some(out.stdout)
+}
+
 pub fn kill_session(exec: &mut dyn Exec, name: &str) -> bool {
     tmux(exec, &["tmux", "kill-session", "-t", name]).code == 0
 }
