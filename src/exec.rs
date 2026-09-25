@@ -57,19 +57,23 @@ pub fn truncate(s: &str, n: usize) -> String {
 /// argument adds to the child's environment rather than replacing it.
 pub trait Exec {
     fn exec(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output;
+
+    /// `exec`, with the child in a process group of its own, so a timeout kills everything it
+    /// started and not just the child. For untrusted, short-lived commands — a check script
+    /// whose `curl` hangs — where a survivor holding the pipe would stall the caller.
+    ///
+    /// Not the default, and never for a wake: `otto stop` and poke's deadline kill signal the
+    /// `otto wake` process group (`spawner::kill`), and that only reaches the model because it
+    /// shares the group. Isolating it would orphan the model on every stop.
+    fn exec_isolated(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output {
+        self.exec(argv, env, timeout)
+    }
 }
 
 pub struct RealExec;
 
-impl Exec for RealExec {
-    fn exec(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output {
-        if argv.is_empty() {
-            return Output {
-                code: 127,
-                stderr: "exec: empty argv".to_string(),
-                ..Default::default()
-            };
-        }
+impl RealExec {
+    fn command(argv: &[&str], env: Option<&HashMap<String, String>>) -> std::process::Command {
         let mut cmd = std::process::Command::new(argv[0]);
         cmd.args(&argv[1..]);
         cmd.stdin(std::process::Stdio::null());
@@ -80,15 +84,78 @@ impl Exec for RealExec {
                 cmd.env(key, value);
             }
         }
-        spawn_with_deadline(cmd, timeout)
+        cmd
     }
+}
+
+fn empty_argv() -> Output {
+    Output {
+        code: 127,
+        stderr: "exec: empty argv".to_string(),
+        ..Default::default()
+    }
+}
+
+impl Exec for RealExec {
+    fn exec(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output {
+        if argv.is_empty() {
+            return empty_argv();
+        }
+        spawn_with_deadline(Self::command(argv, env), timeout, false)
+    }
+
+    fn exec_isolated(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output {
+        if argv.is_empty() {
+            return empty_argv();
+        }
+        use std::os::unix::process::CommandExt;
+        let mut cmd = Self::command(argv, env);
+        cmd.process_group(0);
+        spawn_with_deadline(cmd, timeout, true)
+    }
+}
+
+/// How long to keep reading after the child is gone. EOF normally arrives at once; when it
+/// doesn't, something the child started is still holding the pipe, and the caller should not
+/// wait on a process it never ran.
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+enum Chunk {
+    Out(Vec<u8>),
+    Err(Vec<u8>),
+    Eof,
+}
+
+/// Read one pipe to EOF on its own thread, sending what it reads as it goes, so that whatever
+/// arrived is kept even if the reader is abandoned mid-pipe.
+fn pump(pipe: Option<impl std::io::Read + Send + 'static>, tx: std::sync::mpsc::Sender<Chunk>, wrap: fn(Vec<u8>) -> Chunk) {
+    std::thread::spawn(move || {
+        if let Some(mut pipe) = pipe {
+            let mut buf = [0u8; 8192];
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if tx.send(wrap(buf[..n].to_vec())).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        let _ = tx.send(Chunk::Eof);
+    });
 }
 
 /// Read both pipes on their own threads, because a child that fills one pipe's buffer
 /// while the parent is blocked reading the other deadlocks. A wake writing a large JSON
 /// result to stdout and a launcher chattering on stderr is exactly that shape.
-fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration) -> Output {
-    use std::io::Read;
+///
+/// Reading stops at EOF on both pipes or `DRAIN_GRACE` after the child is gone, whichever is
+/// first — a grandchild that inherited a pipe would otherwise hold the caller until *it* exits.
+/// With `own_group`, a timeout kills the whole group, so that grandchild dies too; without it,
+/// the reader is abandoned, and it ends with the process.
+fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration, own_group: bool) -> Output {
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -99,22 +166,9 @@ fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration) -> Out
             }
         }
     };
-    let mut stdout = child.stdout.take();
-    let mut stderr = child.stderr.take();
-    let out_handle = std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(pipe) = stdout.as_mut() {
-            let _ = pipe.read_to_string(&mut buf);
-        }
-        buf
-    });
-    let err_handle = std::thread::spawn(move || {
-        let mut buf = String::new();
-        if let Some(pipe) = stderr.as_mut() {
-            let _ = pipe.read_to_string(&mut buf);
-        }
-        buf
-    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    pump(child.stdout.take(), tx.clone(), Chunk::Out);
+    pump(child.stderr.take(), tx, Chunk::Err);
 
     let deadline = Instant::now() + timeout;
     let mut timed_out = false;
@@ -124,6 +178,15 @@ fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration) -> Out
             Ok(None) => {
                 if Instant::now() >= deadline {
                     timed_out = true;
+                    if own_group {
+                        // The child leads its group, so its pid is the group id. Negative means
+                        // the whole group — the same convention `spawner::kill` uses.
+                        let _ = std::process::Command::new("kill")
+                            .args(["-KILL", "--", &format!("-{}", child.id())])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status();
+                    }
                     let _ = child.kill();
                     let _ = child.wait();
                     break None;
@@ -133,8 +196,19 @@ fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration) -> Out
             Err(_) => break None,
         }
     };
-    let stdout = out_handle.join().unwrap_or_default();
-    let stderr = err_handle.join().unwrap_or_default();
+
+    let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+    let drain_until = Instant::now() + DRAIN_GRACE;
+    let mut open = 2;
+    while open > 0 {
+        let left = drain_until.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(Chunk::Out(bytes)) => stdout.extend(bytes),
+            Ok(Chunk::Err(bytes)) => stderr.extend(bytes),
+            Ok(Chunk::Eof) => open -= 1,
+            Err(_) => break,
+        }
+    }
     Output {
         // 124 is what `timeout(1)` uses, and a killed wake needs a code that cannot be
         // confused with the child's own.
@@ -143,8 +217,8 @@ fn spawn_with_deadline(mut cmd: std::process::Command, timeout: Duration) -> Out
             None if timed_out => 124,
             None => 1,
         },
-        stdout,
-        stderr,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
         timed_out,
     }
 }
@@ -267,6 +341,61 @@ mod tests {
         );
         assert!(out.timed_out);
         assert_eq!(out.stdout, "partial");
+    }
+
+    /// Is anything still running with this marker on its command line?
+    fn survivor(marker: &str) -> bool {
+        std::process::Command::new("pgrep")
+            .args(["-f", marker])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// The hang this guards against: the child is killed at its deadline, but something it
+    /// started still holds the pipe open, so waiting for EOF waits on the grandchild instead.
+    /// Isolated, the grandchild dies with the group, so there is nothing left to wait for.
+    #[test]
+    fn an_isolated_timeout_kills_what_the_child_started() {
+        let mut exec = RealExec;
+        let started = Instant::now();
+        let out = exec.exec_isolated(&["sh", "-c", "sleep 8.1 & echo started; sleep 8.1"], None, Duration::from_millis(300));
+        assert!(out.timed_out);
+        assert_eq!(out.stdout, "started\n", "output before the kill is kept");
+        assert!(started.elapsed() < Duration::from_secs(1), "took {:?}", started.elapsed());
+        assert!(!survivor("sleep 8.1"), "the grandchild must die with its group");
+    }
+
+    /// Not isolated — a wake, which must stay in otto's group — the grandchild survives, but the
+    /// caller still gets its answer a bounded time after the deadline.
+    #[test]
+    fn a_grandchild_holding_the_pipe_does_not_hold_the_caller() {
+        let mut exec = RealExec;
+        let started = Instant::now();
+        let out = exec.exec(&["sh", "-c", "sleep 8.2 & sleep 8.2"], None, Duration::from_millis(200));
+        assert!(out.timed_out);
+        assert!(started.elapsed() < DRAIN_GRACE + Duration::from_secs(1), "took {:?}", started.elapsed());
+        let _ = std::process::Command::new("pkill").args(["-f", "sleep 8.2"]).status();
+    }
+
+    /// The same survivor after a clean exit: a child that backgrounds something and exits 0
+    /// is finished, whatever its leftovers do with the pipe.
+    #[test]
+    fn a_clean_exit_is_not_held_open_by_a_background_process() {
+        let mut exec = RealExec;
+        let started = Instant::now();
+        let out = exec.exec(&["sh", "-c", "sleep 8.3 & printf done"], None, Duration::from_secs(10));
+        assert!(out.ok());
+        assert_eq!(out.stdout, "done");
+        assert!(started.elapsed() < DRAIN_GRACE + Duration::from_secs(1), "took {:?}", started.elapsed());
+        let _ = std::process::Command::new("pkill").args(["-f", "sleep 8.3"]).status();
+    }
+
+    #[test]
+    fn invalid_utf8_is_kept_lossily_rather_than_dropped() {
+        let mut exec = RealExec;
+        let out = exec.exec(&["sh", "-c", r"printf 'ok\377ok'"], None, Duration::from_secs(10));
+        assert_eq!(out.stdout, "ok\u{fffd}ok");
     }
 
     #[test]

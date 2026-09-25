@@ -287,7 +287,9 @@ fn run_check(
         env.insert("OTTO_REPO".to_string(), repo.to_string());
     }
 
-    let output = exec.exec(&[script], Some(&env), std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
+    // Isolated: a script killed at its timeout takes whatever it started down with it, so a
+    // hung `curl` under it can't stall this pass — and every other run's — behind it.
+    let output = exec.exec_isolated(&[script], Some(&env), std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
     let note = crate::exec::truncate(output.stdout.trim(), CHECK_NOTE_MAX_CHARS);
     let note = (!note.is_empty()).then_some(note);
 
