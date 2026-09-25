@@ -84,7 +84,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
 | `otto resume <id>` | Bring a stopped or failed run back and wake it (`--no-wake` to wait for its next period) |
 | `otto wake <id>` | Force one wake now, backgrounded the way the run asks for. `--watch` keeps it in your terminal, `--detach` overrides the run for this wake, `--dry-run` prints the command it would run |
-| `otto poke` | The reviver: start wakes whose timer has passed. launchd runs this |
+| `otto poke` | The reviver: start wakes whose timer has passed, and post a macOS notification once when a run opens a gate, blocks, leaves a gate unanswered past `gateStaleAfterHours`, or nears its budget. launchd runs this |
 | `otto agent start\|stop\|status` | Manage the launchd reviver, or check whether it's loaded and when it last ran |
 | `otto serve` | The web UI on `127.0.0.1:7878` (`--port`, `--open`): everything above except `attach`'s typing, in a browser |
 | `otto state <cmd>` | The machine surface a wake writes through. Never hand-edit `run.json` |

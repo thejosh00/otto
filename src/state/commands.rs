@@ -335,6 +335,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
+        budget_warned_at: None,
         ticks_without_progress: 0,
         launcher: Launcher {
             kind: args.launcher,
@@ -359,6 +360,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         created_at: created,
         updated_at: created,
         authorizations: Map::new(),
+        notified: std::collections::BTreeMap::new(),
     };
     Ok(PlannedRun { state, path })
 }

@@ -291,7 +291,7 @@ Measurement says otherwise — see §12 — and the cap is worth keeping on its 
 ### Budget
 
 `budget` has two dimensions, `wakes` and `hours`, and both are measured. At 80% of either:
-journal it and `PushNotification` once. At 100%: `blocked` plus a human gate. An indefinite run
+journal it, and poke sends a desktop notification once (§7, Notifications). At 100%: `blocked` plus a human gate. An indefinite run
 needs an outer bound.
 
 **There is no dollar dimension.** Measuring per-wake cost needed `-p --output-format json`, and
@@ -353,7 +353,26 @@ confused.
 
 ### Escalation
 
-A gate open longer than `policy.gateStaleAfterHours` (default 48) → journal and notify **once**.
+A gate open longer than `policy.gateStaleAfterHours` (default 48, `0` disables) → journal and
+notify **once**.
+
+### Notifications
+
+A gate is useless if nobody knows it is open, so poke tells you. On every pass, after its spawn
+decisions, it posts a macOS notification (`osascript`) for each of these, **once**:
+
+| Key | When |
+|---|---|
+| `gate:<id>` | A gate is open |
+| `blocked:<gate id>` | The run is `blocked` — replaces the gate's own notice, and names the cause |
+| `gate-stale:<id>` | The gate has waited past `gateStaleAfterHours` |
+| `budget` | A budget dimension is between 80% and 100% spent |
+
+Poke sends them, not the wake, because a wake under yolo may not be able to reach the
+notification centre, and because no wake is around to see a gate go stale. What was sent is kept
+in `run.json`'s top-level `notified` (not `facts`, §6) and journaled as `notified`; a key that
+no longer applies is dropped, so the next gate is news again. A failed send still counts as sent —
+retrying a broken `osascript` every five minutes would only fill the journal.
 
 ## 8. Waiting
 

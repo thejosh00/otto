@@ -543,6 +543,11 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
         args.max_attempts,
         args.deadline_grace,
     );
+    // Read again: this pass may itself have just blocked a run (a kill, a recovered crash), and
+    // that is worth saying now rather than five minutes from now. Still under the poke lock, so
+    // two overlapping passes cannot both send the same notice.
+    let runs = crate::state::read_all_runs().unwrap_or_default();
+    let notices = crate::notify::pass(&runs, crate::clock::now(), &mut exec, args.dry_run);
     let _ = fs4::fs_std::FileExt::unlock(&lock_file);
 
     let stamp = crate::clock::format_iso(crate::clock::now());
@@ -550,7 +555,10 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
     for decision in &shown {
         report.lines.push(format!("{stamp} {}", decision.line()));
     }
-    if shown.is_empty() {
+    for line in &notices {
+        report.lines.push(format!("{stamp} {line}"));
+    }
+    if shown.is_empty() && notices.is_empty() {
         report.lines.push(format!("{stamp} nothing due ({} run(s) checked)", decisions.len()));
     }
     if decisions.iter().any(|d| d.action == Action::Error) {

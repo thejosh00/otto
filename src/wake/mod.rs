@@ -85,7 +85,7 @@ impl WakeResult {
 /// Hours since the run was created, for the wall-clock budget dimension. `created_at` is a
 /// `Timestamp`, validated when `run.json` was deserialized — so unlike the `String` it used to
 /// be, there is no parse failure left to silently read as `0.0` and disable the hours budget.
-fn elapsed_hours(state: &RunState) -> f64 {
+pub(crate) fn elapsed_hours(state: &RunState) -> f64 {
     (crate::clock::now() - state.created_at.dt()).as_seconds_f64() / 3600.0
 }
 
@@ -271,11 +271,15 @@ fn finish_wake(
         // Warn once as a budget nears its limit, so the first sign is not the run stopping dead.
         // `budget_exceeded` handles the ceiling itself, before the next wake launches.
         if let Some(fraction) = state.budget.worst_fraction(elapsed_hours(state)) {
-            let already = state.facts.get("budgetWarnedAt").and_then(Value::as_str).is_some();
-            if fraction >= 0.8 && fraction < 1.0 && !already {
-                state
-                    .facts
-                    .insert("budgetWarnedAt".to_string(), Value::String(crate::clock::now_iso()));
+            // A run warned before the marker moved out of `facts` still carries it there; adopt
+            // it rather than warn a second time.
+            if state.budget_warned_at.is_none() {
+                if let Some(Value::String(at)) = state.facts.remove("budgetWarnedAt") {
+                    state.budget_warned_at = Some(Timestamp::parse(&at).unwrap_or_else(|_| Timestamp::now()));
+                }
+            }
+            if (0.8..1.0).contains(&fraction) && state.budget_warned_at.is_none() {
+                state.budget_warned_at = Some(Timestamp::now());
                 crate::event::record(
                     path,
                     &Event::BudgetWarning {
@@ -808,6 +812,62 @@ mod tests {
         let blocked = state.blocked.as_ref().expect("a blocked run says why");
         assert_eq!(blocked.cause, crate::state::BlockedCause::Budget);
         assert_eq!(blocked.detail.as_deref(), Some("wake budget spent: 2 of 2"));
+    }
+
+    fn budget_warnings(id: &str) -> usize {
+        let journal = std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap();
+        journal.matches("\"event\":\"budget-warning\"").count()
+    }
+
+    #[test]
+    fn the_budget_warning_survives_a_wake_that_rewrites_its_facts() {
+        let _h = TempHome::new();
+        test_init("w-warn", "a goal").unwrap();
+        transaction("w-warn", |_p, state| {
+            state.budget.wakes = 10;
+            state.budget.spent_wakes = 7;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-warn"));
+        run_wake(&args("w-warn"), &mut exec).unwrap();
+        assert_eq!(budget_warnings("w-warn"), 1, "8 of 10 is past 80%");
+        assert!(read_run("w-warn").unwrap().budget_warned_at.is_some());
+
+        // A wake that replaces its facts wholesale must not earn the run a second warning.
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| {
+            behave_well("w-warn");
+            transaction("w-warn", |_p, state| {
+                state.facts = serde_json::Map::new();
+                Ok(())
+            })
+            .unwrap();
+        });
+        run_wake(&args("w-warn"), &mut exec).unwrap();
+        assert_eq!(budget_warnings("w-warn"), 1);
+    }
+
+    #[test]
+    fn a_run_warned_under_the_old_facts_key_is_not_warned_again() {
+        let _h = TempHome::new();
+        test_init("w-legacy", "a goal").unwrap();
+        transaction("w-legacy", |_p, state| {
+            state.budget.wakes = 10;
+            state.budget.spent_wakes = 8;
+            state.facts.insert("budgetWarnedAt".to_string(), Value::String("2026-09-01T00:00:00Z".to_string()));
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-legacy"));
+        run_wake(&args("w-legacy"), &mut exec).unwrap();
+        assert_eq!(budget_warnings("w-legacy"), 0);
+        let state = read_run("w-legacy").unwrap();
+        assert_eq!(state.budget_warned_at.unwrap().to_string(), "2026-09-01T00:00:00Z");
+        assert!(state.facts.get("budgetWarnedAt").is_none(), "the old key is moved, not copied");
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod ops;
 use crate::error::OttoError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::Path;
 
@@ -454,6 +455,11 @@ pub struct RunState {
     pub spawn_attempts: u32,
     #[serde(rename = "lastSpawnedAt", default, skip_serializing_if = "Option::is_none")]
     pub last_spawned_at: Option<crate::clock::Timestamp>,
+    /// When the 80% budget warning was journaled — once per run. Top level for the same reason:
+    /// it used to live in `facts`, where a wake replacing its facts wholesale would erase it and
+    /// earn the run a second warning.
+    #[serde(rename = "budgetWarnedAt", default, skip_serializing_if = "Option::is_none")]
+    pub budget_warned_at: Option<crate::clock::Timestamp>,
     #[serde(rename = "ticksWithoutProgress")]
     pub ticks_without_progress: u32,
     pub launcher: Launcher,
@@ -468,6 +474,11 @@ pub struct RunState {
     pub updated_at: crate::clock::Timestamp,
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub authorizations: Map<String, Value>,
+    /// Which desktop notifications poke has already sent, keyed by what each was about
+    /// (`gate:003`, `gate-stale:003`, …) — see `notify`. Engine state, so not in `facts`: a wake
+    /// re-recording what it read would clear it and every notice would fire again.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub notified: BTreeMap<String, crate::clock::Timestamp>,
 }
 
 /// `k=v` pairs. Values are JSON when parseable (so `prNumber=42` is a number), else the literal
@@ -801,6 +812,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
+        budget_warned_at: None,
         ticks_without_progress: 0,
         launcher: Launcher { kind: LauncherKind::Claude, detach: Detach::Tmux, repos: vec![], skill_dirs: vec![] },
         permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
@@ -810,6 +822,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         created_at: now,
         updated_at: now,
         authorizations: Map::new(),
+        notified: BTreeMap::new(),
     }
 }
 

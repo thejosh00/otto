@@ -10,6 +10,7 @@ mod human;
 mod install;
 mod launchd;
 mod liveness;
+mod notify;
 mod paths;
 mod poke;
 mod server;

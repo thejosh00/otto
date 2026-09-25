@@ -190,6 +190,13 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
+    /// Poke sent a desktop notification about this run — once per `key`, so the journal says
+    /// when a person was told, not just when the thing happened. See `notify`.
+    Notified {
+        key: String,
+        title: String,
+        message: String,
+    },
 }
 
 /// Write one typed event to `path`'s journal, stamped with the current time. The caller must
