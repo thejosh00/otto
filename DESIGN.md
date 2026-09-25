@@ -498,8 +498,7 @@ decision about the work** — only about whether a wake should exist:
 | Nothing pending and no wake ever ran | spawn — the run is stranded |
 | `nextWakeAt` in the future, an opt-in check script (§8.1) is due | **run it directly, no LLM** — no change: skip, silently; change or error: fall into the ordinary due-wake row below |
 | `nextWakeAt` in the future, no check due | skip |
-| `nextWakeAt` passed, inside `GRACE_MINUTES` | defer |
-| `nextWakeAt` passed, past grace | spawn (with spawn-attempt backoff) |
+| `nextWakeAt` passed | spawn (with spawn-attempt backoff) — `GRACE_MINUTES` is 0; `--grace N` defers for N minutes |
 | More than `MAX_STARTS` spawned this pass | defer |
 
 **All inference is gone.** v1's poke had to guess whether anybody was home: `heartbeatAt`

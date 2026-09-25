@@ -9,8 +9,14 @@ use crate::liveness::{Liveness, LockLiveness};
 use crate::state::{CheckResult, RunEntry, RunState};
 use time::{Duration, OffsetDateTime};
 
-// Absorbs the poll interval and the gap between a wake being spawned and taking its lock.
-pub const GRACE_MINUTES: i64 = 15;
+// How long past its `nextWakeAt` a run waits before poke spawns it. Zero: poke is the only thing
+// that wakes a sleeping run, so any grace is pure lateness — at 15 it made every wake of an hourly
+// run start ~19 minutes late, and since the period is anchored on the wake's start, "hourly" meant
+// every ~80 minutes. The spawn-to-lock gap it once covered is already handled twice: the wake lock
+// refuses a second wake outright, and a spawn that has not yet taken hold backs poke off 5 minutes.
+// (A v1 leftover: an in-session timer was the primary waker then, and poke had to let it go first.)
+// `otto poke --grace N` still overrides it.
+pub const GRACE_MINUTES: i64 = 0;
 pub const MAX_STARTS: u32 = 2;
 // A spawn that produces no wake leaves the run exactly as it was; this is how many retries it
 // gets before poke gives up and leaves a journal line for a person.
@@ -763,10 +769,19 @@ mod tests {
     // --- grace and backoff, inherited ---
 
     #[test]
-    fn a_just_missed_wake_is_deferred_inside_the_grace() {
+    fn a_just_missed_wake_is_spawned_on_the_next_pass() {
+        let mut state = base_state("r");
+        state.next_wake_at = Some(at(now() - Duration::minutes(1)));
+        let decision = decide_with(&state, &idle());
+        assert_eq!(decision.action, Action::Spawn, "{}", decision.reason);
+    }
+
+    #[test]
+    fn an_explicit_grace_still_defers_inside_it() {
         let mut state = base_state("r");
         state.next_wake_at = Some(at(now() - Duration::minutes(5)));
-        let decision = decide_with(&state, &idle());
+        let entry = RunEntry::Readable(state);
+        let decision = decide(&entry, now(), &idle(), 15, MAX_SPAWN_ATTEMPTS, DEADLINE_GRACE_MINUTES);
         assert_eq!(decision.action, Action::Defer);
         assert!(decision.reason.contains("grace"));
     }

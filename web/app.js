@@ -81,6 +81,12 @@ function relative(iso) {
   return seconds >= 0 ? `in ${n}${unit}` : `${n}${unit} ago`;
 }
 
+/** When something poke acts on is due — mirrors clock::due: once passed, it waits for the next poke. */
+function due(iso) {
+  if (!iso) return "";
+  return new Date(iso) <= Date.now() ? "next poke" : relative(iso);
+}
+
 function localTime(iso) {
   return iso ? new Date(iso).toLocaleString() : "";
 }
@@ -290,7 +296,7 @@ function runsView() {
         h("td", { dataset: { label: "phase" } }, r.phase),
         h("td", { dataset: { label: "waiting on" } }, r.blocking),
         h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
-          r.nextWakeAt && !r.running && !r.terminal ? `${relative(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
+          r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
         h("td.mono", { dataset: { label: "period" } }, r.period),
         h("td.mono", { dataset: { label: "wakes" } }, r.wakes)))),
     ));
@@ -382,12 +388,12 @@ function runView(id) {
     if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
     const over = ["done", "failed", "stopped"].includes(s.status);
     if (!over) {
-      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${relative(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`
+      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`
         : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }
     if (s.check) {
-      rows.push(["Check", `${s.check.script} every ${s.check.everySeconds}s, next ${relative(s.check.nextCheckAt)} — last: ${s.check.lastResult || "not run yet"}`]);
+      rows.push(["Check", `${s.check.script} every ${s.check.everySeconds}s, next ${due(s.check.nextCheckAt)} — last: ${s.check.lastResult || "not run yet"}`]);
     }
     rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
     facts.replaceChildren(

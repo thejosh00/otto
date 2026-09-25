@@ -168,6 +168,17 @@ pub fn relative(at: Timestamp) -> String {
     }
 }
 
+/// When something poke acts on is due: `relative` while it is still ahead, and "next poke" once it
+/// has passed — an overdue timer is not late, it is waiting for poke's next pass, and "3m ago"
+/// reads as though something was missed.
+pub fn due(at: Timestamp) -> String {
+    if at.is_past() {
+        "next poke".to_string()
+    } else {
+        relative(at)
+    }
+}
+
 /// A wake time as a person reads a clock: `14:05` today, `Sep 26 14:05` any other day, in
 /// local time. Display only — everything stored stays UTC.
 pub fn local_clock(at: Timestamp) -> String {
@@ -269,5 +280,12 @@ mod tests {
         assert!(["in 30m", "in 29m"].contains(&relative(future).as_str()), "got {}", relative(future));
         let past = Timestamp::in_minutes(-30);
         assert!(["30m ago", "29m ago"].contains(&relative(past).as_str()), "got {}", relative(past));
+    }
+
+    #[test]
+    fn an_overdue_timer_waits_for_the_next_poke_rather_than_reading_as_missed() {
+        assert_eq!(due(Timestamp::in_minutes(-3)), "next poke");
+        assert_eq!(due(Timestamp::in_minutes(-3000)), "next poke");
+        assert!(due(Timestamp::in_minutes(30)).starts_with("in "), "a future time still reads as one");
     }
 }

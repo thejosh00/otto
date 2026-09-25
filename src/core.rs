@@ -187,7 +187,7 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
 pub fn next_wake(state: &RunState, wake_running: bool) -> String {
     match state.next_wake_at {
         Some(at) if !wake_running && !state.status.is_terminal() => {
-            format!("{} ({})", relative(at), crate::clock::local_clock(at))
+            format!("{} ({})", crate::clock::due(at), crate::clock::local_clock(at))
         }
         _ => "—".to_string(),
     }
@@ -654,6 +654,7 @@ pub fn note_delivery(state: &RunState, running: bool, standing: bool) -> String 
         format!("gate {} is open, so it reaches the wake after you answer it — a note is not an answer", gate.id)
     } else {
         match state.next_wake_at {
+            Some(at) if at.is_past() => "the next wake reads it, at the next poke".to_string(),
             Some(at) => format!("the next wake reads it, {}", relative(at)),
             None => "the next wake reads it".to_string(),
         }

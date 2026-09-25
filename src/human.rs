@@ -240,7 +240,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if !state.status.is_terminal() {
         match state.next_wake_at {
             Some(at) if !detail.running => {
-                println!("  next wake {} ({})", crate::clock::relative(at), crate::clock::local_clock(at))
+                println!("  next wake {} ({})", crate::clock::due(at), crate::clock::local_clock(at))
             }
             _ if detail.running => println!("  next wake set when this wake finishes"),
             _ if state.gate.is_some() => println!("  next wake after the gate is answered"),
@@ -261,7 +261,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
             "  check     {} every {}s, next {} — last: {}",
             check.script,
             check.every_seconds,
-            crate::clock::relative(check.next_check_at),
+            crate::clock::due(check.next_check_at),
             last
         );
     }
