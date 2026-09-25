@@ -629,6 +629,10 @@ mod tests {
             next_check_at,
             consecutive_no_change: 0,
             last_result: None,
+            last_at: None,
+            last_note: None,
+            no_change_total: 0,
+            pinned: false,
         }
     }
 
@@ -888,6 +892,9 @@ mod tests {
         let check = after.check.expect("check must survive a no-change result");
         assert_eq!(check.consecutive_no_change, 1);
         assert_eq!(check.last_result, Some(CheckResult::NoChange));
+        assert_eq!(check.no_change_total, 1, "each no-change result is a wake not spent");
+        assert_eq!(check.last_note.as_deref(), Some("nothing new"), "what it saw is kept for `otto show`");
+        assert!(check.last_at.is_some());
         // `record_check` re-arms from the real wall clock, same as `arm_timer` — not from this
         // test's fixed `now()` — so this only checks it moved, not by how much.
         assert_ne!(check.next_check_at, check_due(at(now() - Duration::minutes(1))).next_check_at);

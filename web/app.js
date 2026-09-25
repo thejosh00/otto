@@ -392,14 +392,48 @@ function runView(id) {
         : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }
-    if (s.check) {
-      rows.push(["Check", `${s.check.script} every ${s.check.everySeconds}s, next ${due(s.check.nextCheckAt)} — last: ${s.check.lastResult || "not run yet"}`]);
-    }
     rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
     facts.replaceChildren(
       d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:16px;white-space:pre-wrap" }, d.blockedExplanation) : "",
       h("div.card", { style: "margin-top:16px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))),
+      over ? "" : renderCheck(d),
     );
+  }
+
+  // The check script is the cheapest wake there is, so the page says plainly whether this run has
+  // one — and, when it doesn't, what each full wake is costing instead.
+  function renderCheck(d) {
+    const c = d.check;
+    const cost = d.wakeCost
+      ? `~${d.wakeCost.avgTurns} turns and ${humanise(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
+      : null;
+    if (!c) {
+      return h("div", h("h2", "Check script"),
+        h("div.banner.warn", { style: "white-space:pre-wrap" },
+          "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
+          "A script poke runs directly, with no model, can answer the \u201cnothing new\u201d wakes for free:\n",
+          h("span.mono", `otto check ${d.short} --script <file> --every 1h --period 1d`)));
+    }
+    const every = formatMinutes(Math.max(1, Math.round(c.everySeconds / 60)));
+    const last = c.lastResult
+      ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
+      : "not run yet";
+    const rows = [
+      ["Runs", `${c.script} every ${every} · ${c.pinned ? "set by you" : "set by a wake, for this sleep only"}`],
+      ["Next", due(c.nextCheckAt)],
+      ["Last", last],
+      ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
+    ];
+    return h("div", h("h2", "Check script"),
+      c.warning ? h("div.banner.warn", c.warning) : "",
+      h("div.card", { style: "margin-top:10px" },
+        h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
+        c.text != null ? h("div.prose", c.text)
+          : h("p.muted", `(${c.script} is missing — poke will treat it as an error and wake the run)`)));
+  }
+
+  function humanise(n) {
+    return n < 10000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`;
   }
 
   function renderGate(d) {

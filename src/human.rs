@@ -248,22 +248,8 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         }
         println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
     }
-    if let Some(check) = &state.check {
-        // Opt-in only (DESIGN.md §8) — kept cold-readable like everything else here, since a
-        // check script's whole point is to run where nobody is watching.
-        let last = match check.last_result {
-            Some(CheckResult::NoChange) => "no change".to_string(),
-            Some(CheckResult::Changed) => "changed".to_string(),
-            Some(CheckResult::Error) => "errored".to_string(),
-            None => "not run yet".to_string(),
-        };
-        println!(
-            "  check     {} every {}s, next {} — last: {}",
-            check.script,
-            check.every_seconds,
-            crate::clock::due(check.next_check_at),
-            last
-        );
+    if !state.status.is_terminal() {
+        print_check_summary(&detail);
     }
     if let Some(explanation) = &detail.blocked_explanation {
         println!("\n{explanation}");
@@ -507,6 +493,133 @@ fn print_notes(notes: &[crate::core::NoteView]) {
         };
         println!("── note {} · {kind} · added {} ──", note.id, crate::clock::relative(note.added_at));
         println!("{}", note.text.trim_end());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// otto check
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct CheckArgs {
+    /// The run: its id, a prefix of it, or its slug
+    pub id: String,
+    /// A script poke runs directly, no model involved: exit 0 = nothing changed (no wake is
+    /// spent), 1 = changed (a wake), anything else = a wake too. It starts with a #! line, and
+    /// runs under launchd's PATH — use absolute paths for anything outside /usr/bin and Homebrew
+    #[arg(long, value_name = "FILE")]
+    pub script: Option<String>,
+    /// How often poke runs it (`15m`, `1h`)
+    #[arg(long, requires = "script", default_value = "1h", value_name = "DURATION")]
+    pub every: String,
+    /// Also set the run's period: how often a real wake comes regardless, as a heartbeat. This is
+    /// what saves money — a check can only skip wakes that the period would otherwise spend
+    #[arg(long, requires = "script", value_name = "DURATION")]
+    pub period: Option<String>,
+    /// Remove the run's check script; every wake is a full one again
+    #[arg(long, conflicts_with_all = ["script", "period"])]
+    pub off: bool,
+}
+
+pub fn check(args: CheckArgs) -> Result<(), OttoError> {
+    if args.off {
+        let script = crate::core::clear_check(&args.id)?;
+        println!("removed the check script ({script} is left on disk) — every wake is a full one again");
+        return Ok(());
+    }
+    let Some(path) = &args.script else {
+        let detail = crate::core::run_detail(Some(&args.id))?;
+        print_check_summary(&detail);
+        if let Some(text) = detail.check.as_ref().and_then(|c| c.text.as_ref()) {
+            println!("\n{}", text.trim_end());
+        }
+        return Ok(());
+    };
+    let script = std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?;
+    let every = parse_duration("--every", &args.every)?;
+    let period = args.period.as_deref().map(|p| parse_duration("--period", p)).transpose()?;
+    let outcome = crate::core::set_check(
+        &args.id,
+        &script,
+        every.whole_seconds(),
+        period.map(|p| p.whole_minutes() as u64),
+    )?;
+    println!(
+        "check set: poke runs {} every {}; its first run is on the next poke",
+        outcome.check.script,
+        crate::clock::format_minutes((outcome.check.every_seconds / 60) as u64)
+    );
+    print!("a real wake still comes every {}", crate::clock::format_minutes(outcome.period_minutes));
+    match outcome.next_wake_at {
+        Some(at) => println!(" — the next {} ({})", crate::clock::due(at), crate::clock::local_clock(at)),
+        None => println!(),
+    }
+    if let Some(warning) = &outcome.check.warning {
+        println!("warning: {warning}");
+    }
+    Ok(())
+}
+
+fn parse_duration(flag: &str, text: &str) -> Result<time::Duration, OttoError> {
+    crate::clock::parse_age(text)
+        .ok_or_else(|| OttoError::usage(format!("{flag} takes a duration like 15m, 1h or 1d, not \"{text}\"")))
+}
+
+/// The check line `otto show` and `otto check` share. With no check it says so, and what that is
+/// costing: every wake a full model session, when a script could answer most of them.
+fn print_check_summary(detail: &crate::core::RunDetail) {
+    let cost = detail.wake_cost.as_ref().map(|c| {
+        format!(
+            "~{} turns, {} cache-creation tokens a wake over the last {}",
+            c.avg_turns,
+            crate::core::humanise(c.avg_cache_creation),
+            c.wakes
+        )
+    });
+    let Some(check) = &detail.check else {
+        println!(
+            "  check     none — every wake is a full model session{}",
+            cost.map(|c| format!(" ({c})")).unwrap_or_default()
+        );
+        println!(
+            "            a script poke can run instead: `otto check {} --script <file> --every 1h --period 1d`",
+            detail.short
+        );
+        return;
+    };
+    let last = match (check.last_result, check.last_at) {
+        (Some(result), Some(at)) => {
+            let what = match result {
+                CheckResult::NoChange => "no change",
+                CheckResult::Changed => "changed",
+                CheckResult::Error => "errored",
+            };
+            let said = check.last_note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+            let when = match crate::clock::relative(at) {
+                now if now == "now" => "just now".to_string(),
+                ago => ago,
+            };
+            format!("{what} {when}{said}")
+        }
+        (Some(CheckResult::NoChange), None) => "no change".to_string(),
+        (Some(CheckResult::Changed), None) => "changed".to_string(),
+        (Some(CheckResult::Error), None) => "errored".to_string(),
+        (None, _) => "not run yet".to_string(),
+    };
+    println!(
+        "  check     {} every {}{} — next {}, last: {last}",
+        check.script,
+        crate::clock::format_minutes((check.every_seconds / 60).max(1) as u64),
+        if check.pinned { ", set by you" } else { ", set by a wake for this sleep" },
+        crate::clock::due(check.next_check_at),
+    );
+    println!(
+        "            {} check(s) found nothing, each a wake not spent{}",
+        check.no_change_total,
+        cost.map(|c| format!(" ({c})")).unwrap_or_default()
+    );
+    if let Some(warning) = &check.warning {
+        println!("            warning: {warning}");
     }
 }
 

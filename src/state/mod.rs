@@ -302,6 +302,20 @@ pub struct Check {
     pub consecutive_no_change: u32,
     #[serde(rename = "lastResult", default, skip_serializing_if = "Option::is_none")]
     pub last_result: Option<CheckResult>,
+    /// When poke last ran it, and the first line or so of what it printed — so `otto show` can say
+    /// what the script saw without a no-change result ever reaching the journal.
+    #[serde(rename = "lastAt", default, skip_serializing_if = "Option::is_none")]
+    pub last_at: Option<crate::clock::Timestamp>,
+    #[serde(rename = "lastNote", default, skip_serializing_if = "Option::is_none")]
+    pub last_note: Option<String>,
+    /// Every no-change result since the check was set: each one a wake that did not happen.
+    #[serde(rename = "noChangeTotal", default)]
+    pub no_change_total: u64,
+    /// Set by a person (`otto check`), not by a wake: it belongs to the run rather than to one
+    /// sleep, so a wake's plain `arm-timer` keeps it instead of clearing it, and a wake's own
+    /// `--check-script` does not replace it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 fn default_gate_stale_after_hours() -> u32 {

@@ -706,18 +706,30 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
                 next_check_at: Timestamp::in_seconds(every),
                 consecutive_no_change: 0,
                 last_result: None,
+                last_at: None,
+                last_note: None,
+                no_change_total: 0,
+                pinned: false,
             })
         }
         _ => None,
     };
     let id = args.id.clone();
-    transaction(&id, |path, state| {
+    let kept_pinned = transaction(&id, |path, state| {
         state.next_wake_at = Some(wake);
         state.status = args.status;
-        state.check = check.clone();
-        crate::event::record(path, &Event::TimerArmed { next_wake_at: wake, note: args.note.clone() })
+        // A person's check outlives any one sleep: keep it, whatever this call asked for.
+        let pinned = state.check.as_ref().is_some_and(|c| c.pinned);
+        if !pinned {
+            state.check = check.clone();
+        }
+        crate::event::record(path, &Event::TimerArmed { next_wake_at: wake, note: args.note.clone() })?;
+        Ok(pinned)
     })?;
     println!("{wake}");
+    if kept_pinned && check.is_some() {
+        eprintln!("otto: kept the check script a person set for this run (`otto check`); --check-script ignored");
+    }
     Ok(())
 }
 
@@ -728,9 +740,12 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
 pub fn record_check(id: &str, result: CheckResult, note: Option<String>) -> Result<(), OttoError> {
     transaction(id, |path, state| {
         let Some(check) = state.check.as_mut() else { return Ok(()) };
+        check.last_at = Some(Timestamp::now());
+        check.last_note = note.clone();
         match result {
             CheckResult::NoChange => {
                 check.consecutive_no_change += 1;
+                check.no_change_total += 1;
                 check.next_check_at = Timestamp::in_seconds(check.every_seconds);
             }
             CheckResult::Changed | CheckResult::Error => {

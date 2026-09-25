@@ -225,6 +225,11 @@ and it's what catches a check script that's gone stale or wrong. Skip this entir
 that isn't genuinely cheap to check outside an LLM — a plain `arm-timer` is the right default, and
 this is optional the same way a phase table is (DESIGN.md §11.8).
 
+**A check a person set is theirs.** If `run.json`'s `check` has `"pinned": true`, a person gave the
+run that script with `otto check`, and it belongs to the run rather than to one sleep: poke keeps
+running it across your wakes, a plain `arm-timer` keeps it, and your own `--check-script` is
+ignored. Don't write another. The run's period is the heartbeat that comes regardless.
+
 ## Notes
 
 A person can leave a note for the run at any time, gated or not, and it arrives in your prompt

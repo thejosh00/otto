@@ -212,6 +212,13 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         if let Some(given) = &notes {
             crate::notes::mark_given(state, &given.ids, wake_number);
         }
+        // A wake is a real look at the world, so the check that would have asked "anything new?"
+        // restarts its interval from here. Without this, a change the wake could not clear — a
+        // task it failed to finish — would read as "changed" at the very next poke, and a check
+        // meant to save wakes would spawn one every five minutes instead.
+        if let Some(check) = state.check.as_mut() {
+            check.next_check_at = Timestamp::at(started.dt() + time::Duration::seconds(check.every_seconds));
+        }
         crate::event::record(
             path,
             &Event::WakeStarted {
@@ -1055,6 +1062,21 @@ mod tests {
         run_wake(&args("w-note"), &mut exec).unwrap();
         let call = exec.last_call().join(" ");
         assert!(!call.contains("Skip the e2e suite") && call.contains("Never touch legacy/."));
+    }
+
+    /// A change the wake could not clear must not read as "changed" again at the very next poke —
+    /// that would turn a check meant to save wakes into a wake every five minutes.
+    #[test]
+    fn a_wake_restarts_its_check_s_interval() {
+        let _h = TempHome::new();
+        test_init("w-check", "a goal").unwrap();
+        crate::core::set_check("w-check", "#!/bin/sh\nexit 1\n", 3600, Some(1440)).unwrap();
+        assert!(read_run("w-check").unwrap().check.unwrap().next_check_at.is_past());
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-check"));
+        run_wake(&args("w-check"), &mut exec).unwrap();
+        let next = read_run("w-check").unwrap().check.unwrap().next_check_at;
+        assert!(next.dt() > crate::clock::now() + time::Duration::minutes(59), "{next}");
     }
 
     #[test]

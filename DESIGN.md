@@ -479,6 +479,21 @@ poke itself; the moment it can't answer cleanly, the answer is to hand the quest
 that can, not to guess "no change" and risk a run going stale unnoticed. This costs the same
 $0.2–0.4 floor a wake always costs, but a broken script is a rare event, not a schedule.
 
+**A check a person sets belongs to the run.** `otto check <run> --script f --every 1h --period 1d`
+copies the script to `check.sh` in the run directory and marks the check `pinned`: poke keeps
+running it across every wake, a wake's plain `arm-timer` keeps it rather than clearing it, and a
+wake's own `--check-script` does not replace it. `--period` is what makes it pay — the check can
+only skip wakes the period would otherwise spend, so `otto check` warns when the check runs no
+more often than the period. The first run is on the next poke, so a broken script shows at once.
+`otto show` and the run page show the script, its last result and output, and how many checks
+have found nothing (`noChangeTotal`, each a wake not spent) — or, with no check, what a wake has
+been costing instead.
+
+**Every wake restarts the check's interval.** A wake is a real look at the world. Without this, a
+change the wake could not clear (a task it failed to finish) reads as "changed" at the very next
+poke, and a check meant to save wakes spawns one every five minutes. With it, the worst case is
+one wake per check interval.
+
 **§11.8** is how a phase declares one. See `harness/wake.md`'s Waiting section for what a wake
 that's about to sleep actually writes.
 
@@ -844,6 +859,7 @@ otto ls                        # status · goal · who is blocking · wakes spen
 otto show <run>                # state, handoff, the open question, cold-readable
 otto answer <run> --choice approve | --text "…" | --file f  [--no-wake]
 otto note <run> "…" [--standing] [--now] | --list | --drop N
+otto check <run> [--script f --every 1h --period 1d | --off]
 otto logs <run> [-f]           # the journal, readable
 otto attach <run>              # watch the live wake, if there is one
 otto wake <run> [--watch | --detach tmux|none] [--dry-run]

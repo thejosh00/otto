@@ -206,6 +206,18 @@ pub enum Event {
         note: String,
         standing: bool,
     },
+    /// A person set the run's check script (`otto check`), and maybe its period with it.
+    CheckSet {
+        script: String,
+        #[serde(rename = "everySeconds")]
+        every_seconds: i64,
+        #[serde(rename = "periodMinutes", skip_serializing_if = "Option::is_none")]
+        period_minutes: Option<u64>,
+    },
+    /// A person removed the run's check script; every wake is a full one again.
+    CheckCleared {
+        script: String,
+    },
     /// Poke sent a desktop notification about this run — once per `key`, so the journal says
     /// when a person was told, not just when the thing happened. See `notify`.
     Notified {

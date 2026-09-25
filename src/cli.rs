@@ -26,6 +26,8 @@ pub enum Command {
     Answer(crate::human::AnswerArgs),
     /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
     Note(crate::human::NoteArgs),
+    /// Give a run a check script poke runs instead of a wake, see it, or remove it.
+    Check(crate::human::CheckArgs),
     /// The run's journal, readably.
     Logs(crate::human::LogsArgs),
     /// Watch the wake that is running right now.
