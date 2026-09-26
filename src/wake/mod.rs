@@ -1071,7 +1071,8 @@ mod tests {
     fn a_wake_restarts_its_check_s_interval() {
         let _h = TempHome::new();
         test_init("w-check", "a goal").unwrap();
-        crate::core::set_check("w-check", "#!/bin/sh\nexit 1\n", 3600, Some(1440)).unwrap();
+        crate::core::set_period("w-check", 1440).unwrap();
+        crate::core::set_check("w-check", "#!/bin/sh\nexit 1\n", 3600).unwrap();
         assert!(read_run("w-check").unwrap().check.unwrap().next_check_at.is_past());
         let mut exec = FakeExec::new();
         exec.on_exec(|| behave_well("w-check"));

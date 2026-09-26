@@ -9,6 +9,7 @@
 //!   runs/.locks/repo-*.json    per-repo locks — run-adjacent, as today
 //!   locks/poke.lock            the reviver's whole-pass advisory lock (not run state)
 //!   logs/poke.log              the reviver's launchd stdout/stderr
+//!   logs/serve.log             the web service's launchd stdout/stderr
 //! ```
 
 use crate::error::OttoError;
@@ -189,6 +190,11 @@ fn logs_dir() -> Result<PathBuf, OttoError> {
 
 pub fn poke_log_path() -> Result<PathBuf, OttoError> {
     Ok(logs_dir()?.join("poke.log"))
+}
+
+/// Where the launchd web service (`otto service start`) writes `otto serve`'s output.
+pub fn serve_log_path() -> Result<PathBuf, OttoError> {
+    Ok(logs_dir()?.join("serve.log"))
 }
 
 /// The real, canonical path to the binary currently executing — what `otto start` embeds

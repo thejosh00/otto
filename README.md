@@ -80,7 +80,8 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto show [id]` | Where a run stands, plus the open gate question in full and the real `otto answer` command for each option. With no id: the one run waiting on you, or the only live run |
 | `otto answer [id]` | `--choice X` (checked against the gate's own options), `--text "…"` or `--file f`, then continue the run. No flag on a TTY prompts with a numbered menu instead of failing; Enter takes the gate's stated default. With no id: the one run waiting on you |
 | `otto note <id> "…"` | Tell a run something, gated or not: its next wake reads it verbatim. `--standing` gives it to every wake until `--drop N`; `--now` wakes the run to read it; `--list` shows what is pending. A note steers how the run works — it never changes the goal or authorizes a push; a wake gates anything like that |
-| `otto check <id>` | The cheapest wake is none. `--script f --every 1h --period 1d` gives the run a script poke runs directly, no model: exit 0 = nothing new, no wake spent; 1 = wake it. The period becomes the heartbeat that comes regardless. With no flags, shows the check (or that there is none, and what each wake costs); `--off` removes it |
+| `otto period <id> [4h]` | See or change how often the run wakes. A sleep already scheduled on the old period moves to the new one (sooner or later); a timer a wake armed itself is kept |
+| `otto check <id>` | The cheapest wake is none. `--script f --every 1h` gives the run a script poke runs directly, no model: exit 0 = nothing new, no wake spent; 1 = wake it. Lengthen the period (`otto period <id> 1d`) and it becomes the heartbeat that comes regardless. With no flags, shows the check (or that there is none, and what each wake costs); `--off` removes it |
 | `otto logs <id>` | The journal, readably: a status line on top, local times, a rule per day, token counts rounded. `-f` to keep following, `-n` for how many (like `tail`), `--since 2h`/`--since 2026-09-15`, `--event gate-opened,gate-closed`, `--decisions` for just the turning points |
 | `otto attach <id>` | Watch the wake running right now |
 | `otto stop <id>` | Retire a run (`stopped`; `--failed` if it could not do its job) |
@@ -89,6 +90,7 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 | `otto poke` | The reviver: start wakes whose timer has passed, and post a macOS notification once when a run opens a gate, blocks, leaves a gate unanswered past `gateStaleAfterHours`, or nears its budget. launchd runs this |
 | `otto agent start\|stop\|status` | Manage the launchd reviver, or check whether it's loaded and when it last ran |
 | `otto serve` | The web UI on `127.0.0.1:7878` (`--port`, `--open`): everything above except `attach`'s typing, in a browser |
+| `otto service start\|stop\|status` | Run `otto serve` as a launchd service: up from login, restarted if it exits (`start --port`). Logs to `$OTTO_HOME/logs/serve.log` |
 | `otto state <cmd>` | The machine surface a wake writes through. Never hand-edit `run.json` |
 
 Every `<id>` above takes the full id, a unique prefix of it, or a unique prefix of just its
@@ -129,7 +131,7 @@ no table to validate against. At the moment a wake's process exits, it checks tw
    or terminal.
 2. **This wake rewrote `handoff.md`**, within its cap.
 
-Every run has a **period** (`--period`, default `1h`). A wake that exits cleanly, rewrote the
+Every run has a **period** (`--period`, default `1h`; change it later with `otto period`). A wake that exits cleanly, rewrote the
 handoff, and left the run `running` with nothing pending is put to sleep by otto until one period
 after it started — so "carry on as usual" needs no timer at all. `arm-timer --in`/`--at` overrides
 the period for a single sleep; a gate takes precedence over it, and once answered the period

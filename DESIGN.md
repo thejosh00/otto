@@ -404,7 +404,8 @@ sleeping run was to wait for it to ask, or to stop and resume it.
 `otto state arm-timer <id> --in 3600` sets `status: sleeping` and `nextWakeAt`. That is the
 entire mechanism. Poke wakes it.
 
-**Every run has a period** — `policy.periodMinutes`, set by `otto run --period` (default `1h`).
+**Every run has a period** — `policy.periodMinutes`, set by `otto run --period` (default `1h`) and changed with `otto period <run> <duration>`, which
+also re-anchors a sleep already scheduled on the old period (never one a wake armed itself).
 It is not a second mechanism, only a default for the first: when a wake exits 0, not killed, with
 a freshly rewritten handoff, and leaves the run `running` with no gate and no `nextWakeAt`, the
 parent writes `nextWakeAt = wake.startedAt + period` (never in the past) and sets `sleeping`.
@@ -479,10 +480,10 @@ poke itself; the moment it can't answer cleanly, the answer is to hand the quest
 that can, not to guess "no change" and risk a run going stale unnoticed. This costs the same
 $0.2–0.4 floor a wake always costs, but a broken script is a rare event, not a schedule.
 
-**A check a person sets belongs to the run.** `otto check <run> --script f --every 1h --period 1d`
+**A check a person sets belongs to the run.** `otto check <run> --script f --every 1h`
 copies the script to `check.sh` in the run directory and marks the check `pinned`: poke keeps
 running it across every wake, a wake's plain `arm-timer` keeps it rather than clearing it, and a
-wake's own `--check-script` does not replace it. `--period` is what makes it pay — the check can
+wake's own `--check-script` does not replace it. A longer period (`otto period`) is what makes it pay — the check can
 only skip wakes the period would otherwise spend, so `otto check` warns when the check runs no
 more often than the period. The first run is on the next poke, so a broken script shows at once.
 `otto show` and the run page show the script, its last result and output, and how many checks
@@ -859,7 +860,8 @@ otto ls                        # status · goal · who is blocking · wakes spen
 otto show <run>                # state, handoff, the open question, cold-readable
 otto answer <run> --choice approve | --text "…" | --file f  [--no-wake]
 otto note <run> "…" [--standing] [--now] | --list | --drop N
-otto check <run> [--script f --every 1h --period 1d | --off]
+otto check <run> [--script f --every 1h | --off]
+otto period <run> [4h]         # see or change how often it wakes
 otto logs <run> [-f]           # the journal, readable
 otto attach <run>              # watch the live wake, if there is one
 otto wake <run> [--watch | --detach tmux|none] [--dry-run]

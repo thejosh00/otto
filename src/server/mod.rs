@@ -2,8 +2,9 @@
 //!
 //! A view over the run directory, and nothing more: every handler calls the same `core` function
 //! the matching CLI command does, and the server holds no state of its own. Stop it and nothing
-//! about any run changes; runs keep waking under poke, and `otto ls` still answers. That is why
-//! there is no daemon to keep alive here, only a page to look at.
+//! about any run changes; runs keep waking under poke, and `otto ls` still answers. So keeping it
+//! running is a convenience, not a correctness matter: `otto service start` has launchd do it (see
+//! `launchd`), and nothing breaks when it is down.
 //!
 //! It binds 127.0.0.1 and nothing else, with no login. A POST here can start `claude` with
 //! bypassed permissions, so "only this machine" has to hold against the browser too, not just the
@@ -75,6 +76,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/answer", post(handlers::answer))
         .route("/runs/{id}/notes", post(handlers::add_note))
         .route("/runs/{id}/notes/{note}/drop", post(handlers::drop_note))
+        .route("/runs/{id}/period", post(handlers::period))
         .route("/runs/{id}/stop", post(handlers::stop))
         .route("/runs/{id}/resume", post(handlers::resume))
         .route("/runs/{id}/wake", post(handlers::wake))

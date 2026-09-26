@@ -32,6 +32,8 @@ pub enum Command {
     Logs(crate::human::LogsArgs),
     /// Watch the wake that is running right now.
     Attach(crate::human::AttachArgs),
+    /// See or change how often a run wakes.
+    Period(crate::human::PeriodArgs),
     /// Retire a run.
     Stop(crate::human::StopArgs),
     /// Bring a stopped or failed run back, and wake it.
@@ -48,6 +50,11 @@ pub enum Command {
     },
     /// The web UI: everything above, in a browser, on 127.0.0.1.
     Serve(crate::server::ServeArgs),
+    /// The web UI as a launchd service: running from login, restarted if it exits.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
     /// Symlink otto's Claude Code skills into ~/.claude/skills/.
     Install(crate::install::InstallArgs),
     /// The only writer of a run's durable state.
@@ -67,6 +74,20 @@ pub enum AgentCommand {
     /// Stop it
     Stop,
     /// Is it loaded, when did it last poke, and where is its plist
+    Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ServiceCommand {
+    /// Install (if missing) and start `otto serve` under launchd
+    Start {
+        /// Port on 127.0.0.1 to listen on
+        #[arg(long, default_value_t = crate::server::DEFAULT_PORT)]
+        port: u16,
+    },
+    /// Stop it; it stays stopped until the next `otto service start`
+    Stop,
+    /// Is it loaded, on which port, and where are its plist and log
     Status,
 }
 

@@ -9,7 +9,18 @@
 #   otto install   # (re-)symlink the skills otto ships into ~/.claude/skills
 #   otto agent start   # (re-)register and start the launchd reviver — installs it if missing
 #   otto agent stop    # unregister the launchd reviver
+#   otto service start # (re-)register and start the web UI as a launchd service
+#
+# Pass --service to also install the web UI as a launchd service.
 set -euo pipefail
+
+with_service=0
+for arg in "$@"; do
+	case "$arg" in
+	--service) with_service=1 ;;
+	*) echo "usage: $0 [--service]" >&2; exit 2 ;;
+	esac
+done
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${OTTO_BIN_DIR:-$HOME/.local/bin}"
@@ -32,5 +43,10 @@ echo "==> otto install (skills)"
 
 echo "==> otto agent start (launchd reviver)"
 "$bin_dir/otto" agent start
+
+if [ "$with_service" = 1 ]; then
+	echo "==> otto service start (web UI)"
+	"$bin_dir/otto" service start
+fi
 
 echo "==> done"

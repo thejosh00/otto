@@ -108,6 +108,24 @@ pub async fn drop_note(Path((id, note)): Path<(String, String)>) -> Response {
 
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct PeriodBody {
+    /// A duration, as `otto period` takes it: `30m`, `4h`, `1d`.
+    period: String,
+}
+
+pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Response {
+    blocking(move || {
+        let minutes = crate::clock::parse_age(body.period.trim())
+            .map(|d| d.whole_minutes())
+            .filter(|m| *m >= 1)
+            .ok_or_else(|| OttoError::usage(format!("a period is a duration like 30m, 4h or 1d, not \"{}\"", body.period)))?;
+        crate::core::set_period(&id, minutes as u64)
+    })
+    .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct StopBody {
     reason: Option<String>,
     failed: bool,

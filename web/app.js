@@ -412,7 +412,8 @@ function runView(id) {
         h("div.banner.warn", { style: "white-space:pre-wrap" },
           "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
           "A script poke runs directly, with no model, can answer the \u201cnothing new\u201d wakes for free:\n",
-          h("span.mono", `otto check ${d.short} --script <file> --every 1h --period 1d`)));
+          h("span.mono", `otto check ${d.short} --script <file> --every 1h`), "\nthen lengthen the period so the check is what answers most hours: ",
+          h("span.mono", `otto period ${d.short} 1d`)));
     }
     const every = formatMinutes(Math.max(1, Math.round(c.everySeconds / 60)));
     const last = c.lastResult
@@ -540,7 +541,7 @@ function runView(id) {
       return;
     }
     if (status === "done") { actions.replaceChildren(); return; }
-    if (actions.dataset.open === "stop") return; // the stop form is being filled in
+    if (actions.dataset.open) return; // a form is being filled in
     actions.replaceChildren(h("div.row", { style: "margin-top:16px" },
       h("button", {
         disabled: d.running,
@@ -551,7 +552,33 @@ function runView(id) {
           refresh();
         }),
       }, "Wake now"),
+      h("button", { onclick: () => periodForm(d) }, "Change period…"),
       h("button.danger", { onclick: () => stopForm() }, "Stop run…")));
+  }
+
+  function periodForm(d) {
+    actions.dataset.open = "period";
+    const current = formatMinutes(d.state.policy.periodMinutes || 60);
+    const input = h("input", { value: current, placeholder: "30m, 4h, 1d" });
+    const close = () => { delete actions.dataset.open; refresh(); };
+    let saveButton;
+    const save = (button) => busy(button, async () => {
+      const r = await api(path + "/period", { period: input.value });
+      toast(`Wakes every ${formatMinutes(r.periodMinutes)}` + (r.rescheduled ? ` — next wake ${due(r.nextWakeAt)}`
+        : r.nextWakeAt ? ` — the timer a wake armed (${due(r.nextWakeAt)}) is kept` : ""));
+      close();
+    });
+    actions.replaceChildren(h("div.card", { style: "margin-top:16px" },
+      h("h3", "Change the period"),
+      h("p.muted", `How often it wakes when a wake doesn't ask for something else, now every ${current}. ` +
+        "A sleep already scheduled on the old period moves to the new one; a timer a wake armed itself is kept."),
+      h("div.field", h("span", "Wakes every"), input),
+      h("div.row", { style: "margin-top:10px" },
+        h("button.ghost", { onclick: close }, "Cancel"),
+        (saveButton = h("button.primary", { onclick: (e) => save(e.currentTarget) }, "Save")))));
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") saveButton.click(); });
+    input.focus();
+    input.select();
   }
 
   function stopForm() {

@@ -206,13 +206,18 @@ pub enum Event {
         note: String,
         standing: bool,
     },
-    /// A person set the run's check script (`otto check`), and maybe its period with it.
+    /// A person set the run's check script (`otto check`).
     CheckSet {
         script: String,
         #[serde(rename = "everySeconds")]
         every_seconds: i64,
-        #[serde(rename = "periodMinutes", skip_serializing_if = "Option::is_none")]
-        period_minutes: Option<u64>,
+    },
+    /// A person changed how often the run wakes (`otto period`).
+    PeriodSet {
+        #[serde(rename = "periodMinutes")]
+        period_minutes: u64,
+        #[serde(rename = "previousMinutes")]
+        previous_minutes: u64,
     },
     /// A person removed the run's check script; every wake is a full one again.
     CheckCleared {

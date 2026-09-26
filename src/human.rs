@@ -512,12 +512,8 @@ pub struct CheckArgs {
     /// How often poke runs it (`15m`, `1h`)
     #[arg(long, requires = "script", default_value = "1h", value_name = "DURATION")]
     pub every: String,
-    /// Also set the run's period: how often a real wake comes regardless, as a heartbeat. This is
-    /// what saves money — a check can only skip wakes that the period would otherwise spend
-    #[arg(long, requires = "script", value_name = "DURATION")]
-    pub period: Option<String>,
     /// Remove the run's check script; every wake is a full one again
-    #[arg(long, conflicts_with_all = ["script", "period"])]
+    #[arg(long, conflicts_with = "script")]
     pub off: bool,
 }
 
@@ -537,13 +533,7 @@ pub fn check(args: CheckArgs) -> Result<(), OttoError> {
     };
     let script = std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?;
     let every = parse_duration("--every", &args.every)?;
-    let period = args.period.as_deref().map(|p| parse_duration("--period", p)).transpose()?;
-    let outcome = crate::core::set_check(
-        &args.id,
-        &script,
-        every.whole_seconds(),
-        period.map(|p| p.whole_minutes() as u64),
-    )?;
+    let outcome = crate::core::set_check(&args.id, &script, every.whole_seconds())?;
     println!(
         "check set: poke runs {} every {}; its first run is on the next poke",
         outcome.check.script,
@@ -556,6 +546,50 @@ pub fn check(args: CheckArgs) -> Result<(), OttoError> {
     }
     if let Some(warning) = &outcome.check.warning {
         println!("warning: {warning}");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// otto period
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct PeriodArgs {
+    /// The run: its id, a prefix of it, or its slug
+    pub id: String,
+    /// How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured
+    /// from the start of one wake to the start of the next. Omit it to see the current period
+    #[arg(value_name = "DURATION")]
+    pub period: Option<String>,
+}
+
+pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
+    let Some(text) = &args.period else {
+        let state = crate::state::read_run(&args.id)?;
+        println!("{} wakes every {}", state.id, crate::clock::format_minutes(state.policy.period_minutes));
+        return Ok(());
+    };
+    let minutes = parse_duration("the period", text)?.whole_minutes();
+    if minutes < 1 {
+        return Err(OttoError::usage("the period must be at least 1m"));
+    }
+    let outcome = crate::core::set_period(&args.id, minutes as u64)?;
+    println!(
+        "{} now wakes every {} (was {})",
+        outcome.id,
+        crate::clock::format_minutes(outcome.period_minutes),
+        crate::clock::format_minutes(outcome.previous_minutes)
+    );
+    match (outcome.rescheduled, outcome.next_wake_at) {
+        (true, Some(at)) if at.is_past() => println!("its period has already passed — the next poke wakes it"),
+        (true, Some(at)) => println!("the next wake moved to {} ({})", crate::clock::due(at), crate::clock::local_clock(at)),
+        (false, Some(at)) => println!(
+            "the next wake stays {} ({}) — a wake armed that timer itself; the new period starts after it",
+            crate::clock::due(at),
+            crate::clock::local_clock(at)
+        ),
+        _ => println!("it applies from the end of the next wake"),
     }
     Ok(())
 }
@@ -582,7 +616,8 @@ fn print_check_summary(detail: &crate::core::RunDetail) {
             cost.map(|c| format!(" ({c})")).unwrap_or_default()
         );
         println!(
-            "            a script poke can run instead: `otto check {} --script <file> --every 1h --period 1d`",
+            "            a script poke can run instead: `otto check {0} --script <file> --every 1h`,\n            \
+             then `otto period {0} 1d` so the check answers most hours",
             detail.short
         );
         return;
