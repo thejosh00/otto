@@ -12,6 +12,9 @@ mechanically enforced guarantee that every stopping point can be resumed cold.
 
 > Sessions end. Runs don't.
 
+<p align="center"><img src="assets/demo.png" alt="otto's web UI showing several runs" width="800"></p>
+<p align="center"><sub>The web UI from <code>otto serve</code>: one run waiting on a question, others sleeping, working, blocked and done.</sub></p>
+
 ## How it works
 
 A **run** is a goal plus what it wraps plus state on disk. A **wake** is one non-interactive
