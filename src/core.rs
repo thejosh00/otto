@@ -391,6 +391,8 @@ pub struct RunDetail {
     /// Where this run's wakes start — only when it's worth saying: a directory other than the
     /// configured default, or no directory at all. `None` means "the default", which goes unsaid.
     pub workdir: Option<WorkdirView>,
+    /// Everything this run's wakes have used.
+    pub usage: TokenTotals,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -450,6 +452,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let wake_cost = wake_cost(&dir);
     Ok(RunDetail {
         workdir: workdir_view(&state),
+        usage: run_usage(&dir),
         short,
         notes,
         check,
@@ -1178,6 +1181,164 @@ pub fn humanise(n: u64) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// usage
+// ---------------------------------------------------------------------------
+
+/// Tokens used by some set of wakes, as journaled in each wake's `wake-spent` line.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenTotals {
+    pub wakes: u64,
+    /// Wakes whose transcript couldn't be read (`usage-unavailable`): counted, but their tokens
+    /// are unknown rather than zero.
+    pub unmeasured: u64,
+    pub turns: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_creation: u64,
+    pub cache_read: u64,
+}
+
+impl TokenTotals {
+    pub fn total(&self) -> u64 {
+        self.input_tokens + self.output_tokens + self.cache_creation + self.cache_read
+    }
+
+    fn add_spent(&mut self, v: &Value) {
+        let n = |key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0);
+        self.wakes += 1;
+        self.turns += n("turns");
+        self.input_tokens += n("inputTokens");
+        self.output_tokens += n("outputTokens");
+        self.cache_creation += n("cacheCreation");
+        self.cache_read += n("cacheRead");
+    }
+
+    fn add(&mut self, other: &TokenTotals) {
+        self.wakes += other.wakes;
+        self.unmeasured += other.unmeasured;
+        self.turns += other.turns;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_creation += other.cache_creation;
+        self.cache_read += other.cache_read;
+    }
+
+    /// One line a person reads: the total, then where it went.
+    pub fn summary(&self) -> String {
+        let mut line = format!(
+            "{} tokens over {} wake(s) — {} in, {} out, {} cache write, {} cache read",
+            humanise(self.total()),
+            self.wakes,
+            humanise(self.input_tokens),
+            humanise(self.output_tokens),
+            humanise(self.cache_creation),
+            humanise(self.cache_read),
+        );
+        if self.unmeasured > 0 {
+            line.push_str(&format!(" ({} not measured)", self.unmeasured));
+        }
+        line
+    }
+}
+
+/// Every `wake-spent` and `usage-unavailable` line in one run's journal, with its instant.
+fn usage_lines(dir: &std::path::Path) -> Vec<Line> {
+    let Ok(journal) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    journal
+        .lines()
+        .filter(|l| l.contains("\"wake-spent\"") || l.contains("\"usage-unavailable\""))
+        .filter_map(parse_line)
+        .collect()
+}
+
+fn tally(totals: &mut TokenTotals, line: &Line) {
+    match line.value.get("event").and_then(Value::as_str) {
+        Some("wake-spent") => totals.add_spent(&line.value),
+        Some("usage-unavailable") => totals.unmeasured += 1,
+        _ => {}
+    }
+}
+
+/// Everything a run's wakes have used, over its whole life.
+pub fn run_usage(dir: &std::path::Path) -> TokenTotals {
+    let mut totals = TokenTotals::default();
+    for line in usage_lines(dir) {
+        tally(&mut totals, &line);
+    }
+    totals
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageBy {
+    #[default]
+    Run,
+    Day,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRow {
+    /// The run's id, or the local date (`2026-09-26`).
+    pub key: String,
+    /// What a person reads: the run's short id, or the date.
+    pub label: String,
+    #[serde(flatten)]
+    pub totals: TokenTotals,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageReport {
+    /// The window's start; `None` is all time.
+    pub since: Option<crate::clock::Timestamp>,
+    pub by: UsageBy,
+    /// Biggest first when by run; oldest first when by day.
+    pub rows: Vec<UsageRow>,
+    pub totals: TokenTotals,
+    pub total: u64,
+}
+
+/// Token usage across every run, finished ones included, from `since` on (`7d`, a date, …; `None`
+/// is all time), grouped by run or by local day.
+pub fn usage(since: Option<&str>, by: UsageBy, offset: time::UtcOffset) -> Result<UsageReport, OttoError> {
+    let since = since.map(|s| parse_since(s, offset)).transpose()?;
+    let ids = crate::paths::all_run_ids();
+    let mut groups: std::collections::BTreeMap<String, (String, TokenTotals)> = std::collections::BTreeMap::new();
+    for id in &ids {
+        let dir = crate::paths::runs_dir().join(id);
+        for line in usage_lines(&dir) {
+            let Some(at) = line.at else { continue };
+            if since.is_some_and(|s| at < s) {
+                continue;
+            }
+            let (key, label) = match by {
+                UsageBy::Run => (id.clone(), crate::paths::short_id_among(id, &ids)),
+                UsageBy::Day => {
+                    let day = at.to_offset(offset).date().to_string();
+                    (day.clone(), day)
+                }
+            };
+            tally(&mut groups.entry(key).or_insert_with(|| (label, TokenTotals::default())).1, &line);
+        }
+    }
+    let mut totals = TokenTotals::default();
+    let mut rows: Vec<UsageRow> = groups
+        .into_iter()
+        .map(|(key, (label, t))| {
+            totals.add(&t);
+            UsageRow { key, label, total: t.total(), totals: t }
+        })
+        .collect();
+    if by == UsageBy::Run {
+        rows.sort_by(|a, b| b.total.cmp(&a.total).then(a.key.cmp(&b.key)));
+    }
+    Ok(UsageReport { since: since.map(crate::clock::Timestamp::at), by, rows, total: totals.total(), totals })
+}
+
 /// `--since`: an age (`45m`, `2h`, `3d`), a date (midnight, local), or a full timestamp.
 pub fn parse_since(text: &str, offset: time::UtcOffset) -> Result<time::OffsetDateTime, OttoError> {
     let text = text.trim();
@@ -1613,6 +1774,70 @@ mod tests {
         assert!(check.pinned);
         assert_eq!(check.script, CHECK_FILE);
         assert_eq!(check.wake_after, 12);
+    }
+
+    /// Appends a `wake-spent` line stamped `ts` — the shape `run_wake` writes.
+    fn spent(id: &str, ts: &str, input: u64, output: u64, write: u64, read: u64) {
+        let path = crate::paths::run_dir(id).unwrap().join("journal.jsonl");
+        let line = serde_json::json!({
+            "event": "wake-spent", "turns": 3, "spentWakes": 1, "inputTokens": input, "outputTokens": output,
+            "cacheCreation": write, "cacheRead": read, "toolErrors": 0, "ts": ts,
+        });
+        let mut f = std::fs::OpenOptions::new().append(true).create(true).open(path).unwrap();
+        use std::io::Write;
+        writeln!(f, "{line}").unwrap();
+    }
+
+    fn unmeasured(id: &str, ts: &str) {
+        let path = crate::paths::run_dir(id).unwrap().join("journal.jsonl");
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        use std::io::Write;
+        writeln!(f, "{}", serde_json::json!({"event": "usage-unavailable", "note": "x", "ts": ts})).unwrap();
+    }
+
+    #[test]
+    fn usage_totals_every_run_by_run_and_by_day() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-big", "a goal").unwrap();
+        test_init("2026-09-20-small", "a goal").unwrap();
+        let now = crate::clock::Timestamp::now().to_string();
+        spent("2026-09-20-big", &now, 100, 200, 1000, 5000);
+        spent("2026-09-20-big", &now, 100, 200, 1000, 5000);
+        spent("2026-09-20-small", &now, 10, 20, 100, 500);
+        spent("2026-09-20-small", &now, 0, 0, 0, 0);
+        unmeasured("2026-09-20-small", &now);
+        // Outside a 7-day window.
+        spent("2026-09-20-small", "2020-01-01T00:00:00Z", 1, 1, 1, 1);
+
+        let week = usage(Some("7d"), UsageBy::Run, time::UtcOffset::UTC).unwrap();
+        assert_eq!(week.rows.len(), 2);
+        assert_eq!(week.rows[0].label, "big", "biggest first, by its short id");
+        assert_eq!(week.rows[0].totals.wakes, 2);
+        assert_eq!(week.rows[0].total, 12_600);
+        assert_eq!(week.rows[1].totals.wakes, 2);
+        assert_eq!(week.rows[1].totals.unmeasured, 1, "an unreadable transcript is counted, not zeroed silently");
+        assert_eq!(week.totals.wakes, 4);
+        assert_eq!(week.total, 12_600 + 630);
+
+        let ever = usage(None, UsageBy::Run, time::UtcOffset::UTC).unwrap();
+        assert_eq!(ever.totals.wakes, 5, "all time includes the old wake");
+
+        let days = usage(None, UsageBy::Day, time::UtcOffset::UTC).unwrap();
+        assert_eq!(days.rows.len(), 2);
+        assert_eq!(days.rows[0].key, "2020-01-01", "oldest day first");
+        assert_eq!(days.rows[1].totals.wakes, 4);
+    }
+
+    #[test]
+    fn a_run_s_own_usage_is_its_whole_life() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-life", "a goal").unwrap();
+        spent("2026-09-20-life", "2020-01-01T00:00:00Z", 1, 2, 3, 4);
+        spent("2026-09-20-life", &crate::clock::Timestamp::now().to_string(), 1, 2, 3, 4);
+        let detail = run_detail(Some("life")).unwrap();
+        assert_eq!(detail.usage.wakes, 2);
+        assert_eq!(detail.usage.total(), 20);
+        assert!(detail.usage.summary().starts_with("20 tokens over 2 wake(s)"));
     }
 
     /// The working directory is only worth a line when it isn't the one a person would assume.

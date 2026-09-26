@@ -99,6 +99,83 @@ fn ensure_default_workdir(init: &InitArgs) -> Result<(), OttoError> {
 }
 
 // ---------------------------------------------------------------------------
+// otto usage
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct UsageArgs {
+    /// From when: an age (`24h`, `30d`), a date (`2026-09-01`) or a timestamp [default: 7d]
+    #[arg(long, conflicts_with = "all")]
+    pub since: Option<String>,
+    /// Every wake ever, not just the last week
+    #[arg(long)]
+    pub all: bool,
+    /// One row per run, or per day
+    #[arg(long, value_enum, default_value = "run")]
+    pub by: crate::core::UsageBy,
+    /// Print the report as JSON, with exact counts
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `otto usage` — what wakes have used, in tokens, across every run.
+pub fn usage(args: UsageArgs) -> Result<(), OttoError> {
+    let since = match (&args.since, args.all) {
+        (_, true) => None,
+        (Some(since), false) => Some(since.as_str()),
+        (None, false) => Some("7d"),
+    };
+    let offset = crate::clock::local_offset();
+    let report = crate::core::usage(since, args.by, offset)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let window = match report.since {
+        Some(at) => format!("since {}", crate::clock::local_clock(at)),
+        None => "all time".to_string(),
+    };
+    if report.rows.is_empty() {
+        println!("no wakes {window}");
+        return Ok(());
+    }
+    let h = crate::core::humanise;
+    let first = match args.by {
+        crate::core::UsageBy::Run => "RUN",
+        crate::core::UsageBy::Day => "DAY",
+    };
+    let width = report.rows.iter().map(|r| r.label.chars().count()).max().unwrap_or(0).max(first.len()).max(5);
+    let line = |label: &str, t: &crate::core::TokenTotals| {
+        let wakes = if t.unmeasured > 0 { format!("{}*", t.wakes) } else { t.wakes.to_string() };
+        println!(
+            "{label:<width$}  {wakes:>6}  {:>7}  {:>7}  {:>7}  {:>11}  {:>10}",
+            h(t.total()),
+            h(t.input_tokens),
+            h(t.output_tokens),
+            h(t.cache_creation),
+            h(t.cache_read),
+        );
+    };
+    println!("tokens {window}\n");
+    println!(
+        "{first:<width$}  {:>6}  {:>7}  {:>7}  {:>7}  {:>11}  {:>10}",
+        "WAKES", "TOTAL", "INPUT", "OUTPUT", "CACHE WRITE", "CACHE READ"
+    );
+    for row in &report.rows {
+        line(&row.label, &row.totals);
+    }
+    println!();
+    line("TOTAL", &report.totals);
+    if report.totals.unmeasured > 0 {
+        println!(
+            "\n* includes {} wake(s) whose usage couldn't be read (usually a sandbox that hides ~/.claude) — counted, tokens unknown",
+            report.totals.unmeasured
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // otto config
 // ---------------------------------------------------------------------------
 
@@ -303,6 +380,9 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
             _ => println!("  next wake nothing scheduled"),
         }
         println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
+    }
+    if detail.usage.wakes > 0 {
+        println!("  tokens    {}", detail.usage.summary());
     }
     match &detail.workdir {
         Some(crate::core::WorkdirView::Own { path }) => println!("  workdir   {path} (not the default)"),

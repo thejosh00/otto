@@ -46,6 +46,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Note(args) => human::note(args),
         Command::Check(args) => human::check(args),
         Command::Logs(args) => human::logs(args),
+        Command::Usage(args) => human::usage(args),
         Command::Attach(args) => human::attach(args),
         Command::Period(args) => human::period(args),
         Command::Stop(args) => human::stop(args),

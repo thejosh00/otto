@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let api = Router::new()
         .route("/meta", get(handlers::meta))
+        .route("/usage", get(handlers::usage))
         .route("/config/workdir", post(handlers::set_workdir))
         .route("/runs", get(handlers::list_runs).post(handlers::start_run))
         .route("/runs/{id}", get(handlers::run_detail))
@@ -315,6 +316,20 @@ mod tests {
 
         let (status, body) = rt().block_on(send(post_req("/api/runs?dryRun=true", form)));
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    #[test]
+    fn usage_answers_json_for_any_window() {
+        let _h = TempHome::new();
+        let (status, body) = rt().block_on(send(get_req("/api/usage?since=7d&by=day")));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["by"], "day");
+        assert_eq!(body["totals"]["wakes"], 0);
+        let (status, body) = rt().block_on(send(get_req("/api/usage?since=")));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["since"].is_null(), "an empty window is all time");
+        let (status, _) = rt().block_on(send(get_req("/api/usage?since=lately")));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[test]

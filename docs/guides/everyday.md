@@ -72,6 +72,23 @@ otto attach my-run              # watch the wake running right now (its tmux ses
 
 [The journal reference](../reference/journal.md) lists every event.
 
+## How much is it using?
+
+A wake's cost is tokens, read from the session transcript claude leaves behind:
+
+```bash
+otto usage                  # every run, the last 7 days: wakes, and tokens in, out, cache write, cache read
+otto usage --by day         # the same, one row per day
+otto usage --since 30d      # or a date: --since 2026-09-01
+otto usage --all --json     # everything, exact counts, for a script
+```
+
+`otto show <id>` has a `tokens` line with what that run has used over its whole life, and the web
+UI has the same on each run page and a **Usage** page with the table above. A wake whose transcript
+couldn't be read — usually a sandbox that hides `~/.claude` — is counted and marked, rather than
+quietly adding zero. For a polling run, a [check script](check-scripts.md) is the biggest saving
+there is: `otto check <id>` shows how many wakes it has spared.
+
 ## Waking, stopping, resuming
 
 ```bash
@@ -104,10 +121,11 @@ otto service start         # or keep it running from login — see running-as-a-
 Everything above, in a browser:
 
 - The **runs list**, with a *needs you* section whose option buttons answer a gate in one click.
-- A **run page**: its state, handoff and open question; answering in your own words; notes;
+- A **run page**: its state, handoff, open question and token use; answering in your own words; notes;
   wake, stop, resume and change-period buttons; the check script; the journal with filters and
   live follow; and a read-only view of the wake running right now.
 - A **new run** form that mirrors `otto run`'s flags, with a dry run.
+- **Usage**: tokens by run or by day, over the last day, week, month or all time.
 - The **reviver**: its status, start/stop, and poke-now.
 
 The server is a view over the run directory, not an owner of it — every button calls the same

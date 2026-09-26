@@ -393,6 +393,7 @@ function runView(id) {
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }
     rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
+    if (d.usage.wakes > 0) rows.push(["Tokens", tokenSummary(d.usage)]);
     if (d.workdir && d.workdir.kind === "own") rows.push(["Workdir", `${d.workdir.path} (not the default)`]);
     if (d.workdir && d.workdir.kind === "unset") rows.push(["Workdir", "none — set a default with otto config workdir <dir>"]);
     facts.replaceChildren(
@@ -407,7 +408,7 @@ function runView(id) {
   function renderCheck(d) {
     const c = d.check;
     const cost = d.wakeCost
-      ? `~${d.wakeCost.avgTurns} turns and ${humanise(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
+      ? `~${d.wakeCost.avgTurns} turns and ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
       : null;
     if (!c) {
       return h("div", h("h2", "Check script"),
@@ -432,10 +433,6 @@ function runView(id) {
         h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
         c.text != null ? h("div.prose", c.text)
           : h("p.muted", `(${c.script} is missing — poke will treat it as an error and wake the run)`)));
-  }
-
-  function humanise(n) {
-    return n < 10000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`;
   }
 
   function renderGate(d) {
@@ -692,6 +689,73 @@ function runView(id) {
 }
 
 // ---------------------------------------------------------------------------
+// tokens — shared by the run page and #/usage
+// ---------------------------------------------------------------------------
+
+// Mirrors core::humanise.
+function humaniseTokens(n) {
+  return n < 10000 ? String(n) : n < 1e6 ? `${Math.round(n / 1000)}k` : `${(n / 1e6).toFixed(1)}M`;
+}
+
+function tokenTotal(t) {
+  return t.inputTokens + t.outputTokens + t.cacheCreation + t.cacheRead;
+}
+
+// Mirrors TokenTotals::summary.
+function tokenSummary(t) {
+  const h = humaniseTokens;
+  return `${h(tokenTotal(t))} over ${t.wakes} wake(s) — ${h(t.inputTokens)} in, ${h(t.outputTokens)} out, ` +
+    `${h(t.cacheCreation)} cache write, ${h(t.cacheRead)} cache read` +
+    (t.unmeasured ? ` (${t.unmeasured} not measured)` : "");
+}
+
+// ---------------------------------------------------------------------------
+// #/usage
+// ---------------------------------------------------------------------------
+
+function usageView() {
+  const windows = [["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"], ["", "All time"]];
+  let since = "7d";
+  let by = "run";
+  const out = h("div");
+  const picker = (name, options, current, pick) => h("div.segmented", options.map(([value, label]) =>
+    h("label", h("input", { type: "radio", name, value, checked: value === current,
+      onchange: () => { pick(value); load(); } }), label)));
+  view.replaceChildren(
+    h("h1", "Usage"),
+    h("p.muted", "What wakes have used, in tokens, across every run — finished ones included. Read from each wake's session transcript."),
+    h("div.row", { style: "margin:14px 0;flex-wrap:wrap;gap:10px" },
+      picker("since", windows, since, (v) => { since = v; }),
+      picker("by", [["run", "By run"], ["day", "By day"]], by, (v) => { by = v; })),
+    out);
+
+  async function load() {
+    let r;
+    try { r = await api(`/usage?since=${encodeURIComponent(since)}&by=${by}`); } catch (err) { out.replaceChildren(h("p", err.message)); return; }
+    if (!r.rows.length) { out.replaceChildren(h("p.muted", "No wakes in this window.")); return; }
+    const hT = humaniseTokens;
+    const cells = (label, t, link) => [
+      h("td.id", link ? h("a", { href: link }, label) : label),
+      h("td", { dataset: { label: "wakes" } }, `${t.wakes}${t.unmeasured ? "*" : ""}`),
+      h("td", { dataset: { label: "total" } }, h("strong", hT(tokenTotal(t)))),
+      h("td", { dataset: { label: "input" } }, hT(t.inputTokens)),
+      h("td", { dataset: { label: "output" } }, hT(t.outputTokens)),
+      h("td", { dataset: { label: "cache write" } }, hT(t.cacheCreation)),
+      h("td", { dataset: { label: "cache read" } }, hT(t.cacheRead))];
+    out.replaceChildren(
+      h("table.table",
+        h("thead", h("tr", [by === "run" ? "Run" : "Day", "Wakes", "Total", "Input", "Output", "Cache write", "Cache read"].map((c) => h("th", c)))),
+        h("tbody",
+          r.rows.map((row) => h("tr", cells(row.label, row, by === "run" ? `#/run/${encodeURIComponent(row.key)}` : null))),
+          h("tr", cells("Total", r.totals, null)))),
+      r.totals.unmeasured
+        ? h("p.muted", { style: "margin-top:10px" }, `* includes ${r.totals.unmeasured} wake(s) whose usage couldn't be read — usually a sandbox that hides ~/.claude. Counted, tokens unknown.`)
+        : "");
+  }
+  load();
+}
+
+// ---------------------------------------------------------------------------
 // #/new
 // ---------------------------------------------------------------------------
 
@@ -902,11 +966,12 @@ function route() {
   cleanups = [];
   const hash = location.hash || "#/";
   const run = hash.match(/^#\/run\/(.+)$/);
-  const section = run ? "runs" : hash === "#/new" ? "new" : hash === "#/agent" ? "agent" : "runs";
+  const section = run ? "runs" : hash === "#/new" ? "new" : hash === "#/agent" ? "agent" : hash === "#/usage" ? "usage" : "runs";
   for (const a of document.querySelectorAll("nav a")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]));
   else if (hash === "#/new") newRunView();
   else if (hash === "#/agent") agentView();
+  else if (hash === "#/usage") usageView();
   else runsView();
   window.scrollTo(0, 0);
 }

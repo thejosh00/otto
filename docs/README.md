@@ -7,7 +7,7 @@ notes, and how they fit together. The guides assume it.
 
 | Guide | For when you want to… |
 |---|---|
-| [Living with a run](guides/everyday.md) | see what needs you, answer gates, leave notes, change the period, read the journal, use the web UI |
+| [Living with a run](guides/everyday.md) | see what needs you, answer gates, leave notes, change the period, read the journal, see token usage, use the web UI |
 | [Wrapping work](guides/wrapping.md) | run a skill, a runbook or a bare goal; decide when it's done; write a workflow that runs well over days |
 | [Check scripts](guides/check-scripts.md) | stop paying for wakes that find nothing new |
 | [Sandboxing wakes](guides/sandboxing.md) | run unattended wakes under a sandbox: launchers in `config.json`, permission modes |

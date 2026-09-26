@@ -226,6 +226,19 @@ struct Logs {
     lines: Vec<crate::core::LogLine>,
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UsageQuery {
+    /// An age, date or timestamp; absent is all time.
+    since: Option<String>,
+    by: crate::core::UsageBy,
+}
+
+pub async fn usage(State(state): State<Arc<AppState>>, Query(q): Query<UsageQuery>) -> Response {
+    let offset = state.offset;
+    blocking(move || crate::core::usage(q.since.as_deref().filter(|s| !s.is_empty()), q.by, offset)).await
+}
+
 pub async fn logs(State(state): State<Arc<AppState>>, Path(id): Path<String>, Query(params): Query<LogParams>) -> Response {
     let offset = state.offset;
     blocking(move || {

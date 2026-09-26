@@ -257,6 +257,33 @@ Options:
           Print help
 ```
 
+## `otto usage`
+
+```text
+What wakes have used, in tokens, across every run — by run or by day
+
+Usage: otto usage [OPTIONS]
+
+Options:
+      --since <SINCE>
+          From when: an age (`24h`, `30d`), a date (`2026-09-01`) or a timestamp [default: 7d]
+
+      --all
+          Every wake ever, not just the last week
+
+      --by <BY>
+          One row per run, or per day
+          
+          [default: run]
+          [possible values: run, day]
+
+      --json
+          Print the report as JSON, with exact counts
+
+  -h, --help
+          Print help
+```
+
 ## `otto attach`
 
 ```text
