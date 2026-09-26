@@ -136,6 +136,130 @@ pub fn read_usage(path: &Path) -> std::io::Result<Usage> {
     Ok(usage)
 }
 
+/// One thing a wake did, as the live feed shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Activity {
+    /// The transcript's own timestamp, when the line has one.
+    pub at: Option<String>,
+    pub kind: ActivityKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityKind {
+    /// What the model said.
+    Said,
+    /// A tool it called, summarised: `Bash: git status`, `Read: src/main.rs`.
+    Tool,
+    /// What came back, first few lines.
+    Result,
+    /// A tool call that came back flagged as an error.
+    Error,
+}
+
+const SAID_MAX_CHARS: usize = 2_000;
+const TOOL_MAX_CHARS: usize = 200;
+const RESULT_MAX_LINES: usize = 3;
+const RESULT_MAX_CHARS: usize = 300;
+
+fn clip(text: &str, max: usize) -> String {
+    let text = text.trim();
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
+    }
+}
+
+/// The part of a tool call's input that says what it's doing — the command, the file, the query —
+/// rather than the whole input.
+fn tool_summary(name: &str, input: &serde_json::Value) -> String {
+    let field = |key: &str| input.get(key).and_then(serde_json::Value::as_str);
+    let detail = match name {
+        "Bash" => field("command").map(|c| c.lines().next().unwrap_or_default().to_string()),
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => field("file_path").or(field("notebook_path")).map(str::to_string),
+        "Glob" | "Grep" => field("pattern").map(|p| match field("path") {
+            Some(path) => format!("{p} in {path}"),
+            None => p.to_string(),
+        }),
+        "Skill" => field("skill").or(field("command")).map(str::to_string),
+        "Task" | "Agent" => field("description").or(field("prompt")).map(str::to_string),
+        "WebFetch" => field("url").map(str::to_string),
+        "WebSearch" => field("query").map(str::to_string),
+        "TodoWrite" => Some("updated its todo list".to_string()),
+        _ => None,
+    };
+    let detail = detail.unwrap_or_else(|| input.to_string());
+    clip(&format!("{name}: {detail}"), TOOL_MAX_CHARS)
+}
+
+fn result_summary(content: &serde_json::Value) -> String {
+    let text = match content {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(serde_json::Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        return "(no output)".to_string();
+    }
+    let mut shown = lines[..lines.len().min(RESULT_MAX_LINES)].join("\n");
+    if lines.len() > RESULT_MAX_LINES {
+        shown.push_str(&format!("\n… {} more line(s)", lines.len() - RESULT_MAX_LINES));
+    }
+    clip(&shown, RESULT_MAX_CHARS)
+}
+
+/// What a session has done so far, oldest first: the model's words, each tool call, and each
+/// result. The wake's prompt, thinking, and claude's own bookkeeping lines are left out — they
+/// are either already known (the prompt is otto's) or say nothing a person watching needs.
+///
+/// Read while the wake is still writing, so a half-written last line is skipped, not fatal.
+pub fn activity(path: &Path) -> std::io::Result<Vec<Activity>> {
+    let reader = std::io::BufReader::new(std::fs::File::open(path)?);
+    let mut out = Vec::new();
+    for line in reader.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line?) else { continue };
+        // Subagents' own turns are theirs; the feed follows the wake.
+        if value.get("isSidechain").and_then(serde_json::Value::as_bool) == Some(true) {
+            continue;
+        }
+        let at = value.get("timestamp").and_then(serde_json::Value::as_str).map(str::to_string);
+        let role = value.get("type").and_then(serde_json::Value::as_str);
+        let Some(blocks) = value.get("message").and_then(|m| m.get("content")).and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for block in blocks {
+            let entry = match (role, block.get("type").and_then(serde_json::Value::as_str)) {
+                (Some("assistant"), Some("text")) => {
+                    let text = block.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+                    (!text.trim().is_empty()).then(|| (ActivityKind::Said, clip(text, SAID_MAX_CHARS)))
+                }
+                (Some("assistant"), Some("tool_use")) => {
+                    let name = block.get("name").and_then(serde_json::Value::as_str).unwrap_or("tool");
+                    let input = block.get("input").cloned().unwrap_or_default();
+                    Some((ActivityKind::Tool, tool_summary(name, &input)))
+                }
+                (Some("user"), Some("tool_result")) => {
+                    let error = block.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
+                    let kind = if error { ActivityKind::Error } else { ActivityKind::Result };
+                    Some((kind, result_summary(block.get("content").unwrap_or(&serde_json::Value::Null))))
+                }
+                _ => None,
+            };
+            if let Some((kind, text)) = entry {
+                out.push(Activity { at: at.clone(), kind, text });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Usage for a session, or `None` when there is no readable transcript. The caller journals the
 /// absence and carries on — see the module doc on why this is never fatal.
 pub fn usage_for(session_id: &str) -> Option<Usage> {
@@ -258,6 +382,35 @@ mod tests {
         let usage = usage_for(id).expect("still readable");
         assert_eq!(usage.turns, 1);
         assert_eq!(usage.input_tokens, 7);
+    }
+
+    /// The live feed: words, tool calls and results in order — not the prompt, not thinking,
+    /// not a subagent's own turns — with a half-written last line skipped.
+    #[test]
+    fn activity_follows_what_the_wake_says_and_does() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let path = write_transcript("live-1", "-w-work", &[
+            r#"{"type":"user","message":{"role":"user","content":"Wake run `r`. A long prompt."},"timestamp":"2026-09-26T10:00:00Z"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Checking the queue."}]},"timestamp":"2026-09-26T10:00:01Z"}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"omni next agent --json\necho done"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"a\nb\nc\nd\ne"}]}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"text","text":"a subagent talking"}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/w/x.md"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true,"content":[{"type":"text","text":"no such file"}]}]}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"half wr"#,
+        ]);
+        let got = activity(&path).unwrap();
+        let kinds: Vec<ActivityKind> = got.iter().map(|a| a.kind).collect();
+        assert_eq!(
+            kinds,
+            [ActivityKind::Said, ActivityKind::Tool, ActivityKind::Result, ActivityKind::Tool, ActivityKind::Error]
+        );
+        assert_eq!(got[0].text, "Checking the queue.");
+        assert_eq!(got[0].at.as_deref(), Some("2026-09-26T10:00:01Z"));
+        assert_eq!(got[1].text, "Bash: omni next agent --json", "the command's first line");
+        assert_eq!(got[2].text, "a\nb\nc\n… 2 more line(s)");
+        assert_eq!(got[3].text, "Read: /w/x.md");
+        assert_eq!(got[4].text, "no such file");
     }
 
     /// Expected under a sandbox that cannot see `~/.claude` — and never fatal.

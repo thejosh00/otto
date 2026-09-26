@@ -309,6 +309,14 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 .term .ev.gate { color: #fbbf24; font-weight: 600; }
 .term .ev.bad { color: #f87171; }
 .term .header { color: #8a8f99; }
+.term .act { display: grid; grid-template-columns: auto auto 1fr; gap: 0 6px; padding: 1px 0; }
+.term .act .at { color: #8a8f99; }
+.term .act .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.term .act.said .text { color: #f3f4f6; }
+.term .act.tool .mark, .term .act.tool .text { color: #93b4ff; }
+.term .act.result .text { color: #9ca3af; }
+.term .act.error .mark, .term .act.error .text { color: #f87171; }
+
 
 .filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto; gap: 8px; align-items: center; margin-bottom: 10px; }
 @media (max-width: 720px) { .filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }

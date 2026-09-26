@@ -32,7 +32,7 @@ pub enum Command {
     Logs(crate::human::LogsArgs),
     /// What wakes have used, in tokens, across every run — by run or by day.
     Usage(crate::human::UsageArgs),
-    /// Watch the wake that is running right now.
+    /// Follow what the running wake is saying and doing, as it happens.
     Attach(crate::human::AttachArgs),
     /// See or change how often a run wakes.
     Period(crate::human::PeriodArgs),

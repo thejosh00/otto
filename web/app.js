@@ -670,7 +670,21 @@ function runView(id) {
       status.replaceChildren(pill("running", true), " ", label);
       if (atBottom) out.scrollTop = out.scrollHeight;
     };
-    source.addEventListener("pane", (e) => show(JSON.parse(e.data), "tmux pane, read-only — `otto attach` to type into it"));
+    // What the wake has said and done, from its transcript: the normal case.
+    const marks = { said: "●", tool: "▸", result: "  ", error: "✗" };
+    source.addEventListener("activity", (e) => {
+      const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
+      const entries = JSON.parse(e.data);
+      out.classList.add("wrap");
+      out.replaceChildren(...entries.map((a) => h(`div.act.${a.kind}`,
+        h("span.at", a.at ? new Date(a.at).toLocaleTimeString() : ""), " ",
+        h("span.mark", marks[a.kind] || " "), " ",
+        h("span.text", a.text))));
+      if (!entries.length) out.append("The wake has started; nothing to show yet.");
+      status.replaceChildren(pill("running", true), " ", "what the wake is saying and doing — `otto attach` follows the same feed");
+      if (atBottom) out.scrollTop = out.scrollHeight;
+    });
+    source.addEventListener("pane", (e) => show(JSON.parse(e.data), "tmux pane (this wake's transcript can't be read)"));
     source.addEventListener("log", (e) => show(JSON.parse(e.data), "wake.log (this wake is not in tmux)"));
     source.addEventListener("ended", (e) => {
       source.close();

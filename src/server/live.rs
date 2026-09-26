@@ -1,5 +1,5 @@
 //! The two things a page watches rather than asks for: a journal being written (`otto logs -f`)
-//! and a wake running (`otto attach`). Both are server-sent events, polled server-side at the
+//! and a wake running (`otto attach`, which follows the same transcript). Both are server-sent events, polled server-side at the
 //! same pace the CLI polls — a run writes a few lines a minute, so nothing cleverer is needed.
 
 use super::handlers::LogParams;
@@ -53,8 +53,9 @@ pub async fn logs_stream(
     Sse::new(events).keep_alive(KeepAlive::default()).into_response()
 }
 
-/// What the running wake looks like, re-sent whenever it changes: `pane` (a tmux pane, colour
-/// escapes kept) or `log` (the tail of `wake.log`), then `ended` once no wake is running.
+/// What the running wake looks like, re-sent whenever it changes: `activity` (what it has said
+/// and done, from its transcript), or — when the transcript can't be read — `pane` (its tmux pane,
+/// colour escapes kept) or `log` (the tail of `wake.log`); then `ended` once no wake is running.
 pub async fn live_stream(Path(id): Path<String>) -> Response {
     let resolved = match tokio::task::spawn_blocking(move || crate::paths::resolve_run_id(&id)).await {
         Ok(Ok(id)) => id,
@@ -70,6 +71,7 @@ pub async fn live_stream(Path(id): Path<String>) -> Response {
                 .ok()?;
             if last.as_ref() != Some(&view) {
                 let event = match &view {
+                    LiveView::Transcript(activity) => json_event("activity", activity),
                     LiveView::Pane(text) => json_event("pane", text),
                     LiveView::Log(text) => json_event("log", text),
                     LiveView::Ended(message) => {

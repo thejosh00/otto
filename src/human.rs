@@ -922,9 +922,53 @@ pub struct AttachArgs {
     pub id: String,
 }
 
+/// `otto attach` — follow what the running wake is saying and doing, from its transcript, until
+/// it ends. The wake's tmux pane shows nothing (its output goes to a pipe), so this is the view
+/// that actually shows the work; the pane is the fallback only when the transcript can't be read.
 pub fn attach(args: AttachArgs) -> Result<(), OttoError> {
+    use crate::wake::transcript::ActivityKind;
     let id = crate::paths::resolve_run_id(&args.id)?;
-    crate::detach::attach(&id)
+    let Some(first) = crate::core::live_activity(&id) else {
+        // No readable transcript: a sandbox hiding ~/.claude, or no wake at all — tmux says which.
+        return crate::detach::attach(&id);
+    };
+    let short = crate::paths::short_id(&id);
+    println!("following {short}'s wake — Ctrl-C to stop watching (the wake carries on)\n");
+    let offset = crate::clock::local_offset();
+    let time = time::macros::format_description!("[hour]:[minute]:[second]");
+    let mut shown = 0;
+    let mut activity = first;
+    loop {
+        for entry in &activity[shown.min(activity.len())..] {
+            let at = entry
+                .at
+                .as_deref()
+                .and_then(|t| crate::clock::parse_iso(t).ok())
+                .and_then(|t| t.to_offset(offset).format(&time).ok())
+                .unwrap_or_else(|| "        ".to_string());
+            let mark = match entry.kind {
+                ActivityKind::Said => "●",
+                ActivityKind::Tool => "▸",
+                ActivityKind::Result => " ",
+                ActivityKind::Error => "✗",
+            };
+            let mut lines = entry.text.lines();
+            println!("{at} {mark} {}", lines.next().unwrap_or_default());
+            for more in lines {
+                println!("           {more}");
+            }
+        }
+        shown = activity.len();
+        std::io::stdout().flush().ok();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        match crate::core::live_activity(&id) {
+            Some(next) => activity = next,
+            None => {
+                println!("\nthe wake has ended — `otto show {short}` for where it stands");
+                return Ok(());
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -287,7 +287,7 @@ Options:
 ## `otto attach`
 
 ```text
-Watch the wake that is running right now
+Follow what the running wake is saying and doing, as it happens
 
 Usage: otto attach <ID>
 

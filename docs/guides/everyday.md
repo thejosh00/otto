@@ -67,7 +67,7 @@ otto logs my-run                # the journal: a status line, local times, a rul
 otto logs my-run -f             # keep following
 otto logs my-run --decisions    # just the turning points: gates, answers, status changes
 otto logs my-run --since 2h --event gate-opened,gate-closed
-otto attach my-run              # watch the wake running right now (its tmux session)
+otto attach my-run              # follow what the running wake is saying and doing, live
 ```
 
 [The journal reference](../reference/journal.md) lists every event.
@@ -102,10 +102,16 @@ otto resume my-run --no-wake    # back on its schedule, no wake now
 
 Stopping a run kills any wake in progress and releases its repo locks.
 
+`otto attach` (and the web UI's **Live** tab) follows the wake's session transcript as it's
+written: what the model says (●), each tool call it makes (▸ — the command, the file, the query),
+the first lines of what came back, and errors (✗). Ctrl-C stops watching; the wake carries on.
+When the transcript can't be read — a sandbox that hides `~/.claude` — it falls back to the wake's
+tmux session.
+
 ## Where wakes run
 
-By default each wake runs in a tmux session named `otto-<run-id>`, which ends when the wake does —
-so `otto attach` can show it live and there is nothing to clean up. `otto run --detach none`
+By default each wake runs in a tmux session named `otto-<run-id>`, which ends when the wake does, so
+there is nothing to clean up. `otto run --detach none`
 runs them as plain background processes instead, and `otto run --watch` keeps them in your
 terminal. This is only about watching: the run behaves identically either way, and `otto run`,
 `otto answer`, `otto wake` and `otto poke` all honour the run's setting. `otto wake --watch` or
@@ -123,7 +129,7 @@ Everything above, in a browser:
 - The **runs list**, with a *needs you* section whose option buttons answer a gate in one click.
 - A **run page**: its state, handoff, open question and token use; answering in your own words; notes;
   wake, stop, resume and change-period buttons; the check script; the journal with filters and
-  live follow; and a read-only view of the wake running right now.
+  live follow; and a live feed of what the running wake is saying and doing.
 - A **new run** form that mirrors `otto run`'s flags, with a dry run.
 - **Usage**: tokens by run or by day, over the last day, week, month or all time.
 - The **reviver**: its status, start/stop, and poke-now.

@@ -1570,6 +1570,9 @@ pub fn read_logs(id: &str, query: &LogQuery, offset: time::UtcOffset) -> Result<
 /// What a running wake looks like right now, for a caller that cannot `tmux attach`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveView {
+    /// What the running wake has said and done, from its session transcript — the view that
+    /// actually shows something: a wake's own stdout goes to a pipe, not to its tmux pane.
+    Transcript(Vec<crate::wake::transcript::Activity>),
     /// The tmux pane's contents, with its colour escapes.
     Pane(String),
     /// The tail of `wake.log`, for a wake backgrounded without tmux.
@@ -1580,8 +1583,25 @@ pub enum LiveView {
 
 /// How many trailing lines of `wake.log` stand in for a pane.
 const LIVE_LOG_LINES: usize = 200;
+/// How much of the running wake's activity the live view carries.
+const LIVE_ACTIVITY: usize = 150;
+
+/// The running wake's activity so far, from its transcript — `None` when no wake is running, or
+/// its transcript can't be read (a sandbox that hides `~/.claude`).
+pub fn live_activity(id: &str) -> Option<Vec<crate::wake::transcript::Activity>> {
+    if !LockLiveness.probe(id).is_busy() {
+        return None;
+    }
+    let session = read_run(id).ok()?.wake?.session?;
+    let path = crate::wake::transcript::find_transcript(&session)?;
+    crate::wake::transcript::activity(&path).ok()
+}
 
 pub fn live_view(id: &str, exec: &mut dyn crate::exec::Exec) -> LiveView {
+    if let Some(mut activity) = live_activity(id) {
+        let start = activity.len().saturating_sub(LIVE_ACTIVITY);
+        return LiveView::Transcript(activity.split_off(start));
+    }
     let session = crate::detach::session_name(id);
     if let Some(pane) = crate::detach::capture_pane(exec, &session) {
         return LiveView::Pane(pane);
