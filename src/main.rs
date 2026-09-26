@@ -22,7 +22,7 @@ mod spawner;
 mod state;
 mod wake;
 
-use cli::{AgentCommand, Cli, Command, ServiceCommand, StateCommand};
+use cli::{AgentCommand, Cli, Command, ConfigCommand, ServiceCommand, StateCommand};
 use clap::Parser;
 use error::OttoError;
 
@@ -56,6 +56,9 @@ fn run(command: Command) -> Result<(), OttoError> {
             AgentCommand::Start => launchd::start(),
             AgentCommand::Stop => launchd::stop(),
             AgentCommand::Status => launchd::status(),
+        },
+        Command::Config { command } => match command {
+            ConfigCommand::Workdir { dir } => human::config_workdir(dir),
         },
         Command::Service { command } => match command {
             ServiceCommand::Start { port } => launchd::service_start(port),

@@ -393,6 +393,7 @@ function runView(id) {
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }
     rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
+    rows.push(["Workdir", s.launcher.workdir || "the default working directory"]);
     facts.replaceChildren(
       d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:16px;white-space:pre-wrap" }, d.blockedExplanation) : "",
       h("div.card", { style: "margin-top:16px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))),
@@ -714,6 +715,7 @@ function newRunView() {
   }
 
   const result = h("div");
+  let saveDefault;
   const form = h("form.form", { onsubmit: (e) => e.preventDefault() },
     h("fieldset", h("legend", "What to run"),
       field("goal", "Goal", h("textarea", { required: true, placeholder: "What this run is trying to achieve" }),
@@ -735,7 +737,11 @@ function newRunView() {
         field("launcher", "Launcher", select([["claude", "claude"]], "claude"),
           "A sandbox is the right choice for anything unattended. Add launchers in config.json under otto's home."),
         field("detach", "Wakes run in", select([["tmux", "tmux session"], ["none", "detached process"]], "tmux"),
-          "tmux lets you watch a wake live."))),
+          "tmux lets you watch a wake live.")),
+      field("workdir", "Working directory", h("input", { placeholder: "~/work" }),
+        "Where every wake starts. Empty: the default."),
+      (saveDefault = h("label.check", { hidden: true },
+        (f.saveWorkdir = h("input", { type: "checkbox", checked: true })), "Make this the default for new runs"))),
     h("fieldset", h("legend", "What it may do"),
       field("permissionMode", "Permission mode", select([
         ["bypassPermissions", "bypassPermissions (default)"], ["acceptEdits", "acceptEdits"], ["auto", "auto"],
@@ -759,10 +765,20 @@ function newRunView() {
     result,
   );
   syncWrap();
-  // The launchers are the machine's, from config.json, so the list comes from the server.
+  // The launchers and the default working directory are the machine's, from config.json, so
+  // they come from the server. With no default, the field is required and offers to save one.
+  let defaultWorkdir = null;
   api("/meta").then((m) => {
     const current = f.launcher.value;
     f.launcher.replaceChildren(...m.launchers.map((name) => h("option", { value: name, selected: name === current }, name)));
+    defaultWorkdir = m.workdir;
+    if (m.workdir) {
+      f.workdir.placeholder = m.workdir;
+    } else {
+      f.workdir.required = true;
+      f.workdir.nextElementSibling.textContent = "Where every wake starts. No default is set yet — give one.";
+      saveDefault.hidden = false;
+    }
   }).catch(() => {});
 
   function body() {
@@ -780,6 +796,7 @@ function newRunView() {
       budgetWakes: Number(f.budgetWakes.value) || 0,
       budgetHours: Number(f.budgetHours.value) || 0,
       launcher: f.launcher.value,
+      workdir: text("workdir"),
       detach: f.detach.value,
       permissionMode: f.permissionMode.value,
       allowedTools: lines(f.allowedTools),
@@ -799,6 +816,12 @@ function newRunView() {
     if (!b.goal) { toast("A run needs a goal", true); f.goal.focus(); return; }
     if (b.until && b.perpetual) { toast("A run is either perpetual or has a done-condition, not both", true); return; }
     if (b.skill === undefined && wrap.querySelector("input:checked").value === "skill") { toast("Name the skill", true); return; }
+    if (!b.workdir && !defaultWorkdir) { toast("Give a working directory — there is no default yet", true); f.workdir.focus(); return; }
+    if (b.workdir && !defaultWorkdir && f.saveWorkdir.checked && !dry) {
+      const saved = await busy(button, () => api("/config/workdir", { workdir: b.workdir }));
+      if (!saved) return;
+      defaultWorkdir = b.workdir;
+    }
     const r = await busy(button, () => api("/runs" + (dry ? "?dryRun=true" : ""), b));
     if (!r) return;
     if (dry) {

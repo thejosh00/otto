@@ -68,6 +68,13 @@ pub trait Exec {
     fn exec_isolated(&mut self, argv: &[&str], env: Option<&HashMap<String, String>>, timeout: Duration) -> Output {
         self.exec(argv, env, timeout)
     }
+
+    /// `exec`, in a given working directory — the wake's, so every wake of a run starts in the
+    /// same place whoever started it. `None` inherits this process's.
+    fn exec_in(&mut self, argv: &[&str], cwd: Option<&std::path::Path>, timeout: Duration) -> Output {
+        let _ = cwd;
+        self.exec(argv, None, timeout)
+    }
 }
 
 pub struct RealExec;
@@ -112,6 +119,17 @@ impl Exec for RealExec {
         let mut cmd = Self::command(argv, env);
         cmd.process_group(0);
         spawn_with_deadline(cmd, timeout, true)
+    }
+
+    fn exec_in(&mut self, argv: &[&str], cwd: Option<&std::path::Path>, timeout: Duration) -> Output {
+        if argv.is_empty() {
+            return empty_argv();
+        }
+        let mut cmd = Self::command(argv, None);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        spawn_with_deadline(cmd, timeout, false)
     }
 }
 
@@ -234,6 +252,8 @@ pub(crate) mod fake {
     pub struct FakeExec {
         pub calls: RefCell<Vec<Vec<String>>>,
         pub timeouts: RefCell<Vec<Duration>>,
+        /// The working directory each `exec_in` asked for, in order.
+        pub cwds: RefCell<Vec<Option<std::path::PathBuf>>>,
         queued: RefCell<std::collections::VecDeque<Output>>,
         /// Runs while the fake "child" is running. A real wake writes to the run directory
         /// during its spawn, not before it, and tests that pretend otherwise miss anything
@@ -246,6 +266,7 @@ pub(crate) mod fake {
             Self {
                 calls: RefCell::new(Vec::new()),
                 timeouts: RefCell::new(Vec::new()),
+                cwds: RefCell::new(Vec::new()),
                 queued: RefCell::new(std::collections::VecDeque::new()),
                 side_effect: None,
             }
@@ -275,6 +296,11 @@ pub(crate) mod fake {
                 effect();
             }
             self.queued.borrow_mut().pop_front().unwrap_or_default()
+        }
+
+        fn exec_in(&mut self, argv: &[&str], cwd: Option<&std::path::Path>, timeout: Duration) -> Output {
+            self.cwds.borrow_mut().push(cwd.map(std::path::Path::to_path_buf));
+            self.exec(argv, None, timeout)
         }
     }
 }

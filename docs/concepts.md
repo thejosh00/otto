@@ -45,8 +45,10 @@ Three things start a wake:
 | A person answered a gate | `otto answer` (or the web UI) |
 | You asked | `otto wake <id>`, or `otto note <id> "…" --now` |
 
-Every wake starts cold and re-derives the world — git, `gh`, the ticket — because between two
-wakes `main` moved, CI reran, and someone force-pushed. That is the price of durability, and the
+Every wake starts in the run's **working directory** — `~/work`, say, set once as the default in
+`config.json` or per run with `--workdir` — whoever starts it, so every wake sees the same
+`CLAUDE.md` and project settings. Every wake starts cold and re-derives the world — git, `gh`,
+the ticket — because between two wakes `main` moved, CI reran, and someone force-pushed. That is the price of durability, and the
 reason a run survives a reboot, a crash or a week away.
 
 ## The handoff
@@ -218,7 +220,7 @@ available for a polling run.
 
 ```
 ~/.otto/                         ($OTTO_HOME overrides)
-  config.json                    launchers — see reference/config.md
+  config.json                    the default workdir and launchers — see reference/config.md
   runs/<id>/
     run.json                     machine truth — see reference/run-json.md
     handoff.md                   what the next wake gets for free

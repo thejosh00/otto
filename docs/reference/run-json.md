@@ -36,7 +36,7 @@ what the ideas mean.
 
 | Field | Meaning |
 |---|---|
-| `launcher` | `{kind, detach, repos}`: the launcher's name, `tmux` or `none`, and the `--repo` directories |
+| `launcher` | `{kind, detach, repos, workdir}`: the launcher's name, `tmux` or `none`, the `--repo` directories, and the absolute directory every wake starts in (absent on runs from before working directories, which use the configured default) |
 | `permission` | `{mode, allowedTools, disallowedTools}`, passed to claude on every wake |
 | `budget` | `{wakes, hours, spentWakes}` — 0 means unlimited. (`usd`/`spentUsd` are vestigial and always 0) |
 | `policy` | `periodMinutes`, `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |

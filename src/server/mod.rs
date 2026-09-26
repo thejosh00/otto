@@ -71,6 +71,7 @@ pub fn router(state: AppState) -> Router {
     let state = Arc::new(state);
     let api = Router::new()
         .route("/meta", get(handlers::meta))
+        .route("/config/workdir", post(handlers::set_workdir))
         .route("/runs", get(handlers::list_runs).post(handlers::start_run))
         .route("/runs/{id}", get(handlers::run_detail))
         .route("/runs/{id}/answer", post(handlers::answer))
@@ -286,12 +287,34 @@ mod tests {
 
     #[test]
     fn a_dry_run_from_the_form_creates_nothing() {
-        let _h = TempHome::new();
-        let (status, body) =
-            rt().block_on(send(post_req("/api/runs?dryRun=true", serde_json::json!({"goal": "a goal", "slug": "dry"}))));
+        let h = TempHome::new();
+        let workdir = h.path().display().to_string();
+        let (status, body) = rt().block_on(send(post_req(
+            "/api/runs?dryRun=true",
+            serde_json::json!({"goal": "a goal", "slug": "dry", "workdir": workdir}),
+        )));
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["planned"]["id"].as_str().unwrap().contains("dry"));
         assert!(crate::paths::all_run_ids().is_empty());
+    }
+
+    /// The page can't prompt, so a run with nowhere to run is refused rather than sent to
+    /// wherever the server happened to start — until a default is set, which the page can do.
+    #[test]
+    fn a_run_from_the_form_needs_a_workdir_or_a_default() {
+        let h = TempHome::new();
+        let form = serde_json::json!({"goal": "a goal", "slug": "nowhere"});
+        let (status, body) = rt().block_on(send(post_req("/api/runs?dryRun=true", form.clone())));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        let workdir = h.path().display().to_string();
+        let (status, body) = rt().block_on(send(post_req("/api/config/workdir", serde_json::json!({"workdir": workdir}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (_, meta) = rt().block_on(send(get_req("/api/meta")));
+        assert_eq!(meta["workdir"].as_str(), Some(workdir.as_str()));
+
+        let (status, body) = rt().block_on(send(post_req("/api/runs?dryRun=true", form)));
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[test]

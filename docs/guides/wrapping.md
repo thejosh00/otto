@@ -18,7 +18,10 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 ```
 
 `--goal` is always required: it is the one thing that survives every wake unaltered, and the only
-thing that can say when to stop. `--repo` grants a wake access to a repository (repeatable).
+thing that can say when to stop. `--repo` grants a wake access to a repository (repeatable), and
+`--workdir` overrides the [default working directory](../reference/config.md#workdir) that every
+wake starts in — point it at the repo when the work lives in one, so the repo's `CLAUDE.md` and
+project settings load.
 `otto run --dry-run` prints the run's id and its first wake's command, and creates nothing.
 
 ## How a skill that has never heard of otto survives

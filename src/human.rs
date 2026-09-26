@@ -51,6 +51,7 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
         args.init.detach = Detach::None;
     }
     let detach = args.init.detach;
+    ensure_default_workdir(&args.init)?;
     if args.dry_run {
         let planned = crate::core::plan_run(&args.init)?;
         println!("{}", planned.id);
@@ -60,6 +61,61 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
     let id = crate::core::create_run(args.init)?;
     println!("{id}");
     start_wake(&id, detach, None)
+}
+
+/// A run needs somewhere to run. With no `--workdir` and no default in `config.json`, ask once —
+/// on a terminal — and keep the answer as the default, so the question is never asked again.
+/// Without a terminal there is nobody to ask, so say how to set it instead.
+fn ensure_default_workdir(init: &InitArgs) -> Result<(), OttoError> {
+    if init.workdir.is_some() || crate::config::load()?.workdir.is_some() {
+        return Ok(());
+    }
+    if !stdin_is_terminal() {
+        return Err(OttoError::usage(
+            "no working directory for this run's wakes: pass --workdir <dir>, or set a default once \
+             with `otto config workdir <dir>` (e.g. ~/work)",
+        ));
+    }
+    println!("otto has no default working directory yet — where every wake runs unless a run says otherwise.");
+    loop {
+        print!("default working directory (e.g. ~/work): ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            return Err(OttoError::usage("no working directory given"));
+        }
+        match crate::config::save_workdir(&line) {
+            Ok(dir) => {
+                println!(
+                    "saved to {} — change it with `otto config workdir <dir>`",
+                    crate::config::config_path().display()
+                );
+                println!("  wakes will run in {}", dir.display());
+                return Ok(());
+            }
+            Err(e) => println!("{e}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// otto config
+// ---------------------------------------------------------------------------
+
+/// `otto config workdir [DIR]` — see or set the default working directory.
+pub fn config_workdir(dir: Option<String>) -> Result<(), OttoError> {
+    match dir {
+        Some(dir) => {
+            let resolved = crate::config::save_workdir(&dir)?;
+            println!("default working directory: {}", resolved.display());
+            println!("  new runs' wakes run there; existing runs keep the directory they were created with");
+        }
+        None => match crate::config::load()?.workdir {
+            Some(dir) => println!("{dir}"),
+            None => println!("not set — `otto config workdir <dir>` to set it (otto run will also ask)"),
+        },
+    }
+    Ok(())
 }
 
 /// `otto wake <id>` — force one wake now, backgrounded however the run asks for.
@@ -247,6 +303,10 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
             _ => println!("  next wake nothing scheduled"),
         }
         println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
+    }
+    match crate::config::workdir_for(state) {
+        Some(dir) => println!("  workdir   {}", dir.display()),
+        None => println!("  workdir   wherever the wake is started from — none recorded, and no default set"),
     }
     if !state.status.is_terminal() {
         print_check_summary(&detail);
@@ -1166,13 +1226,43 @@ mod tests {
         assert_eq!(blocking(&state, false), "nothing scheduled");
     }
 
+    /// With no terminal to ask on, a run with no working directory and no default is refused, and
+    /// says how to fix it; `--workdir`, or a default, is all it takes. The run records the resolved
+    /// directory, so a later change of default never moves it.
+    #[test]
+    fn a_run_needs_a_workdir_and_records_it() {
+        let h = TempHome::new();
+        let init = || InitArgs { goal: "a goal".into(), slug: Some("wd".into()), ..Default::default() };
+        let err = run(RunArgs { init: init(), watch: false, dry_run: true }).unwrap_err();
+        assert!(err.to_string().contains("otto config workdir"), "{err}");
+
+        let work = h.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        config_workdir(Some(work.display().to_string())).unwrap();
+        let id = crate::core::create_run(init()).unwrap();
+        let recorded = read_run(&id).unwrap().launcher.workdir.unwrap();
+        assert_eq!(recorded, work.canonicalize().unwrap().display().to_string());
+
+        let elsewhere = h.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        config_workdir(Some(elsewhere.display().to_string())).unwrap();
+        assert_eq!(read_run(&id).unwrap().launcher.workdir.unwrap(), recorded, "existing runs stay put");
+    }
+
     /// `otto run --dry-run` is how a flag gets checked before it costs a run: nothing may exist
     /// afterwards, and what it prints is the real first-wake command.
     #[test]
     fn a_dry_run_prints_the_first_wake_and_creates_nothing() {
-        let _h = TempHome::new();
+        let h = TempHome::new();
+        let workdir = Some(h.path().display().to_string());
         run(RunArgs {
-            init: InitArgs { goal: "a goal".into(), slug: Some("dry".into()), repos: vec!["/w/a".into()], ..Default::default() },
+            init: InitArgs {
+                goal: "a goal".into(),
+                slug: Some("dry".into()),
+                repos: vec!["/w/a".into()],
+                workdir: workdir.clone(),
+                ..Default::default()
+            },
             watch: false,
             dry_run: true,
         })
@@ -1180,7 +1270,7 @@ mod tests {
         assert!(crate::paths::all_run_ids().is_empty(), "a dry run must create no run");
         // The same refusals apply: a launcher nobody has defined.
         let err = run(RunArgs {
-            init: InitArgs { goal: "a goal".into(), launcher: "no-such-launcher".into(), ..Default::default() },
+            init: InitArgs { goal: "a goal".into(), launcher: "no-such-launcher".into(), workdir, ..Default::default() },
             watch: false,
             dry_run: true,
         })

@@ -186,6 +186,11 @@ pub struct Launcher {
     /// when it has one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repos: Vec<String>,
+    /// Where every wake runs, whoever starts it: absolute, resolved when the run was created from
+    /// `--workdir` or the configured default. `None` on a run from before working directories
+    /// existed, which follows today's default (`config::workdir_for`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
 }
 
 /// `wakes` and `hours` are the enforced dimensions. `usd`/`spent_usd` are vestigial — pricing a
@@ -890,7 +895,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         last_spawned_at: None,
         budget_warned_at: None,
         ticks_without_progress: 0,
-        launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![] },
+        launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![], workdir: None },
         permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
         budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, spent_usd: 0.0 },
         policy: Policy::default(),

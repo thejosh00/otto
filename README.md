@@ -38,7 +38,8 @@ and someone force-pushed. [Concepts](docs/concepts.md) has the whole picture.
 
 Builds `otto` into `~/.local/bin`, symlinks the skills otto ships into `~/.claude/skills/`, and
 registers the launchd reviver that wakes sleeping runs. macOS, Rust and `claude` required; tmux
-recommended.
+recommended. The first `otto run` asks where wakes should run (say, `~/work`) and remembers it —
+or set it up front with `otto config workdir ~/work`.
 
 ## A first run
 

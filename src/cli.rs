@@ -57,6 +57,11 @@ pub enum Command {
     },
     /// Symlink otto's Claude Code skills into ~/.claude/skills/.
     Install(crate::install::InstallArgs),
+    /// See or change otto's settings in $OTTO_HOME/config.json.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// The only writer of a run's durable state.
     State {
         #[command(subcommand)]
@@ -75,6 +80,15 @@ pub enum AgentCommand {
     Stop,
     /// Is it loaded, when did it last poke, and where is its plist
     Status,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigCommand {
+    /// The default directory wakes run in, for runs that don't pass --workdir
+    Workdir {
+        /// Set it to this directory (`~` is expanded; it must exist). Omit to print it
+        dir: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

@@ -19,12 +19,20 @@ struct Meta {
     home: String,
     /// Every launcher the new-run form can offer, `claude` first.
     launchers: Vec<String>,
+    /// The default working directory as configured (`~/work`), or `None` — the form then asks.
+    workdir: Option<String>,
 }
 
 pub async fn meta() -> Response {
     blocking(|| {
-        let launchers = crate::config::load()?.launchers().into_iter().map(|l| l.name).collect();
-        Ok(Meta { version: env!("CARGO_PKG_VERSION"), home: crate::paths::otto_home().display().to_string(), launchers })
+        let config = crate::config::load()?;
+        let launchers = config.launchers().into_iter().map(|l| l.name).collect();
+        Ok(Meta {
+            version: env!("CARGO_PKG_VERSION"),
+            home: crate::paths::otto_home().display().to_string(),
+            launchers,
+            workdir: config.workdir,
+        })
     })
     .await
 }
@@ -58,6 +66,13 @@ struct Started {
 
 pub async fn start_run(Query(q): Query<StartQuery>, Json(init): Json<InitArgs>) -> Response {
     blocking(move || {
+        // The terminal asks for a default; the page has to be told one. Refused here rather
+        // than letting the run fall back to wherever the server was started.
+        if init.workdir.is_none() && crate::config::load()?.workdir.is_none() {
+            return Err(OttoError::usage(
+                "no working directory: give one for this run, or set a default (`otto config workdir <dir>`)",
+            ));
+        }
         if q.dry_run {
             return Ok(Started { planned: Some(crate::core::plan_run(&init)?), ..Default::default() });
         }
@@ -104,6 +119,26 @@ pub async fn add_note(Path(id): Path<String>, Json(body): Json<NoteBody>) -> Res
 
 pub async fn drop_note(Path((id, note)): Path<(String, String)>) -> Response {
     blocking(move || crate::core::drop_note(&id, &note)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkdirBody {
+    workdir: String,
+}
+
+#[derive(Serialize)]
+struct WorkdirSaved {
+    workdir: String,
+}
+
+/// Set the default working directory, as `otto config workdir` does.
+pub async fn set_workdir(Json(body): Json<WorkdirBody>) -> Response {
+    blocking(move || {
+        let resolved = crate::config::save_workdir(&body.workdir)?;
+        Ok(WorkdirSaved { workdir: resolved.display().to_string() })
+    })
+    .await
 }
 
 #[derive(Deserialize, Default)]

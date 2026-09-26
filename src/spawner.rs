@@ -68,10 +68,16 @@ fn wake_argv(id: &str, answer: Option<&str>) -> Result<Vec<String>, OttoError> {
     Ok(argv)
 }
 
-fn cwd() -> String {
-    std::env::current_dir()
+/// Where the wake process starts: the run's working directory, so a wake the reviver starts runs
+/// in the same place as one started from a terminal. Without one (a run from before working
+/// directories, on a machine with no default), wherever this process is.
+fn cwd(id: &str) -> String {
+    crate::state::read_run(id)
+        .ok()
+        .and_then(|state| crate::config::workdir_for(&state))
+        .or_else(|| std::env::current_dir().ok())
         .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| crate::paths::home_dir().display().to_string())
+        .unwrap_or_else(|| crate::paths::home_dir().display().to_string())
 }
 
 /// Start one wake under the given strategy.
@@ -93,7 +99,7 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn 
         Strategy::Tmux => {
             let argv = wake_argv(id, answer)?;
             let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-            let session = crate::detach::spawn_detached(exec, id, &refs, &cwd())?;
+            let session = crate::detach::spawn_detached(exec, id, &refs, &cwd(id))?;
             Ok(Handle {
                 description: Some(format!(
                     "wake started in tmux session {session} — `otto attach {}` to watch",
@@ -113,7 +119,7 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn 
             use std::os::unix::process::CommandExt;
             std::process::Command::new(&argv[0])
                 .args(&argv[1..])
-                .current_dir(cwd())
+                .current_dir(cwd(id))
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::from(log))
                 .stderr(std::process::Stdio::from(errlog))

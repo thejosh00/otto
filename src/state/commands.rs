@@ -103,6 +103,10 @@ pub struct InitArgs {
     /// sandbox is the right choice for anything unattended. A unique prefix of the name will do
     #[arg(long, value_name = "NAME", default_value = crate::config::DEFAULT_LAUNCHER, help_heading = "Where it runs")]
     pub launcher: String,
+    /// The directory every wake runs in, whoever starts it [default: `workdir` in
+    /// $OTTO_HOME/config.json]
+    #[arg(long, value_name = "DIR", help_heading = "Where it runs")]
+    pub workdir: Option<String>,
     /// Where each wake is backgrounded: a tmux session named otto-<id>, or none (your terminal)
     #[arg(long, value_enum, default_value = "tmux", help_heading = "Where it runs")]
     pub detach: Detach,
@@ -157,6 +161,7 @@ impl Default for InitArgs {
             slug: None,
             phase: "start".to_string(),
             launcher: crate::config::DEFAULT_LAUNCHER.to_string(),
+            workdir: None,
             repos: vec![],
             permission_mode: PermissionMode::BypassPermissions,
             allowed_tools: vec![],
@@ -338,6 +343,12 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
             kind: crate::config::launcher(&args.launcher)?.name,
             detach: args.detach,
             repos: args.repos.clone(),
+            // Resolved and recorded now, so changing the default later never moves this run.
+            workdir: match &args.workdir {
+                Some(dir) => Some(crate::config::resolve_workdir(dir)?),
+                None => crate::config::default_workdir()?,
+            }
+            .map(|p| p.display().to_string()),
         },
         permission: Permission {
             mode: args.permission_mode,

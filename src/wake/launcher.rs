@@ -115,7 +115,14 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
     // Granting all of `$OTTO_HOME` rather than just this run's directory is deliberate: repo
     // locks live in a sibling (`runs/.locks`).
     let mut dirs = vec![crate::paths::otto_home().display().to_string()];
+    // The working directory too: a sandbox that hasn't opened the directory a wake starts in
+    // fails before the wake does anything.
+    if let Some(workdir) = crate::config::workdir_for(state) {
+        dirs.push(workdir.display().to_string());
+    }
     dirs.extend(state.launcher.repos.iter().cloned());
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
 
     // The guard leads, so what follows is the launcher's own command line.
     let mut argv = sleep_guard();
@@ -146,8 +153,11 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
 mod tests {
     use super::*;
 
+    /// With its working directory recorded, so nothing here reads the real config's default.
     fn state() -> RunState {
-        crate::state::test_run_state("r1")
+        let mut state = crate::state::test_run_state("r1");
+        state.launcher.workdir = Some("/w/work".into());
+        state
     }
 
     fn claude() -> LauncherDef {
@@ -184,7 +194,7 @@ mod tests {
     /// Where claude's own arguments start: straight after the launcher's command and grants.
     fn claude_args(argv: &[String], launcher: &LauncherDef) -> Vec<String> {
         let skip = launcher.command_words().len()
-            + launcher.grant_flag.as_ref().map_or(0, |_| 2 * (1 + state().launcher.repos.len()));
+            + launcher.grant_flag.as_ref().map_or(0, |_| 2 * (2 + state().launcher.repos.len()));
         launched(argv)[skip..].to_vec()
     }
 
@@ -289,11 +299,15 @@ mod tests {
     /// With no `--` in the command, grants go at its end — still ahead of the prompt.
     #[test]
     fn grants_follow_a_command_without_a_double_dash() {
+        let _h = crate::paths::test_support::TempHome::new();
         let mut s = state();
         s.launcher.repos = vec!["/w/a".into()];
         let argv = argv(&s, &wrapper(), "p", SID);
         let home = crate::paths::otto_home().display().to_string();
-        assert_eq!(&launched(&argv)[..6], ["wrap", "--repo", home.as_str(), "--repo", "/w/a", "p"]);
+        assert_eq!(
+            &launched(&argv)[..8],
+            ["wrap", "--repo", home.as_str(), "--repo", "/w/work", "--repo", "/w/a", "p"]
+        );
     }
 
     /// Discovered the hard way, by watching a real wake get `Read` denied on its own
@@ -306,6 +320,17 @@ mod tests {
         assert!(c.contains(&format!("--add-dir {home}")), "claude wake needs its run dir");
         let n = joined(&argv(&state(), &nono(), "p", SID));
         assert!(n.contains(&format!("--allow {home}")), "a sandbox needs a grant, not only --add-dir");
+    }
+
+    /// A sandbox must open the directory a wake starts in, or the wake fails before it begins —
+    /// and a directory granted twice (a repo that is also the workdir) is granted once.
+    #[test]
+    fn the_workdir_is_granted_once() {
+        let mut s = state();
+        s.launcher.repos = vec!["/w/work".into()];
+        let line = joined(&argv(&s, &nono(), "p", SID));
+        assert_eq!(line.matches("--allow /w/work").count(), 1, "{line}");
+        assert_eq!(line.matches("--add-dir /w/work").count(), 1, "{line}");
     }
 
     /// A run whose launcher is no longer in the config is refused, not spawned.

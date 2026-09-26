@@ -34,14 +34,15 @@ otto appends the wake's prompt and claude's own flags to your `command`, so the 
 wake runs:
 
 ```
-caffeinate -i -s nono run --profile nolabs-ai/claude --allow ~/.otto --allow ~/work/svc -- claude '<prompt>' --add-dir ~/.otto --add-dir ~/work/svc --session-id … --permission-mode … …
+caffeinate -i -s nono run --profile nolabs-ai/claude --allow ~/.otto --allow ~/work --allow ~/work/svc -- claude '<prompt>' --add-dir ~/.otto --add-dir ~/work --add-dir ~/work/svc --session-id … --permission-mode … …
 ```
 
 - **`caffeinate`** keeps the Mac awake for exactly as long as the wake runs (macOS only).
 - **`grantFlag`** is how the sandbox opens a directory. otto passes it once for `$OTTO_HOME` —
-  the wake must be able to read `run.json` and write its handoff — and once per `--repo`, placed
-  before the command's first `--` so it reaches the sandbox rather than claude. Leave it out and
-  those grants are your sandbox profile's job.
+  the wake must be able to read `run.json` and write its handoff — once for the run's working
+  directory, which the wake starts in, and once per `--repo`, placed before the command's first
+  `--` so it reaches the sandbox rather than claude. Leave it out and those grants are your sandbox
+  profile's job.
 - **`--add-dir`** still tells claude about the same directories.
 
 `otto wake <id> --dry-run` prints the exact command for a run.

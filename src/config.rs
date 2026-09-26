@@ -1,11 +1,13 @@
 //! `$OTTO_HOME/config.json` — the machine's own settings, as opposed to any one run's.
 //!
-//! Today that is only the launchers: what a wake may be run under besides plain `claude`. They
-//! live here rather than in the source because they are properties of the machine — which
-//! sandbox is installed, with which profile — and differ between machines running the same otto.
+//! Two things: the **default working directory** a wake runs in, and the **launchers** — what a
+//! wake may be run under besides plain `claude`. Both live here rather than in the source because
+//! they are properties of the machine — where the work lives, which sandbox is installed — and
+//! differ between machines running the same otto.
 //!
 //! ```json
 //! {
+//!   "workdir": "~/work",
 //!   "launchers": [
 //!     { "name": "nono (sandbox)", "command": "nono run --profile nolabs-ai/claude -- claude", "grantFlag": "--allow" }
 //!   ]
@@ -52,6 +54,9 @@ impl LauncherDef {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Config {
+    /// Where a wake runs when its run didn't say (`otto run --workdir`). `~` is expanded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
     #[serde(default)]
     pub launchers: Vec<LauncherDef>,
 }
@@ -115,6 +120,61 @@ impl Config {
     }
 }
 
+/// A working directory as a person typed it — `~` expanded, made absolute, and required to exist,
+/// because a wake started in a directory that isn't there fails before it does anything.
+pub fn resolve_workdir(text: &str) -> Result<PathBuf, OttoError> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(OttoError::usage("the working directory is empty"));
+    }
+    let path = match text.strip_prefix('~') {
+        Some(rest) => crate::paths::home_dir().join(rest.trim_start_matches('/')),
+        None => PathBuf::from(text),
+    };
+    let path = if path.is_absolute() { path } else { std::env::current_dir()?.join(path) };
+    if !path.is_dir() {
+        return Err(OttoError::usage(format!("{} is not a directory", path.display())));
+    }
+    Ok(path.canonicalize().unwrap_or(path))
+}
+
+/// The default working directory, resolved — `None` when `config.json` doesn't set one.
+pub fn default_workdir() -> Result<Option<PathBuf>, OttoError> {
+    load()?.workdir.as_deref().map(resolve_workdir).transpose()
+}
+
+/// Set the default working directory in `config.json`, keeping everything else in the file as it
+/// was — including keys this version of otto doesn't know. Returns the directory as resolved.
+pub fn save_workdir(text: &str) -> Result<PathBuf, OttoError> {
+    let resolved = resolve_workdir(text)?;
+    let path = config_path();
+    let mut value = match std::fs::read_to_string(&path) {
+        Ok(existing) => serde_json::from_str::<serde_json::Value>(&existing)
+            .map_err(|e| OttoError::usage(format!("{} is not valid: {e}", path.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(e.into()),
+    };
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| OttoError::usage(format!("{} is not a JSON object", path.display())))?;
+    // Stored as typed, so `~/work` stays portable if the file is copied to another machine.
+    object.insert("workdir".to_string(), serde_json::Value::String(text.trim().to_string()));
+    parse(&value.to_string())?;
+    std::fs::create_dir_all(crate::paths::otto_home())?;
+    crate::state::write_atomic(&path, &(serde_json::to_string_pretty(&value)? + "\n"))?;
+    Ok(resolved)
+}
+
+/// Where a run's wakes run: the directory the run recorded, else today's default. `None` — a run
+/// from before working directories existed, on a machine with no default — leaves a wake where
+/// whatever started it happens to be.
+pub fn workdir_for(state: &crate::state::RunState) -> Option<PathBuf> {
+    match &state.launcher.workdir {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => default_workdir().ok().flatten(),
+    }
+}
+
 /// `Config::launcher` against the config on disk.
 pub fn launcher(name: &str) -> Result<LauncherDef, OttoError> {
     load()?.launcher(name)
@@ -149,7 +209,7 @@ mod tests {
 
     #[test]
     fn a_name_resolves_exactly_or_by_unique_prefix() {
-        let config = Config { launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")] };
+        let config = Config { workdir: None, launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")] };
         assert_eq!(config.launcher("CLAUDE").unwrap().name, "claude");
         assert_eq!(config.launcher("nono (").unwrap().name, "nono (sandbox)");
         assert_eq!(config.launcher("nono-").unwrap().name, "nono-lite");
@@ -160,9 +220,36 @@ mod tests {
 
     #[test]
     fn the_config_can_redefine_claude() {
-        let config = Config { launchers: vec![def("claude", "/opt/claude")] };
+        let config = Config { workdir: None, launchers: vec![def("claude", "/opt/claude")] };
         assert_eq!(config.launchers().len(), 1);
         assert_eq!(config.launcher("claude").unwrap().command, "/opt/claude");
+    }
+
+    #[test]
+    fn saving_the_workdir_keeps_the_rest_of_the_file() {
+        let h = crate::paths::test_support::TempHome::new();
+        let work = h.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(config_path(), r#"{"launchers":[{"name":"nono","command":"nono -- claude"}]}"#).unwrap();
+        let saved = save_workdir(work.to_str().unwrap()).unwrap();
+        assert_eq!(saved, work.canonicalize().unwrap());
+        let config = load().unwrap();
+        assert_eq!(config.launchers.len(), 1, "the launchers survive");
+        assert_eq!(default_workdir().unwrap(), Some(work.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn a_workdir_that_does_not_exist_is_refused() {
+        let _h = crate::paths::test_support::TempHome::new();
+        assert!(resolve_workdir("/no/such/place").unwrap_err().to_string().contains("not a directory"));
+        assert!(save_workdir("/no/such/place").is_err());
+        assert_eq!(default_workdir().unwrap(), None, "nothing was saved");
+    }
+
+    #[test]
+    fn a_workdir_expands_the_home_directory() {
+        let resolved = resolve_workdir("~").unwrap();
+        assert_eq!(resolved, crate::paths::home_dir().canonicalize().unwrap());
     }
 
     #[test]

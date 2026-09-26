@@ -62,6 +62,9 @@ Where it runs:
           
           [default: claude]
 
+      --workdir <DIR>
+          The directory every wake runs in, whoever starts it [default: `workdir` in $OTTO_HOME/config.json]
+
       --detach <DETACH>
           Where each wake is backgrounded: a tmux session named otto-<id>, or none (your terminal)
           
@@ -549,6 +552,38 @@ Options:
           Print help
 ```
 
+## `otto config`
+
+```text
+See or change otto's settings in $OTTO_HOME/config.json
+
+Usage: otto config <COMMAND>
+
+Commands:
+  workdir  The default directory wakes run in, for runs that don't pass --workdir
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto config workdir`
+
+```text
+The default directory wakes run in, for runs that don't pass --workdir
+
+Usage: otto config workdir [DIR]
+
+Arguments:
+  [DIR]
+          Set it to this directory (`~` is expanded; it must exist). Omit to print it
+
+Options:
+  -h, --help
+          Print help
+```
+
 ## `otto state`
 
 ```text
@@ -636,6 +671,9 @@ Where it runs:
           What runs the model: plain `claude`, or a launcher named in $OTTO_HOME/config.json — a sandbox is the right choice for anything unattended. A unique prefix of the name will do
           
           [default: claude]
+
+      --workdir <DIR>
+          The directory every wake runs in, whoever starts it [default: `workdir` in $OTTO_HOME/config.json]
 
       --detach <DETACH>
           Where each wake is backgrounded: a tmux session named otto-<id>, or none (your terminal)

@@ -235,7 +235,8 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     })?;
 
     let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let output = exec.exec(&argv_refs, None, Duration::from_secs(deadline_minutes * 60));
+    let workdir = crate::config::workdir_for(&state);
+    let output = exec.exec_in(&argv_refs, workdir.as_deref(), Duration::from_secs(deadline_minutes * 60));
     // The child has exited, so its transcript is finished being written.
     let result = WakeResult {
         usage: transcript::usage_for(&session),
@@ -1086,6 +1087,23 @@ mod tests {
         let check = read_run("w-check").unwrap().check.unwrap();
         assert_eq!(check.consecutive_no_change, 0);
         assert_eq!(check.no_change_total, 3, "the total is history, not a count to reset");
+    }
+
+    /// Every wake starts in the run's working directory, whoever started it — the reviver runs
+    /// from `$OTTO_HOME`, and without this its wakes would start there instead.
+    #[test]
+    fn a_wake_runs_in_the_run_s_workdir() {
+        let h = TempHome::new();
+        test_init("w-dir", "a goal").unwrap();
+        crate::state::transaction("w-dir", |_, s| {
+            s.launcher.workdir = Some(h.path().display().to_string());
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-dir"));
+        run_wake(&args("w-dir"), &mut exec).unwrap();
+        assert_eq!(exec.cwds.borrow().as_slice(), [Some(h.path().to_path_buf())]);
     }
 
     /// A standing check the run set itself stays with the run, like a person's.
