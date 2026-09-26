@@ -316,12 +316,18 @@ pub struct Check {
     /// Every no-change result since the check was set: each one a wake that did not happen.
     #[serde(rename = "noChangeTotal", default)]
     pub no_change_total: u64,
-    /// Set by a person (`otto check`), not by a wake: it belongs to the run rather than to one
-    /// sleep, so a wake's plain `arm-timer` keeps it instead of clearing it, and a wake's own
-    /// `--check-script` does not replace it.
+    /// Standing: it belongs to the run rather than to one sleep, so it stands in front of every
+    /// period wake, a wake's plain `arm-timer` keeps it, and a one-sleep `--check-script` does not
+    /// replace it. A person's check (`otto check`) is always standing; so is one a wake set with
+    /// `otto state set-check`. `false`: a wake armed it with one sleep, and the next wake ends it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Set by a wake (`set-check`, or `arm-timer --check-script`) rather than by a person. A wake
+    /// may replace or remove a check a wake set; a person's check is the person's to change.
+    #[serde(rename = "setByWake", default, skip_serializing_if = "std::ops::Not::not")]
+    pub set_by_wake: bool,
 }
+
 
 fn default_gate_stale_after_hours() -> u32 {
     48

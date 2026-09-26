@@ -194,44 +194,70 @@ the tick counter.
 **A missed window is one wake, not a backlog.** However long the run was down, reconcile once
 and carry on. Never replay the ticks you missed.
 
-### Cheaper than a tick: an opt-in check script
+### Cheaper than a tick: check scripts
 
-If what you'd check on the next tick is something a shell script can answer on its own — `gh pr
-view --json` and a cursor diff, `curl` against a status endpoint, `git fetch --dry-run` for a
-moved base — write that script and arm it with your sleep. When the sleep comes due, poke runs it
-directly, no LLM involved, and only wakes the run if it says something changed:
+Every wake is a cold model session, and a run that is mostly watching — "answer any PR questions
+that appear", "fix CI when it goes red", "pick up tickets as they land in the queue" — spends most
+of its wakes finding nothing. If "is there anything new?" is something a shell script can answer —
+`gh pr view --json` and a cursor diff, `curl` against a status endpoint, `git fetch --dry-run` for a
+moved base — give the run a **check script**. When a wake comes due, poke runs the script instead,
+no LLM involved, and only wakes the run if it says something changed.
+
+**Set one up as soon as you know the run is watching.** Usually that is the first wake: do the
+work that's there now, then, before you stop, write the script and make it the run's standing
+check. Don't wait to be asked — this is the difference between a run that costs a wake an hour
+forever and one that costs a wake only when there is something to do. Skip it when "anything
+new?" genuinely needs judgement to answer; a plain sleep is the right default then.
 
 ```
-write the script       → artifacts/check.sh, executable (chmod +x), exit 0 = no change, exit 1 = changed
-otto state arm-timer <id> --in <seconds> --check-script artifacts/check.sh
-→ then stop, same as any other sleep
+write the script   → artifacts/check.sh: executable (chmod +x), starts with #!, exit 0 = nothing new, exit 1 = changed
+run it yourself    → once, and confirm it exits 0 when there is nothing new
+otto state set-check <id> --script artifacts/check.sh
+→ then stop, as for any other sleep
 ```
 
-"Nothing new" puts the wake off by the same gap again (`--in 600` → another 600s; no `--in` → the
-period), so the script keeps asking at that pace until something changes. After 24 "nothing new"
-results in a row poke wakes the run anyway — the safety net under a script that is wrong without
-failing.
+That check stands in front of **every wake the period brings**, for the life of the run, until you
+replace it (`set-check` again) or remove it (`set-check <id> --off`). "Nothing new" sleeps the run
+another period with no wake; the period is how often it looks. After 24 "nothing new" results in
+a row poke wakes the run anyway — the safety net under a script that is wrong without failing.
+
+**Make the script compare against a cursor the wake keeps.** The script can't write anything that
+matters, so "new" has to mean "newer than what a wake last handled": the wake records what it
+handled (the highest comment id, the last CI run it looked at) in an artifact or a fact, and the
+script compares the world against that. A script that compares against its own previous run will
+report the same change forever if a wake fails to act on it.
+
+**For a one-off wait, arm the check with the sleep instead.** Waiting for one CI run, one deploy,
+one reply:
+
+```
+otto state arm-timer <id> --in <seconds> --check-script artifacts/ci-done.sh
+```
+
+That check stands in front of that sleep only, asks again every `<seconds>` until something changes,
+and is gone once a wake happens.
 
 The script gets `OTTO_RUN_ID` and (if the run has one) `OTTO_REPO` in its environment — nothing
 else, because it has **no `otto state` access and never will**. Its only channel out is its exit
 code and up to 200 characters of stdout, which poke journals on a real change or an error (a
 no-change result never reaches the journal — only `run.json`'s own `check` field, so it stays
-cold-readable via `otto show` without spamming `otto logs`).
+cold-readable via `otto show` without spamming `otto logs`). It runs under launchd's minimal
+`PATH`, so use absolute paths for anything outside `/usr/bin` and Homebrew, and it has 10 seconds.
 
 **Exit 0 for "nothing changed," exit 1 for "changed."** Anything else — a crash, a bad exit code,
 a timeout — is treated as "changed" too: poke fails open to a real wake rather than trust a script
 that might be lying, so write yours defensively (`set -e`, a clear final exit) rather than
 whatever the last command happened to return.
 
-Skip this entirely for anything that isn't genuinely cheap to check outside an LLM — a plain
-`arm-timer` is the right default, and this is optional the same way a phase table is (DESIGN.md
-§11.8).
+**Every wake, check the check still fits.** If the work has changed shape — the PR merged, the
+queue moved, the goal is nearly met — replace or remove the standing check before you stop.
 
-**A check a person set is theirs.** If `run.json`'s `check` has `"pinned": true`, a person gave the
-run that script with `otto check`, and it belongs to the run rather than to one sleep: it stands in
-front of every wake the period brings, a plain `arm-timer` keeps it, and your own `--check-script`
-is ignored. Don't write another. It does **not** stand in front of a timer you arm with `--in` or
-`--at` — that wake comes regardless, because you asked for it for a reason the script doesn't know.
+**A check a person set is theirs.** If `run.json`'s `check` has `"pinned": true` and no
+`"setByWake": true`, a person gave the run that script with `otto check`. `set-check` refuses to
+replace or remove it, and your own `--check-script` is ignored. Don't write another; if it no
+longer fits the work, say so in the handoff. Neither kind of standing check stands in front of a
+timer you arm with `--in` or `--at` — that wake comes regardless, because you asked for it for a
+reason the script doesn't know.
 
 ## Notes
 

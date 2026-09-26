@@ -48,7 +48,8 @@ what the ideas mean.
 | Field | Meaning |
 |---|---|
 | `script` | Path relative to the run directory |
-| `pinned` | `true` for a person's check (`otto check`), which belongs to the run; `false` for one a wake armed for one sleep |
+| `pinned` | `true` for a standing check, which belongs to the run and stands in front of every period wake; `false` for one a wake armed for one sleep, which the next wake ends |
+| `setByWake` | `true` when a wake set it (`set-check`, or `arm-timer --check-script`) rather than a person (`otto check`). A person's check can't be replaced or removed by a wake |
 | `retrySeconds` | How long to sleep again after "nothing new"; absent means the period |
 | `wakeAfter` | The safety net: wake anyway after this many "nothing new" in a row; 0 is off |
 | `consecutiveNoChange` | "Nothing new" results since the last real wake |

@@ -42,8 +42,8 @@ the budget events, and the wake failures.
 | `timer-armed` | `nextWakeAt`, `note` | A sleep was scheduled — by a wake, the period (`note: period`), or a retry backoff |
 | `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A polling wake found progress / found nothing |
 | `period-set` | `periodMinutes`, `previousMinutes` | A person changed the period |
-| `check-set` | `script`, `wakeAfter` | A person set a check script |
-| `check-cleared` | `script` | A person removed it |
+| `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |
+| `check-cleared` | `script`, `by` | The standing check was removed, by a `person` or a `wake` |
 | `check-ran` | `result`, `consecutiveNoChange`, `note` | A check script reported a change or an error. "Nothing new" is never journaled — see `check` in `run.json` |
 
 ## People

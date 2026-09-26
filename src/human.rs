@@ -650,7 +650,11 @@ fn print_check_summary(detail: &crate::core::RunDetail) {
     println!(
         "  check     {} before each wake{} — last: {last}",
         check.script,
-        if check.pinned { ", set by you" } else { ", set by a wake for this sleep" },
+        match (check.pinned, check.set_by_wake) {
+            (true, false) => ", set by you",
+            (true, true) => ", set by the run (`otto check --script` to replace it with your own)",
+            (false, _) => ", set by a wake for this sleep",
+        },
     );
     println!(
         "            {} check(s) found nothing, each a wake not spent{}",

@@ -505,6 +505,15 @@ show the script, its last result and output, the safety net's count, and how man
 found nothing (`noChangeTotal`, each a wake not spent) — or, with no check, what a wake has been
 costing instead.
 
+**A run can set its own standing check.** A goal that is mostly watching ("answer any PR
+questions that appear") should not need a person to write the script that makes it cheap, so the
+harness tells a wake to write one as soon as it sees the shape of the work, and to install it with
+`otto state set-check`. It is standing exactly like a person's — every period wake, the same
+safety net — and records `setByWake`. The asymmetry is ownership: a wake may replace or remove a
+check a wake set, never a person's (`set-check` refuses with exit 2), while a person's
+`otto check` replaces the run's own. The one-sleep `arm-timer --check-script` stays for one-off
+waits, and the next wake ends it.
+
 **A person's check does not stand in front of a timer a wake armed itself.** `arm-timer --in 600`
 because CI takes ten minutes is a wake saying something it knows and the person's script does not;
 letting the script answer "nothing new" would skip exactly the look the wake asked for. otto

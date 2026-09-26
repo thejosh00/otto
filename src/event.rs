@@ -206,11 +206,13 @@ pub enum Event {
         note: String,
         standing: bool,
     },
-    /// A person set the run's check script (`otto check`).
+    /// A standing check script was set — by a person (`otto check`) or a wake (`set-check`).
     CheckSet {
         script: String,
         #[serde(rename = "wakeAfter")]
         wake_after: u32,
+        /// `person` or `wake`.
+        by: String,
     },
     /// A person changed how often the run wakes (`otto period`).
     PeriodSet {
@@ -219,9 +221,11 @@ pub enum Event {
         #[serde(rename = "previousMinutes")]
         previous_minutes: u64,
     },
-    /// A person removed the run's check script; every wake is a full one again.
+    /// The run's standing check script was removed; every wake is a full one again.
     CheckCleared {
         script: String,
+        /// `person` or `wake`.
+        by: String,
     },
     /// Poke sent a desktop notification about this run — once per `key`, so the journal says
     /// when a person was told, not just when the thing happened. See `notify`.

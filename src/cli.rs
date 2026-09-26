@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
-    ArmTimerArgs, CloseGateArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, OpenGateArgs,
+    ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, OpenGateArgs,
     RecordFactArgs, SetPhaseArgs, SetStatusArgs, TailArgs, TickArgs,
 };
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
@@ -111,6 +111,8 @@ pub enum StateCommand {
     CloseGate(CloseGateArgs),
     /// Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
     ArmTimer(ArmTimerArgs),
+    /// Give the run a standing check script, or remove the one a wake gave it
+    SetCheck(SetCheckArgs),
     /// Account for one timer tick
     Tick(TickArgs),
     /// Runs whose nextWakeAt has passed

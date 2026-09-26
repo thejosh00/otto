@@ -4,6 +4,11 @@ A polling run — babysit a PR, watch a deploy, wait for a ticket to move — sp
 wakes finding nothing new, and every wake is a cold model session. A check script answers "is
 there anything new?" with a shell script instead, so the model only runs when there is.
 
+**Usually the run writes its own.** Give it a goal like "answer any PR questions that appear" and
+the first wake does the work that's there, then writes a check script and makes it the run's
+standing check (see [the run's own check](#the-runs-own-check)). You write one yourself when it
+didn't, or when you want a different one — yours always wins.
+
 ## How it works
 
 When the run's wake comes due, poke runs your script **instead of** waking the run:
@@ -79,24 +84,38 @@ When you set a check, otto runs it once on the spot and tells you what it return
 acting on it — so a broken script shows immediately rather than at the next wake. The web UI's
 run page shows the same information in its **Check script** panel.
 
-## A check a wake arms itself
+## The run's own check
 
-Wrapped instructions can arm a check for one sleep, the same way a person does for the whole run:
+A wake that sees the run is mostly watching sets a standing check itself, following its
+instructions ([harness/wake.md](../../harness/wake.md)):
+
+```bash
+otto state set-check <id> --script artifacts/check.sh   # stands in front of every period wake
+otto state set-check <id> --off                         # removes it
+```
+
+It behaves exactly like yours — every period wake, the same safety net — and stays until a wake
+replaces or removes it, which a wake does when the work changes shape. `otto show` and the run page
+say it was **set by the run**. To take over, set your own with `otto check --script`: it replaces
+the run's, and from then on a wake can neither replace nor remove it. `otto check --off` removes
+either kind.
+
+For a one-off wait, a wake arms a check with a single sleep instead:
 
 ```bash
 otto state arm-timer <id> --in 600 --check-script artifacts/ci-done.sh
 ```
 
-That check stands in front of that sleep's wake, and on "nothing new" asks again after the same
-600 seconds — a free poll every ten minutes until CI finishes. The wake's instructions
-([harness/wake.md](../../harness/wake.md)) describe when to do this.
+That check stands in front of that sleep's wake only, and on "nothing new" asks again after the
+same 600 seconds — a free poll every ten minutes until CI finishes. The next wake ends it.
 
 ## Which wakes a check stands in front of
 
-- **Your check** (`otto check`) stands in front of every wake the **period** brings. It does *not*
-  stand in front of a timer a wake armed for its own reason (`arm-timer --in 600` because CI takes
-  ten minutes): that wake knew something your script doesn't, so it goes ahead, and your check
-  resumes with the next period wake. A wake's own `--check-script` never replaces yours.
-- **A wake's check** stands in front of the sleep it was armed with, and is gone after it.
+- **A standing check** — yours, or the run's own — stands in front of every wake the **period**
+  brings. It does *not* stand in front of a timer a wake armed for its own reason
+  (`arm-timer --in 600` because CI takes ten minutes): that wake knew something the script doesn't,
+  so it goes ahead, and the check resumes with the next period wake. A one-sleep `--check-script`
+  never replaces a standing check.
+- **A one-sleep check** stands in front of the sleep it was armed with, and is gone after it.
 - **Never** in front of the retry of a wake that crashed or was killed — that work is half done
   whatever the script thinks — and never while a gate is open.

@@ -234,9 +234,9 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         NoteAdded { note: s(), file: s(), standing: false },
         NotesDelivered { notes: vec![], wake: 1 },
         NoteDropped { note: s(), standing: false },
-        CheckSet { script: s(), wake_after: 24 },
+        CheckSet { script: s(), wake_after: 24, by: s() },
         PeriodSet { period_minutes: 60, previous_minutes: 60 },
-        CheckCleared { script: s() },
+        CheckCleared { script: s(), by: s() },
         Notified { key: s(), title: s(), message: s() },
     ];
     for event in &events {

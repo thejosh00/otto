@@ -113,7 +113,8 @@ nothing new, and the run sleeps another period; anything else wakes it. A safety
 anyway after 24 "nothing new" results in a row.
 
 The period then means "how often to look", and the check decides whether looking needs a model.
-[Check scripts](guides/check-scripts.md) covers writing one.
+A run whose goal is mostly watching usually sets up its own check on its first wake; you can
+always set one yourself, and yours wins. [Check scripts](guides/check-scripts.md) covers both.
 
 ## Gates
 

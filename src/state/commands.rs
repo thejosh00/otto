@@ -721,6 +721,7 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
                 last_note: None,
                 no_change_total: 0,
                 pinned: false,
+                set_by_wake: true,
             })
         }
         _ => None,
@@ -730,7 +731,7 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
         state.next_wake_at = Some(wake);
         state.armed_wake_at = explicit.then_some(wake);
         state.status = args.status;
-        // A person's check outlives any one sleep: keep it, whatever this call asked for.
+        // A standing check outlives any one sleep: keep it, whatever this call asked for.
         let pinned = state.check.as_ref().is_some_and(|c| c.pinned);
         if !pinned {
             state.check = check.clone();
@@ -740,9 +741,86 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
     })?;
     println!("{wake}");
     if kept_pinned && check.is_some() {
-        eprintln!("otto: kept the check script a person set for this run (`otto check`); --check-script ignored");
+        eprintln!(
+            "otto: kept this run's standing check script; --check-script ignored \
+             (a wake replaces its own standing check with `otto state set-check`)"
+        );
     }
     Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct SetCheckArgs {
+    /// The run: its id, a prefix of it, or its slug
+    pub id: String,
+    /// Path, relative to the run dir, to an executable script poke runs whenever the run's period
+    /// comes due, instead of waking it: exit 0 = nothing new (no wake), anything else = wake
+    #[arg(long, value_name = "PATH", required_unless_present = "off")]
+    pub script: Option<String>,
+    /// The safety net: wake anyway after this many "nothing new" results in a row; 0 turns it off
+    #[arg(long = "wake-after", value_name = "N", default_value_t = crate::state::DEFAULT_CHECK_WAKE_AFTER)]
+    pub wake_after: u32,
+    /// Remove the standing check a wake set; every period wake is a full one again
+    #[arg(long, conflicts_with = "script")]
+    pub off: bool,
+}
+
+/// A wake gives the run a standing check of its own — the wake-side counterpart of `otto check`,
+/// for a goal that is mostly watching ("answer any PR questions that appear"). It stands in front
+/// of every period wake until a wake replaces or removes it. A person's check wins: this refuses
+/// to replace or remove one, and a person setting one later replaces this.
+pub fn set_check(args: SetCheckArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    if let Some(script) = &args.script {
+        let path = crate::paths::run_dir(&id)?.join(script);
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| OttoError::usage(format!("cannot read {}: {e}", path.display())))?;
+        if !text.starts_with("#!") {
+            return Err(OttoError::usage("the check script must start with a #! line — poke runs it directly"));
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)?.permissions().mode();
+        if mode & 0o111 == 0 {
+            return Err(OttoError::usage(format!("{} is not executable — chmod +x it", path.display())));
+        }
+    }
+    transaction(&id, |path, state| {
+        if let Some(existing) = &state.check {
+            if !existing.set_by_wake {
+                return Err(OttoError::conflict(format!(
+                    "a person set this run's check script ({}) with `otto check` — leave it; say in the \
+                     handoff if it no longer fits the work",
+                    existing.script
+                )));
+            }
+        }
+        match &args.script {
+            Some(script) => {
+                state.check = Some(Check {
+                    script: script.clone(),
+                    retry_seconds: None,
+                    wake_after: args.wake_after,
+                    consecutive_no_change: 0,
+                    last_result: None,
+                    last_at: None,
+                    last_note: None,
+                    no_change_total: 0,
+                    pinned: true,
+                    set_by_wake: true,
+                });
+                crate::event::record(
+                    path,
+                    &Event::CheckSet { script: script.clone(), wake_after: args.wake_after, by: "wake".to_string() },
+                )
+            }
+            None => {
+                let Some(check) = state.check.take() else {
+                    return Err(OttoError::conflict(format!("{id} has no check script")));
+                };
+                crate::event::record(path, &Event::CheckCleared { script: check.script, by: "wake".to_string() })
+            }
+        }
+    })
 }
 
 /// Poke's own bookkeeping for an opt-in check script, distinct from `record_spawn` for the same
@@ -1295,6 +1373,83 @@ mod tests {
             std::fs::read_to_string(crate::paths::run_dir("run-check-6").unwrap().join("journal.jsonl")).unwrap();
         assert!(journal.contains("check-ran"));
         assert!(journal.contains("3 new comments"));
+    }
+
+    fn write_script(id: &str, name: &str) {
+        let path = crate::paths::run_dir(id).unwrap().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn set_check_args(id: &str, script: Option<&str>) -> SetCheckArgs {
+        SetCheckArgs { id: id.into(), script: script.map(Into::into), wake_after: 24, off: script.is_none() }
+    }
+
+    /// A wake can give a watching run a standing check of its own, which outlives the next wake —
+    /// unlike one armed with a single sleep.
+    #[test]
+    fn a_wake_can_set_a_standing_check_and_replace_or_remove_it() {
+        let _home = TempHome::new();
+        test_init("run-sc", "g").unwrap();
+        write_script("run-sc", "artifacts/pr.sh");
+        set_check(set_check_args("run-sc", Some("artifacts/pr.sh"))).unwrap();
+        let check = read_run("run-sc").unwrap().check.unwrap();
+        assert!(check.pinned && check.set_by_wake);
+        assert_eq!(check.retry_seconds, None, "it retries on the period");
+
+        // A plain re-arm keeps it, as it keeps a person's.
+        arm_timer(ArmTimerArgs { id: "run-sc".into(), at: None, seconds: Some(600), status: Status::Sleeping, note: None, check_script: None }).unwrap();
+        assert!(read_run("run-sc").unwrap().check.is_some());
+
+        write_script("run-sc", "artifacts/pr2.sh");
+        set_check(set_check_args("run-sc", Some("artifacts/pr2.sh"))).unwrap();
+        assert_eq!(read_run("run-sc").unwrap().check.unwrap().script, "artifacts/pr2.sh");
+
+        set_check(set_check_args("run-sc", None)).unwrap();
+        assert!(read_run("run-sc").unwrap().check.is_none());
+        let journal = std::fs::read_to_string(crate::paths::run_dir("run-sc").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("\"by\":\"wake\""));
+    }
+
+    /// A person's check wins: a wake can neither replace nor remove it.
+    #[test]
+    fn a_wake_cannot_replace_a_person_s_check() {
+        let _home = TempHome::new();
+        test_init("run-sc2", "g").unwrap();
+        crate::core::set_check("run-sc2", "#!/bin/sh\nexit 0\n", 24).unwrap();
+        write_script("run-sc2", "artifacts/mine.sh");
+        let err = set_check(set_check_args("run-sc2", Some("artifacts/mine.sh"))).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.to_string().contains("a person set"));
+        assert!(set_check(set_check_args("run-sc2", None)).is_err());
+        assert!(!read_run("run-sc2").unwrap().check.unwrap().set_by_wake);
+    }
+
+    /// A person setting a check replaces the one the run set itself.
+    #[test]
+    fn a_person_s_check_replaces_the_run_s_own() {
+        let _home = TempHome::new();
+        test_init("run-sc3", "g").unwrap();
+        write_script("run-sc3", "artifacts/pr.sh");
+        set_check(set_check_args("run-sc3", Some("artifacts/pr.sh"))).unwrap();
+        crate::core::set_check("run-sc3", "#!/bin/sh\nexit 0\n", 24).unwrap();
+        let check = read_run("run-sc3").unwrap().check.unwrap();
+        assert!(!check.set_by_wake);
+        assert_eq!(check.script, crate::core::CHECK_FILE);
+    }
+
+    #[test]
+    fn a_check_that_cannot_run_is_refused_up_front() {
+        let _home = TempHome::new();
+        test_init("run-sc4", "g").unwrap();
+        assert!(set_check(set_check_args("run-sc4", Some("artifacts/missing.sh"))).is_err());
+        let path = crate::paths::run_dir("run-sc4").unwrap().join("artifacts/plain.sh");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        let err = set_check(set_check_args("run-sc4", Some("artifacts/plain.sh"))).unwrap_err();
+        assert!(err.to_string().contains("not executable"));
     }
 
     #[test]

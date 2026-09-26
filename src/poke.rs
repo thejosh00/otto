@@ -658,6 +658,7 @@ mod tests {
             last_note: None,
             no_change_total: 0,
             pinned: true,
+            set_by_wake: false,
         }
     }
 

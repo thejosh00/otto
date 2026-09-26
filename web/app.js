@@ -420,7 +420,7 @@ function runView(id) {
       ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
       : "not run yet";
     const rows = [
-      ["Runs", `${c.script} before each wake, every ${retry} · ${c.pinned ? "set by you" : "set by a wake, for this sleep only"}`],
+      ["Runs", `${c.script} before each wake, every ${retry} · ${!c.pinned ? "set by a wake, for this sleep only" : c.setByWake ? "set by the run itself" : "set by you"}`],
       ["Last", last],
       ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
       ["Safety net", c.wakeAfter ? `wakes anyway after ${c.wakeAfter} in a row (${c.consecutiveNoChange} so far)` : "off"],

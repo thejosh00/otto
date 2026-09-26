@@ -623,8 +623,10 @@ pub struct CheckView {
     pub consecutive_no_change: u32,
     /// No-change results since it was set: each one a wake that did not happen.
     pub no_change_total: u64,
-    /// Set by a person with `otto check`, rather than by a wake for one sleep.
+    /// Standing — it stays with the run — rather than armed by a wake for one sleep.
     pub pinned: bool,
+    /// Set by a wake rather than a person.
+    pub set_by_wake: bool,
 }
 
 /// What recent wakes have used, averaged. The honest price of a wake on a subscription is tokens,
@@ -663,6 +665,7 @@ pub fn check_view(dir: &std::path::Path, state: &RunState) -> Option<CheckView> 
         consecutive_no_change: check.consecutive_no_change,
         no_change_total: check.no_change_total,
         pinned: check.pinned,
+        set_by_wake: check.set_by_wake,
     })
 }
 
@@ -731,8 +734,12 @@ pub fn set_check(id: &str, script: &str, wake_after: u32) -> Result<CheckSetOutc
             last_note: None,
             no_change_total: 0,
             pinned: true,
+            set_by_wake: false,
         });
-        crate::event::record(path, &crate::event::Event::CheckSet { script: CHECK_FILE.to_string(), wake_after })
+        crate::event::record(
+            path,
+            &crate::event::Event::CheckSet { script: CHECK_FILE.to_string(), wake_after, by: "person".to_string() },
+        )
     })?;
     let state = read_run(&id)?;
     Ok(CheckSetOutcome {
@@ -824,7 +831,10 @@ pub fn clear_check(id: &str) -> Result<String, OttoError> {
         let Some(check) = state.check.take() else {
             return Err(OttoError::conflict(format!("{id} has no check script")));
         };
-        crate::event::record(path, &crate::event::Event::CheckCleared { script: check.script.clone() })?;
+        crate::event::record(
+            path,
+            &crate::event::Event::CheckCleared { script: check.script.clone(), by: "person".to_string() },
+        )?;
         Ok(check.script)
     })
 }

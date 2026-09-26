@@ -1088,6 +1088,29 @@ mod tests {
         assert_eq!(check.no_change_total, 3, "the total is history, not a count to reset");
     }
 
+    /// A standing check the run set itself stays with the run, like a person's.
+    #[test]
+    fn a_wake_keeps_a_standing_check_the_run_set() {
+        let _h = TempHome::new();
+        test_init("w-standing", "a goal").unwrap();
+        let script = crate::paths::run_dir("w-standing").unwrap().join("artifacts/pr.sh");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::state::commands::set_check(crate::state::commands::SetCheckArgs {
+            id: "w-standing".into(),
+            script: Some("artifacts/pr.sh".into()),
+            wake_after: 24,
+            off: false,
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-standing"));
+        run_wake(&args("w-standing"), &mut exec).unwrap();
+        assert!(read_run("w-standing").unwrap().check.is_some());
+    }
+
     /// A wake's own check was for the sleep that just ended, so the wake it let through ends it.
     #[test]
     fn a_wake_ends_the_check_the_last_wake_armed() {

@@ -566,6 +566,7 @@ Commands:
   open-gate         Write the gate file and stop the run on it
   close-gate        Record the answer verbatim and clear the gate
   arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
+  set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
   due               Runs whose nextWakeAt has passed
   authorize         Record that a specific commit may go outward
@@ -890,6 +891,33 @@ Options:
 
       --check-script <CHECK_SCRIPT>
           Path, relative to the run dir, to an opt-in script poke runs directly when this sleep comes due, instead of waking the run — DESIGN.md §8.1. "Nothing new" sleeps again for the same length of time; anything else wakes the run
+
+  -h, --help
+          Print help
+```
+
+### `otto state set-check`
+
+```text
+Give the run a standing check script, or remove the one a wake gave it
+
+Usage: otto state set-check [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The run: its id, a prefix of it, or its slug
+
+Options:
+      --script <PATH>
+          Path, relative to the run dir, to an executable script poke runs whenever the run's period comes due, instead of waking it: exit 0 = nothing new (no wake), anything else = wake
+
+      --wake-after <N>
+          The safety net: wake anyway after this many "nothing new" results in a row; 0 turns it off
+          
+          [default: 24]
+
+      --off
+          Remove the standing check a wake set; every period wake is a full one again
 
   -h, --help
           Print help
