@@ -304,9 +304,12 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         }
         println!("  period    every {}", crate::clock::format_minutes(state.policy.period_minutes));
     }
-    match crate::config::workdir_for(state) {
-        Some(dir) => println!("  workdir   {}", dir.display()),
-        None => println!("  workdir   wherever the wake is started from — none recorded, and no default set"),
+    match &detail.workdir {
+        Some(crate::core::WorkdirView::Own { path }) => println!("  workdir   {path} (not the default)"),
+        Some(crate::core::WorkdirView::Unset) => {
+            println!("  workdir   none — set a default with `otto config workdir <dir>`")
+        }
+        None => {}
     }
     if !state.status.is_terminal() {
         print_check_summary(&detail);

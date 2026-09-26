@@ -393,7 +393,8 @@ function runView(id) {
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }
     rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
-    rows.push(["Workdir", s.launcher.workdir || "the default working directory"]);
+    if (d.workdir && d.workdir.kind === "own") rows.push(["Workdir", `${d.workdir.path} (not the default)`]);
+    if (d.workdir && d.workdir.kind === "unset") rows.push(["Workdir", "none — set a default with otto config workdir <dir>"]);
     facts.replaceChildren(
       d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:16px;white-space:pre-wrap" }, d.blockedExplanation) : "",
       h("div.card", { style: "margin-top:16px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))),

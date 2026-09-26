@@ -388,6 +388,30 @@ pub struct RunDetail {
     /// cheapest wake there is.
     pub check: Option<CheckView>,
     pub wake_cost: Option<WakeCost>,
+    /// Where this run's wakes start — only when it's worth saying: a directory other than the
+    /// configured default, or no directory at all. `None` means "the default", which goes unsaid.
+    pub workdir: Option<WorkdirView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum WorkdirView {
+    /// The run's own directory, which isn't the default.
+    Own { path: String },
+    /// Nothing recorded and no default: a wake starts wherever whatever started it happens to be.
+    Unset,
+}
+
+/// What `otto show` and the run page say about a run's working directory: nothing when it is the
+/// default, since that is what a person expects without being told.
+pub fn workdir_view(state: &RunState) -> Option<WorkdirView> {
+    let default = crate::config::default_workdir().ok().flatten();
+    match (&state.launcher.workdir, default) {
+        (Some(own), Some(default)) if std::path::Path::new(own) == default => None,
+        (Some(own), _) => Some(WorkdirView::Own { path: own.clone() }),
+        (None, Some(_)) => None,
+        (None, None) => Some(WorkdirView::Unset),
+    }
 }
 
 /// Everything needed to answer a gate cold, in one screen: where the run stands, what it last
@@ -425,6 +449,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let check = check_view(&dir, &state);
     let wake_cost = wake_cost(&dir);
     Ok(RunDetail {
+        workdir: workdir_view(&state),
         short,
         notes,
         check,
@@ -1588,6 +1613,25 @@ mod tests {
         assert!(check.pinned);
         assert_eq!(check.script, CHECK_FILE);
         assert_eq!(check.wake_after, 12);
+    }
+
+    /// The working directory is only worth a line when it isn't the one a person would assume.
+    #[test]
+    fn the_workdir_is_shown_only_when_it_is_not_the_default() {
+        let h = TempHome::new();
+        let work = h.path().join("work");
+        let other = h.path().join("other");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let mut state = crate::state::test_run_state("r");
+        assert!(matches!(workdir_view(&state), Some(WorkdirView::Unset)), "no directory at all is worth saying");
+
+        crate::config::save_workdir(work.to_str().unwrap()).unwrap();
+        assert!(workdir_view(&state).is_none(), "nothing recorded: the default");
+        state.launcher.workdir = Some(work.canonicalize().unwrap().display().to_string());
+        assert!(workdir_view(&state).is_none(), "the default, recorded");
+        state.launcher.workdir = Some(other.canonicalize().unwrap().display().to_string());
+        assert!(matches!(workdir_view(&state), Some(WorkdirView::Own { .. })));
     }
 
     #[test]
