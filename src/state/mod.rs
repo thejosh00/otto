@@ -278,17 +278,31 @@ pub enum CheckResult {
     Error,
 }
 
-/// An opt-in accessory to a `Sleeping` run: a script poke runs directly, no LLM involved, on a
-/// tighter cadence than the sleep's own `nextWakeAt`. Absent for every run that doesn't set one
-/// via `arm-timer --check-script` — existing `sleeping` runs are unaffected.
+/// Wake anyway after this many "nothing new" results in a row, unless told otherwise — the
+/// safety net under a check that is wrong without failing. A day of an hourly period.
+pub const DEFAULT_CHECK_WAKE_AFTER: u32 = 24;
+
+fn default_check_wake_after() -> u32 {
+    DEFAULT_CHECK_WAKE_AFTER
+}
+
+/// A gate in front of a sleeping run's wake: a script poke runs directly, no LLM involved, when
+/// the wake comes due. "Nothing new" (exit 0) skips the wake and sleeps again; anything else
+/// wakes it. There is no separate cadence — the sleep's own `nextWakeAt` is when it runs.
+/// Absent for every run that doesn't set one (`otto check`, or `arm-timer --check-script`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Check {
     /// Path relative to the run directory — same convention as `gates/NNN-*.md`.
     pub script: String,
-    #[serde(rename = "everySeconds")]
-    pub every_seconds: i64,
-    #[serde(rename = "nextCheckAt")]
-    pub next_check_at: crate::clock::Timestamp,
+    /// How long to sleep again after "nothing new". `None`: the run's period. A wake's own check
+    /// sets it to the sleep that wake asked for, so a check armed for "CI in ten minutes" keeps
+    /// asking every ten minutes rather than every period.
+    #[serde(rename = "retrySeconds", default, skip_serializing_if = "Option::is_none")]
+    pub retry_seconds: Option<i64>,
+    /// Wake anyway after this many "nothing new" results in a row; 0 turns the safety net off.
+    #[serde(rename = "wakeAfter", default = "default_check_wake_after")]
+    pub wake_after: u32,
+    /// "Nothing new" results since the last real wake. The safety net counts this.
     #[serde(rename = "consecutiveNoChange", default)]
     pub consecutive_no_change: u32,
     #[serde(rename = "lastResult", default, skip_serializing_if = "Option::is_none")]
@@ -458,6 +472,12 @@ pub struct RunState {
     pub gate: Option<Gate>,
     #[serde(rename = "nextWakeAt")]
     pub next_wake_at: Option<crate::clock::Timestamp>,
+    /// The time a wake last asked for with `arm-timer --in`/`--at`. While it still equals
+    /// `nextWakeAt`, the sleep is the wake's own rather than the period's — so a person's check
+    /// does not stand in front of it, and changing the period does not move it. Anything else
+    /// that sets `nextWakeAt` leaves this behind, which is what makes it stop matching.
+    #[serde(rename = "armedWakeAt", default, skip_serializing_if = "Option::is_none")]
+    pub armed_wake_at: Option<crate::clock::Timestamp>,
     /// The current or most recent wake. Liveness is the wake lock, never this — the `pid` here
     /// is for reporting only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -684,6 +704,24 @@ impl RunState {
     /// wake in progress, so an hourly run stays hourly instead of drifting by each wake's own
     /// length; with no wake in progress (a person arming it by hand), anchored on now. Never in
     /// the past: a wake that outlived its period is due immediately, not retroactively.
+    pub fn wake_armed_timer(&self) -> bool {
+        self.armed_wake_at.is_some() && self.armed_wake_at == self.next_wake_at
+    }
+
+    /// Whether poke runs the check script instead of waking the run when its wake comes due. A
+    /// person's check stands in front of the period's wakes but not in front of a timer a wake
+    /// armed for its own reason ("CI in ten minutes"), which that check knows nothing about; a
+    /// wake's own check stands in front of the sleep it was armed with. Never with a gate open —
+    /// an expired gate wants a wake, not a script's opinion.
+    pub fn check_gates_wake(&self) -> bool {
+        match &self.check {
+            Some(check) => {
+                self.status == Status::Sleeping && self.gate.is_none() && !(check.pinned && self.wake_armed_timer())
+            }
+            None => false,
+        }
+    }
+
     pub fn period_wake_at(&self) -> crate::clock::Timestamp {
         let period = time::Duration::minutes(self.policy.period_minutes as i64);
         let now = crate::clock::Timestamp::now();
@@ -832,6 +870,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         phase: "start".to_string(),
         gate: None,
         next_wake_at: None,
+        armed_wake_at: None,
         wake: None,
         check: None,
         incomplete_wakes: 0,

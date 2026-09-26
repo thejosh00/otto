@@ -146,23 +146,19 @@ pub fn decide(
     let last_at = state.last_spawned_at.map(Timestamp::dt);
 
     match state.next_wake_at {
-        Some(due) if due.dt() > now => {
-            // Not due for a real wake yet, but an opt-in check script (§8) may be due sooner —
-            // poke runs it directly, no LLM involved, and only a real change or an error escalates
-            // to the ordinary spawn path below.
-            if let Some(check) = &state.check {
-                if check.next_check_at.dt() <= now {
-                    return Decision::base(&run_id, Action::Check, format!("check due (next real wake {due})"));
-                }
-            }
-            return Decision::base(&run_id, Action::Skip, format!("due at {due}"))
-        }
+        Some(due) if due.dt() > now => return Decision::base(&run_id, Action::Skip, format!("due at {due}")),
         Some(due) if now - due.dt() < Duration::minutes(grace_minutes) => {
             return Decision::base(
                 &run_id,
                 Action::Defer,
                 format!("due {due}, inside the {grace_minutes}m grace"),
             )
+        }
+        // Due, and a check script stands in front of the wake (§8.1): poke runs it directly, no
+        // LLM involved, and only a real change, an error, or the safety net escalates to the
+        // ordinary spawn path below.
+        Some(due) if state.check_gates_wake() => {
+            return Decision::base(&run_id, Action::Check, format!("due at {due}; checking first"))
         }
         Some(_) => {}
         None => {
@@ -250,12 +246,49 @@ fn spawn_or_back_off(
     }
 }
 
-/// Runs a run's opt-in check script (§8) and turns the result into an ordinary decision: no
-/// change resolves to `Skip` — silent by default, same as `Reap` when there's nothing to reap —
-/// and the run's own `check` bookkeeping is advanced. Anything else (a real change, a script that
+/// What one run of a check script said, and what it printed.
+pub struct CheckRun {
+    pub result: CheckResult,
+    pub note: Option<String>,
+    pub code: i32,
+    pub timed_out: bool,
+}
+
+/// Run a check script the way poke does — same environment, same timeout, same reading of the
+/// exit code — without deciding anything. Shared with `otto check`, which runs a new script once
+/// on the spot so a broken one shows now rather than when the run is next due.
+pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dyn Exec) -> CheckRun {
+    let mut env = std::collections::HashMap::new();
+    env.insert("OTTO_RUN_ID".to_string(), run_id.to_string());
+    if let Some(repo) = state.facts.get("repo").and_then(serde_json::Value::as_str) {
+        env.insert("OTTO_REPO".to_string(), repo.to_string());
+    }
+
+    // Isolated: a script killed at its timeout takes whatever it started down with it, so a
+    // hung `curl` under it can't stall this pass — and every other run's — behind it.
+    let output = exec.exec_isolated(&[script], Some(&env), std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
+    let note = crate::exec::truncate(output.stdout.trim(), CHECK_NOTE_MAX_CHARS);
+    let note = (!note.is_empty()).then_some(note);
+
+    let result = if output.timed_out {
+        CheckResult::Error
+    } else {
+        match output.code {
+            0 => CheckResult::NoChange,
+            1 => CheckResult::Changed,
+            _ => CheckResult::Error,
+        }
+    };
+    CheckRun { result, note, code: output.code, timed_out: output.timed_out }
+}
+
+/// Runs a run's check script (§8.1) in front of its due wake and turns the result into an
+/// ordinary decision: no change resolves to `Skip` — silent by default, same as `Reap` when
+/// there's nothing to reap — and the run sleeps again. Anything else (a real change, a script that
 /// exits with something other than 0/1, or a timeout) falls into exactly the `spawn_or_back_off`
-/// path a missed `nextWakeAt` would take, because that's what it is: fail open to a real wake
-/// rather than trust a script that might be wrong.
+/// path a due wake without a check takes: fail open to a real wake rather than trust a script
+/// that might be wrong. So does the safety net — `wakeAfter` no-change results in a row wake the
+/// run anyway, which is what catches a script that is wrong without failing.
 fn run_check(
     entry: &RunEntry,
     decision: Decision,
@@ -287,35 +320,21 @@ fn run_check(
         return Decision::base(&run_id, Action::Error, "check script path is not valid UTF-8".to_string());
     };
 
-    let mut env = std::collections::HashMap::new();
-    env.insert("OTTO_RUN_ID".to_string(), run_id.clone());
-    if let Some(repo) = state.facts.get("repo").and_then(serde_json::Value::as_str) {
-        env.insert("OTTO_REPO".to_string(), repo.to_string());
-    }
-
-    // Isolated: a script killed at its timeout takes whatever it started down with it, so a
-    // hung `curl` under it can't stall this pass — and every other run's — behind it.
-    let output = exec.exec_isolated(&[script], Some(&env), std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
-    let note = crate::exec::truncate(output.stdout.trim(), CHECK_NOTE_MAX_CHARS);
-    let note = (!note.is_empty()).then_some(note);
-
-    let result = if output.timed_out {
-        CheckResult::Error
-    } else {
-        match output.code {
-            0 => CheckResult::NoChange,
-            1 => CheckResult::Changed,
-            _ => CheckResult::Error,
-        }
-    };
-    let _ = crate::state::commands::record_check(&run_id, result, note);
+    let CheckRun { result, note, code, timed_out } = execute_check(&run_id, state, script, exec);
+    let streak = check.consecutive_no_change + 1;
+    let safety_net = result == CheckResult::NoChange && check.wake_after > 0 && streak >= check.wake_after;
+    let _ = crate::state::commands::record_check(&run_id, result, note, !safety_net);
 
     match result {
-        CheckResult::NoChange => Decision::base(
+        CheckResult::NoChange if safety_net => spawn_or_back_off(
             &run_id,
-            Action::Skip,
-            format!("checked — no change (next check in {}s)", check.every_seconds),
+            format!("check found nothing {streak} times in a row — waking anyway, in case the check is wrong"),
+            state.spawn_attempts,
+            state.last_spawned_at.map(Timestamp::dt),
+            now,
+            max_attempts,
         ),
+        CheckResult::NoChange => Decision::base(&run_id, Action::Skip, "checked — no change; sleeping again".to_string()),
         CheckResult::Changed => spawn_or_back_off(
             &run_id,
             "check script reported a change".to_string(),
@@ -328,8 +347,8 @@ fn run_check(
             &run_id,
             format!(
                 "check script errored (exit {}{}) — spawning a wake to look",
-                output.code,
-                if output.timed_out { ", timed out" } else { "" }
+                code,
+                if timed_out { ", timed out" } else { "" }
             ),
             state.spawn_attempts,
             state.last_spawned_at.map(Timestamp::dt),
@@ -622,18 +641,27 @@ mod tests {
         Wake { n, started_at: deadline, deadline_at: deadline, launcher: "claude".into(), pid: Some(pid), session: None, outcome: None }
     }
 
-    fn check_due(next_check_at: Timestamp) -> Check {
+    fn a_check(wake_after: u32) -> Check {
         Check {
             script: "artifacts/check.sh".to_string(),
-            every_seconds: 900,
-            next_check_at,
+            retry_seconds: None,
+            wake_after,
             consecutive_no_change: 0,
             last_result: None,
             last_at: None,
             last_note: None,
             no_change_total: 0,
-            pinned: false,
+            pinned: true,
         }
+    }
+
+    /// A sleeping run whose wake came due a minute ago (by this module's fixed `now()`), with a
+    /// check standing in front of it.
+    fn due_with_check(id: &str, check: Check) -> RunState {
+        let mut state = base_state(id);
+        state.next_wake_at = Some(at(now() - Duration::minutes(1)));
+        state.check = Some(check);
+        state
     }
 
     /// `record_check` reads and writes the *real* `run.json` on disk (same as `record_spawn`),
@@ -645,12 +673,16 @@ mod tests {
         crate::state::commands::test_init(id, "a goal").unwrap();
         crate::state::transaction(id, |_path, state| {
             state.status = Status::Sleeping;
-            state.next_wake_at = Some(Timestamp::in_seconds(3600));
+            state.next_wake_at = Some(at(now() - Duration::minutes(1)));
             state.check = Some(check.clone());
             Ok(())
         })
         .unwrap();
         RunEntry::Readable(crate::state::read_run(id).unwrap())
+    }
+
+    fn pass(entry: RunEntry, exec: &mut FakeExec) -> Vec<Decision> {
+        pass_once(&[entry], now(), &idle(), exec, MAX_STARTS, GRACE_MINUTES, false, MAX_SPAWN_ATTEMPTS, DEADLINE_GRACE_MINUTES)
     }
 
     // --- the cases that need no inference at all ---
@@ -854,50 +886,56 @@ mod tests {
     // --- opt-in check scripts (§8) ---
 
     #[test]
-    fn a_due_check_is_decided_before_the_real_wake_that_isnt_due_yet() {
-        let mut state = base_state("r");
-        state.next_wake_at = Some(at(now() + Duration::hours(1)));
-        state.check = Some(check_due(at(now() - Duration::minutes(1))));
-        let decision = decide_with(&state, &idle());
+    fn a_due_wake_with_a_check_is_checked_first() {
+        let decision = decide_with(&due_with_check("r", a_check(24)), &idle());
         assert_eq!(decision.action, Action::Check);
     }
 
+    /// There is no separate cadence: nothing runs the check before the wake is due.
     #[test]
-    fn a_check_not_yet_due_leaves_the_run_alone() {
-        let mut state = base_state("r");
-        state.next_wake_at = Some(at(now() + Duration::hours(1)));
-        state.check = Some(check_due(at(now() + Duration::minutes(10))));
+    fn a_check_waits_for_the_wake_to_come_due() {
+        let mut state = due_with_check("r", a_check(24));
+        state.next_wake_at = Some(at(now() + Duration::minutes(10)));
         assert_eq!(decide_with(&state, &idle()).action, Action::Skip);
     }
 
+    /// A person's check knows nothing about why a wake armed its own timer ("CI in ten minutes"),
+    /// so that wake goes ahead without it.
     #[test]
-    fn a_check_script_reporting_no_change_does_not_spawn() {
+    fn a_person_s_check_does_not_stand_in_front_of_a_timer_a_wake_armed() {
+        let mut state = due_with_check("r", a_check(24));
+        state.armed_wake_at = state.next_wake_at;
+        assert_eq!(decide_with(&state, &idle()).action, Action::Spawn);
+    }
+
+    /// A wake's own check was armed for exactly that sleep, so it does stand in front of it.
+    #[test]
+    fn a_wake_s_own_check_stands_in_front_of_the_timer_it_came_with() {
+        let mut check = a_check(24);
+        check.pinned = false;
+        let mut state = due_with_check("r", check);
+        state.armed_wake_at = state.next_wake_at;
+        assert_eq!(decide_with(&state, &idle()).action, Action::Check);
+    }
+
+    #[test]
+    fn a_check_script_reporting_no_change_sleeps_the_run_again() {
         let _h = crate::paths::test_support::TempHome::new();
-        let entry = init_with_check("p-check-none", check_due(at(now() - Duration::minutes(1))));
+        let entry = init_with_check("p-check-none", a_check(24));
         let mut exec = FakeExec::new();
         exec.queue(Output { code: 0, stdout: "nothing new".to_string(), ..Default::default() });
-        let decisions = pass_once(
-            &[entry],
-            now(),
-            &idle(),
-            &mut exec,
-            MAX_STARTS,
-            GRACE_MINUTES,
-            false,
-            MAX_SPAWN_ATTEMPTS,
-            DEADLINE_GRACE_MINUTES,
-        );
+        let decisions = pass(entry, &mut exec);
         assert_eq!(decisions[0].action, Action::Skip, "nothing to reap is not worth a line, same as `Reap`");
         let after = crate::state::read_run("p-check-none").unwrap();
+        // Put off by a period from the real wall clock, as `arm_timer` does — so from now, not
+        // from this test's fixed `now()`.
+        assert!(after.next_wake_at.unwrap().dt() > crate::clock::now() + Duration::minutes(59));
         let check = after.check.expect("check must survive a no-change result");
         assert_eq!(check.consecutive_no_change, 1);
         assert_eq!(check.last_result, Some(CheckResult::NoChange));
         assert_eq!(check.no_change_total, 1, "each no-change result is a wake not spent");
         assert_eq!(check.last_note.as_deref(), Some("nothing new"), "what it saw is kept for `otto show`");
         assert!(check.last_at.is_some());
-        // `record_check` re-arms from the real wall clock, same as `arm_timer` — not from this
-        // test's fixed `now()` — so this only checks it moved, not by how much.
-        assert_ne!(check.next_check_at, check_due(at(now() - Duration::minutes(1))).next_check_at);
         let journal = std::fs::read_to_string(crate::paths::run_dir("p-check-none").unwrap().join("journal.jsonl")).unwrap();
         assert!(!journal.contains("check-ran"), "a no-change result must not spam the journal");
     }
@@ -905,21 +943,11 @@ mod tests {
     #[test]
     fn a_check_script_reporting_a_change_falls_through_to_spawn() {
         let _h = crate::paths::test_support::TempHome::new();
-        let entry = init_with_check("p-check-changed", check_due(at(now() - Duration::minutes(1))));
+        let entry = init_with_check("p-check-changed", a_check(24));
         let mut exec = FakeExec::new();
         exec.queue(Output { code: 1, ..Default::default() });
         exec.queue(Output { code: 1, ..Default::default() }); // has-session: no, for the spawn itself
-        let decisions = pass_once(
-            &[entry],
-            now(),
-            &idle(),
-            &mut exec,
-            MAX_STARTS,
-            GRACE_MINUTES,
-            false,
-            MAX_SPAWN_ATTEMPTS,
-            DEADLINE_GRACE_MINUTES,
-        );
+        let decisions = pass(entry, &mut exec);
         assert_eq!(decisions[0].action, Action::Spawn);
         let after = crate::state::read_run("p-check-changed").unwrap();
         assert_eq!(after.check.unwrap().last_result, Some(CheckResult::Changed));
@@ -931,31 +959,50 @@ mod tests {
     #[test]
     fn a_check_script_error_also_spawns_rather_than_staying_silent() {
         let _h = crate::paths::test_support::TempHome::new();
-        let entry = init_with_check("p-check-error", check_due(at(now() - Duration::minutes(1))));
+        let entry = init_with_check("p-check-error", a_check(24));
         let mut exec = FakeExec::new();
         exec.queue(Output { code: 17, ..Default::default() });
         exec.queue(Output { code: 1, ..Default::default() });
-        let decisions = pass_once(
-            &[entry],
-            now(),
-            &idle(),
-            &mut exec,
-            MAX_STARTS,
-            GRACE_MINUTES,
-            false,
-            MAX_SPAWN_ATTEMPTS,
-            DEADLINE_GRACE_MINUTES,
-        );
+        let decisions = pass(entry, &mut exec);
         assert_eq!(decisions[0].action, Action::Spawn, "fail open to a real wake, never fail closed into silence");
         let after = crate::state::read_run("p-check-error").unwrap();
         assert_eq!(after.check.unwrap().last_result, Some(CheckResult::Error));
     }
 
+    /// The safety net: a script that is wrong without failing would otherwise keep a run asleep
+    /// forever. After `wakeAfter` no-change results in a row, the run wakes anyway.
+    #[test]
+    fn the_safety_net_wakes_the_run_after_enough_no_change_results_in_a_row() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut check = a_check(3);
+        check.consecutive_no_change = 2;
+        let entry = init_with_check("p-check-net", check);
+        let due = crate::state::read_run("p-check-net").unwrap().next_wake_at;
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 0, ..Default::default() });
+        exec.queue(Output { code: 1, ..Default::default() });
+        let decisions = pass(entry, &mut exec);
+        assert_eq!(decisions[0].action, Action::Spawn);
+        assert!(decisions[0].reason.contains("3 times in a row"), "{}", decisions[0].reason);
+        let after = crate::state::read_run("p-check-net").unwrap();
+        assert_eq!(after.next_wake_at, due, "the wake stays due rather than being put off again");
+        assert_eq!(after.check.unwrap().no_change_total, 1);
+    }
+
+    #[test]
+    fn a_safety_net_of_zero_never_fires() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut check = a_check(0);
+        check.consecutive_no_change = 500;
+        let entry = init_with_check("p-check-off", check);
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 0, ..Default::default() });
+        assert_eq!(pass(entry, &mut exec)[0].action, Action::Skip);
+    }
+
     #[test]
     fn a_dry_run_check_never_executes_the_script() {
-        let mut state = base_state("r");
-        state.next_wake_at = Some(at(now() + Duration::hours(1)));
-        state.check = Some(check_due(at(now() - Duration::minutes(1))));
+        let state = due_with_check("r", a_check(24));
         let mut exec = FakeExec::new();
         let decisions = pass_once(
             &[RunEntry::Readable(state)],

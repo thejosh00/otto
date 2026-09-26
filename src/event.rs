@@ -209,8 +209,8 @@ pub enum Event {
     /// A person set the run's check script (`otto check`).
     CheckSet {
         script: String,
-        #[serde(rename = "everySeconds")]
-        every_seconds: i64,
+        #[serde(rename = "wakeAfter")]
+        wake_after: u32,
     },
     /// A person changed how often the run wakes (`otto period`).
     PeriodSet {

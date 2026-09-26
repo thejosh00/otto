@@ -411,22 +411,21 @@ function runView(id) {
       return h("div", h("h2", "Check script"),
         h("div.banner.warn", { style: "white-space:pre-wrap" },
           "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
-          "A script poke runs directly, with no model, can answer the \u201cnothing new\u201d wakes for free:\n",
-          h("span.mono", `otto check ${d.short} --script <file> --every 1h`), "\nthen lengthen the period so the check is what answers most hours: ",
-          h("span.mono", `otto period ${d.short} 1d`)));
+          "A script poke runs before each wake, with no model, spends one only when something changed:\n",
+          h("span.mono", `otto check ${d.short} --script <file>`)));
     }
-    const every = formatMinutes(Math.max(1, Math.round(c.everySeconds / 60)));
+    const period = formatMinutes(d.state.policy.periodMinutes || 60);
+    const retry = c.retrySeconds ? formatMinutes(Math.max(1, Math.round(c.retrySeconds / 60))) : period;
     const last = c.lastResult
       ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
       : "not run yet";
     const rows = [
-      ["Runs", `${c.script} every ${every} · ${c.pinned ? "set by you" : "set by a wake, for this sleep only"}`],
-      ["Next", due(c.nextCheckAt)],
+      ["Runs", `${c.script} before each wake, every ${retry} · ${c.pinned ? "set by you" : "set by a wake, for this sleep only"}`],
       ["Last", last],
       ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
+      ["Safety net", c.wakeAfter ? `wakes anyway after ${c.wakeAfter} in a row (${c.consecutiveNoChange} so far)` : "off"],
     ];
     return h("div", h("h2", "Check script"),
-      c.warning ? h("div.banner.warn", c.warning) : "",
       h("div.card", { style: "margin-top:10px" },
         h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
         c.text != null ? h("div.prose", c.text)

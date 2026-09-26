@@ -448,31 +448,41 @@ A tick is still a wake: cold Claude session, ~$0.38 and 11 turns in the measured
 *whether a wake should exist* for free, with no LLM involved (§9) — it just couldn't tell "nothing
 changed" from "time's up" without spawning one to ask. A check script lets it.
 
+**A check is a gate in front of a wake, not a second clock.** Poke already looks at every run every
+five minutes; when a sleeping run's wake comes due and a check stands in front of it, poke runs the
+script instead of spawning:
+
 ```
-wake:  writes artifacts/check.sh, then
-       otto state arm-timer <id> --in 3600 --check-script artifacts/check.sh --check-every 300
-poke:  runs the script directly every 300s; the run's real nextWakeAt is still 3600s out
-       exit 0  → nothing changed. No spawn. `next-check` advances, silently.
-       exit 1  → changed. Falls into the same spawn path a missed nextWakeAt takes.
-       anything else, or a timeout → treated as changed too — fail open to a real wake, never
-       fail closed into silence — but journaled as an error, not a change.
+person: otto check <id> --script check.sh        # stands in front of every period wake
+wake:   writes artifacts/check.sh, then
+        otto state arm-timer <id> --in 600 --check-script artifacts/check.sh
+                                                 # stands in front of this sleep's wake
+poke:   the wake comes due → runs the script directly
+        exit 0  → nothing new. No spawn; the run sleeps again for the same gap (the period, or
+                  the `--in` the wake gave), silently.
+        exit 1  → changed. Falls into the same spawn path any due wake takes.
+        anything else, or a timeout → treated as changed too — fail open to a real wake, never
+        fail closed into silence — but journaled as an error, not a change.
 ```
 
-**Opt-in, and additive.** A run that never sets `--check-script` is unaffected — `check` is
-`None` and poke's decision is exactly what it was before this existed. This is deliberately
-narrow: it targets the cheap-tick case above, not a general poke plugin system.
+So the period is how often the run *looks*, and the check is what decides whether looking needs a
+model. "Look every 15 minutes, spend tokens only on a change" is a 15m period and a check.
+
+**Opt-in, and additive.** A run that never sets a check is unaffected — `check` is `None` and
+poke's decision is exactly what it was before this existed. This is deliberately narrow: it
+targets the cheap-tick case above, not a general poke plugin system.
 
 **The script gets no `otto state` access.** Same reasoning as §5.3 — every write goes through
 `otto state`, and a check script is not a wake. Its only channel out is its exit code and a
 capped stdout snippet (journaled and shown in `otto show`, never accumulated). It cannot open a
 gate, set a status, or touch `run.json` directly.
 
-**The outer `nextWakeAt` is the only safety net, and that's deliberate.** It still fires a real
-wake regardless of what the check script has been saying — the same re-derivation guarantee (§3)
-that already exists, not a new mechanism. A script that's stale, wrong, or has started lying gets
-caught the next time the real wake comes due, exactly as it would if there were no check script at
-all. No second counter (a "force a heartbeat after N no-changes" rule) was added, because this
-ceiling already does that job.
+**The safety net: `wakeAfter`.** With the check deciding every wake, a script that is wrong without
+failing — exits 0 when something did change — would keep a run asleep forever, and nothing would
+say so. So after `wakeAfter` "nothing new" results in a row (24 by default, `otto check
+--wake-after N`, 0 for none) poke wakes the run anyway. The count is of checks since the run was
+last actually looked at: every real wake starts it again. When the net fires, the due wake stays
+due rather than being put off, and the spawn goes through the ordinary path.
 
 **Fail open, on purpose.** Anything other than exit 0/1 — a crash, a missing binary, a timeout —
 spawns a wake rather than staying quiet. A check script is judgement-free plumbing exactly like
@@ -480,20 +490,22 @@ poke itself; the moment it can't answer cleanly, the answer is to hand the quest
 that can, not to guess "no change" and risk a run going stale unnoticed. This costs the same
 $0.2–0.4 floor a wake always costs, but a broken script is a rare event, not a schedule.
 
-**A check a person sets belongs to the run.** `otto check <run> --script f --every 1h`
-copies the script to `check.sh` in the run directory and marks the check `pinned`: poke keeps
-running it across every wake, a wake's plain `arm-timer` keeps it rather than clearing it, and a
-wake's own `--check-script` does not replace it. A longer period (`otto period`) is what makes it pay — the check can
-only skip wakes the period would otherwise spend, so `otto check` warns when the check runs no
-more often than the period. The first run is on the next poke, so a broken script shows at once.
-`otto show` and the run page show the script, its last result and output, and how many checks
-have found nothing (`noChangeTotal`, each a wake not spent) — or, with no check, what a wake has
-been costing instead.
+**A check a person sets belongs to the run.** `otto check <run> --script f` copies the script to
+`check.sh` in the run directory and marks the check `pinned`: it stands in front of every period
+wake, a wake's plain `arm-timer` keeps it rather than clearing it, and a wake's own
+`--check-script` does not replace it. `otto check` runs it once on the spot and says what it
+returned, without acting on it, so a broken script shows at once. `otto show` and the run page
+show the script, its last result and output, the safety net's count, and how many checks have
+found nothing (`noChangeTotal`, each a wake not spent) — or, with no check, what a wake has been
+costing instead.
 
-**Every wake restarts the check's interval.** A wake is a real look at the world. Without this, a
-change the wake could not clear (a task it failed to finish) reads as "changed" at the very next
-poke, and a check meant to save wakes spawns one every five minutes. With it, the worst case is
-one wake per check interval.
+**A person's check does not stand in front of a timer a wake armed itself.** `arm-timer --in 600`
+because CI takes ten minutes is a wake saying something it knows and the person's script does not;
+letting the script answer "nothing new" would skip exactly the look the wake asked for. otto
+records the time a wake armed (`armedWakeAt`); while it still equals `nextWakeAt`, the sleep is the
+wake's own, and a pinned check waits for the next period wake. The same record keeps `otto period`
+from moving that sleep. A wake's *own* check, armed with its timer, does stand in front of it — that
+is what it was armed for.
 
 **§11.8** is how a phase declares one. See `harness/wake.md`'s Waiting section for what a wake
 that's about to sleep actually writes.
@@ -512,8 +524,8 @@ decision about the work** — only about whether a wake should exist:
 | A gate is open and unexpired | skip — a person owns it |
 | A wake started and died without finishing | **record it incomplete**, so the backoff applies |
 | Nothing pending and no wake ever ran | spawn — the run is stranded |
-| `nextWakeAt` in the future, an opt-in check script (§8.1) is due | **run it directly, no LLM** — no change: skip, silently; change or error: fall into the ordinary due-wake row below |
-| `nextWakeAt` in the future, no check due | skip |
+| `nextWakeAt` in the future | skip |
+| `nextWakeAt` passed, a check script (§8.1) stands in front of it | **run it directly, no LLM** — no change: sleep again, silently; change, error, or the safety net: fall into the row below |
 | `nextWakeAt` passed | spawn (with spawn-attempt backoff) — `GRACE_MINUTES` is 0; `--grace N` defers for N minutes |
 | More than `MAX_STARTS` spawned this pass | defer |
 
@@ -721,9 +733,9 @@ this is when it's worth reaching for:
 - **Exit 0 for "no change", exit 1 for "changed," anything else is treated as an error** and
   spawns a wake anyway — write the script defensively (`set -e` and a clear final exit, not
   whatever the last command happened to return).
-- **`--check-every` a fair bit shorter than the sleep itself.** A 15-minute check under a 1-hour
-  sleep gives four free looks before the real wake would've fired anyway; a check every 55 minutes
-  under a 1-hour sleep barely earns its keep.
+- **Sleep as often as you want to look.** The check runs when the sleep comes due and puts the
+  wake off by the same gap on "nothing new", so `--in 900 --check-script …` is a free look every
+  15 minutes until something changes — the gap is the polling interval now, not a ceiling on it.
 - **`dev-flow`'s `babysit` phase (row 6 above) is the model case** for this — `manage-pr`'s hourly
   reconciliation loop is exactly the "cheap tick, mostly nothing happening" shape §12 measured at
   ~$9/day. A check script there turns most of those hours into a free shell call.
@@ -860,7 +872,7 @@ otto ls                        # status · goal · who is blocking · wakes spen
 otto show <run>                # state, handoff, the open question, cold-readable
 otto answer <run> --choice approve | --text "…" | --file f  [--no-wake]
 otto note <run> "…" [--standing] [--now] | --list | --drop N
-otto check <run> [--script f --every 1h | --off]
+otto check <run> [--script f [--wake-after N] | --off]
 otto period <run> [4h]         # see or change how often it wakes
 otto logs <run> [-f]           # the journal, readable
 otto attach <run>              # watch the live wake, if there is one

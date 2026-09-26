@@ -613,8 +613,10 @@ pub struct CheckView {
     pub script: String,
     /// The script itself; `None` when the file is missing.
     pub text: Option<String>,
-    pub every_seconds: i64,
-    pub next_check_at: crate::clock::Timestamp,
+    /// How long it sleeps again after "nothing new"; `None` is the run's period.
+    pub retry_seconds: Option<i64>,
+    /// Wake anyway after this many "nothing new" results in a row; 0 is off.
+    pub wake_after: u32,
     pub last_result: Option<crate::state::CheckResult>,
     pub last_at: Option<crate::clock::Timestamp>,
     pub last_note: Option<String>,
@@ -623,8 +625,6 @@ pub struct CheckView {
     pub no_change_total: u64,
     /// Set by a person with `otto check`, rather than by a wake for one sleep.
     pub pinned: bool,
-    /// Set when the check cannot save anything as configured, saying why.
-    pub warning: Option<String>,
 }
 
 /// What recent wakes have used, averaged. The honest price of a wake on a subscription is tokens,
@@ -637,18 +637,6 @@ pub struct WakeCost {
     pub avg_output_tokens: u64,
     pub avg_cache_creation: u64,
     pub avg_cache_read: u64,
-}
-
-/// Why a check saves nothing, when it can't: poke only consults it while a real wake is further
-/// off than the next check, so a check no more frequent than the period is never the one asked.
-pub fn check_warning(every_seconds: i64, period_minutes: u64) -> Option<String> {
-    (every_seconds >= period_minutes as i64 * 60).then(|| {
-        format!(
-            "it runs every {} but the run wakes every {} anyway, so it never saves a wake — lengthen the period (`otto period <run> 1d`)",
-            crate::clock::format_minutes((every_seconds / 60).max(1) as u64),
-            crate::clock::format_minutes(period_minutes)
-        )
-    })
 }
 
 pub fn check_view(dir: &std::path::Path, state: &RunState) -> Option<CheckView> {
@@ -667,15 +655,14 @@ pub fn check_view(dir: &std::path::Path, state: &RunState) -> Option<CheckView> 
     Some(CheckView {
         script: check.script.clone(),
         text,
-        every_seconds: check.every_seconds,
-        next_check_at: check.next_check_at,
+        retry_seconds: check.retry_seconds,
+        wake_after: check.wake_after,
         last_result: check.last_result,
         last_at: check.last_at,
         last_note: check.last_note.clone(),
         consecutive_no_change: check.consecutive_no_change,
         no_change_total: check.no_change_total,
         pinned: check.pinned,
-        warning: check_warning(check.every_seconds, state.policy.period_minutes),
     })
 }
 
@@ -711,15 +698,12 @@ pub struct CheckSetOutcome {
     pub next_wake_at: Option<crate::clock::Timestamp>,
 }
 
-/// Give a run a check script of its own (`otto check --script`): poke runs it every `every`, and
-/// only a change spends a wake. A longer period (`otto period`) is what turns a check into a
-/// saving — the period's wake still comes regardless, as the heartbeat that catches a check gone
-/// wrong. The script's first run is on the next poke, so a broken one shows up now, not in an hour.
-pub fn set_check(id: &str, script: &str, every_seconds: i64) -> Result<CheckSetOutcome, OttoError> {
+/// Give a run a check script of its own (`otto check --script`). From here on, whenever the run's
+/// period comes due, poke runs the script instead of waking the run: "nothing new" sleeps it for
+/// another period, anything else wakes it, and `wake_after` no-change results in a row wake it
+/// anyway (0: never) — the safety net under a script that is wrong without failing.
+pub fn set_check(id: &str, script: &str, wake_after: u32) -> Result<CheckSetOutcome, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
-    if every_seconds < 60 {
-        return Err(OttoError::usage("--every must be at least 1m — poke itself only runs every few minutes"));
-    }
     if !script.starts_with("#!") {
         return Err(OttoError::usage(
             "the check script must start with a #! line (e.g. #!/bin/sh) — poke runs it directly",
@@ -739,8 +723,8 @@ pub fn set_check(id: &str, script: &str, every_seconds: i64) -> Result<CheckSetO
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755))?;
         state.check = Some(crate::state::Check {
             script: CHECK_FILE.to_string(),
-            every_seconds,
-            next_check_at: crate::clock::Timestamp::now(),
+            retry_seconds: None,
+            wake_after,
             consecutive_no_change: 0,
             last_result: None,
             last_at: None,
@@ -748,7 +732,7 @@ pub fn set_check(id: &str, script: &str, every_seconds: i64) -> Result<CheckSetO
             no_change_total: 0,
             pinned: true,
         });
-        crate::event::record(path, &crate::event::Event::CheckSet { script: CHECK_FILE.to_string(), every_seconds })
+        crate::event::record(path, &crate::event::Event::CheckSet { script: CHECK_FILE.to_string(), wake_after })
     })?;
     let state = read_run(&id)?;
     Ok(CheckSetOutcome {
@@ -773,13 +757,9 @@ pub struct PeriodSetOutcome {
     pub rescheduled: bool,
 }
 
-/// How far off a sleep may be from "last wake's start + period" and still be the period's sleep
-/// rather than a timer a wake armed. Generous, because both are stamped to the second.
-const PERIOD_SLEEP_TOLERANCE_SECONDS: i64 = 60;
-
 /// Change how often a run wakes (`otto period`). The new period applies to every sleep from here
 /// on, and to the one already scheduled too when that sleep is the period's own — re-anchored on
-/// the last wake's start, sooner or later. A timer a wake armed itself (`arm-timer --in 600`
+/// when that sleep began, sooner or later. A timer a wake armed itself (`arm-timer --in 600`
 /// because CI takes ten minutes) is left alone: that wake knew something the period does not.
 /// A re-anchored wake whose time has already passed is due now, and the next poke starts it.
 pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError> {
@@ -798,15 +778,15 @@ pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError>
         }
         previous = state.policy.period_minutes;
         state.policy.period_minutes = minutes;
-        if state.status == Status::Sleeping {
-            if let (Some(next), Some(wake)) = (state.next_wake_at, &state.wake) {
-                let at = |m: u64| wake.started_at.dt() + time::Duration::minutes(m as i64);
-                if (next.dt() - at(previous)).whole_seconds().abs() <= PERIOD_SLEEP_TOLERANCE_SECONDS {
-                    let now = crate::clock::Timestamp::now();
-                    let anchored = crate::clock::Timestamp::at(at(minutes));
-                    state.next_wake_at = Some(if anchored.dt() > now.dt() { anchored } else { now });
-                    rescheduled = true;
-                }
+        if state.status == Status::Sleeping && !state.wake_armed_timer() {
+            if let Some(next) = state.next_wake_at {
+                // The period's sleep began one old period before it ends — at the last wake's
+                // start, or at the check that last put it off.
+                let began = next.dt() - time::Duration::minutes(previous as i64);
+                let now = crate::clock::Timestamp::now();
+                let anchored = crate::clock::Timestamp::at(began + time::Duration::minutes(minutes as i64));
+                state.next_wake_at = Some(if anchored.dt() > now.dt() { anchored } else { now });
+                rescheduled = true;
             }
         }
         crate::event::record(
@@ -823,6 +803,18 @@ pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError>
         rescheduled,
         id,
     })
+}
+
+/// Run a run's check script once, now, exactly as poke would, and report what it said — without
+/// recording it or acting on it. `otto check` does this when a script is set, so a broken one
+/// shows at once rather than when the run is next due.
+pub fn try_check(id: &str) -> Result<crate::poke::CheckRun, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let state = read_run(&id)?;
+    let check = state.check.as_ref().ok_or_else(|| OttoError::conflict(format!("{id} has no check script")))?;
+    let script = crate::paths::run_dir(&id)?.join(&check.script);
+    let script = script.to_str().ok_or_else(|| OttoError::usage("check script path is not valid UTF-8"))?.to_string();
+    Ok(crate::poke::execute_check(&id, &state, &script, &mut crate::exec::RealExec))
 }
 
 /// Take a run's check script away. Its file stays, like a dropped note's.
@@ -1452,12 +1444,11 @@ mod tests {
     }
 
     #[test]
-    fn a_check_set_by_a_person_is_executable_pinned_and_first_runs_on_the_next_poke() {
+    fn a_check_set_by_a_person_is_executable_pinned_and_stands_in_front_of_the_next_wake() {
         let _h = TempHome::new();
         test_init("2026-09-25-chk", "a goal").unwrap();
         sleeping_after_a_wake("2026-09-25-chk", 10, 50);
-        set_period("chk", 24 * 60).unwrap();
-        let out = set_check("chk", SCRIPT, 3600).unwrap();
+        let out = set_check("chk", SCRIPT, 24).unwrap();
         let dir = crate::paths::run_dir("2026-09-25-chk").unwrap();
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(dir.join(CHECK_FILE)).unwrap().permissions().mode();
@@ -1466,9 +1457,30 @@ mod tests {
         let state = read_run("2026-09-25-chk").unwrap();
         let check = state.check.as_ref().unwrap();
         assert!(check.pinned);
-        assert!(check.next_check_at.is_past(), "the first run is the next poke, so a broken script shows now");
-        assert!(out.check.warning.is_none());
+        assert_eq!(check.wake_after, 24);
+        assert!(state.check_gates_wake());
         assert_eq!(out.check.text.as_deref(), Some(SCRIPT));
+    }
+
+    /// A person's check knows nothing about why a wake armed its own timer, so it does not stand
+    /// in front of it — only in front of the period's wakes.
+    #[test]
+    fn a_person_s_check_does_not_gate_a_timer_a_wake_armed() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-ci", "a goal").unwrap();
+        set_check("ci", SCRIPT, 24).unwrap();
+        crate::state::commands::arm_timer(crate::state::commands::ArmTimerArgs {
+            id: "2026-09-25-ci".into(),
+            at: None,
+            seconds: Some(600),
+            status: Status::Sleeping,
+            note: None,
+            check_script: None,
+        })
+        .unwrap();
+        let state = read_run("2026-09-25-ci").unwrap();
+        assert!(state.check.is_some(), "kept");
+        assert!(!state.check_gates_wake());
     }
 
     #[test]
@@ -1509,6 +1521,11 @@ mod tests {
         test_init("2026-09-25-ci", "a goal").unwrap();
         // Woke 10 minutes ago and armed a 5-minute timer for CI — not the hourly period.
         sleeping_after_a_wake("2026-09-25-ci", 10, 5);
+        crate::state::transaction("2026-09-25-ci", |_, s| {
+            s.armed_wake_at = s.next_wake_at;
+            Ok(())
+        })
+        .unwrap();
         let before = read_run("2026-09-25-ci").unwrap().next_wake_at;
         let out = set_period("ci", 24 * 60).unwrap();
         assert!(!out.rescheduled);
@@ -1531,22 +1548,12 @@ mod tests {
     }
 
     #[test]
-    fn a_check_no_more_often_than_the_period_is_flagged_as_saving_nothing() {
-        let _h = TempHome::new();
-        test_init("2026-09-25-same", "a goal").unwrap();
-        let out = set_check("same", SCRIPT, 3600).unwrap();
-        let warning = out.check.warning.unwrap();
-        assert!(warning.contains("never saves a wake") && warning.contains("otto period"), "{warning}");
-    }
-
-    #[test]
     fn a_bad_check_is_refused_and_one_can_be_removed() {
         let _h = TempHome::new();
         test_init("2026-09-25-bad", "a goal").unwrap();
-        assert!(set_check("bad", "exit 0\n", 3600).unwrap_err().message.contains("#!"));
-        assert!(set_check("bad", SCRIPT, 30).is_err(), "under a minute is below poke's own cadence");
+        assert!(set_check("bad", "exit 0\n", 24).unwrap_err().message.contains("#!"));
         assert!(clear_check("bad").is_err(), "nothing to remove yet");
-        set_check("bad", SCRIPT, 3600).unwrap();
+        set_check("bad", SCRIPT, 24).unwrap();
         assert_eq!(clear_check("bad").unwrap(), CHECK_FILE);
         assert!(read_run("2026-09-25-bad").unwrap().check.is_none());
         let journal = std::fs::read_to_string(crate::paths::run_dir("2026-09-25-bad").unwrap().join("journal.jsonl")).unwrap();
@@ -1557,8 +1564,7 @@ mod tests {
     fn a_wake_s_plain_re_arm_keeps_a_person_s_check() {
         let _h = TempHome::new();
         test_init("2026-09-25-keep", "a goal").unwrap();
-        set_period("keep", 1440).unwrap();
-        set_check("keep", SCRIPT, 3600).unwrap();
+        set_check("keep", SCRIPT, 12).unwrap();
         crate::state::commands::arm_timer(crate::state::commands::ArmTimerArgs {
             id: "2026-09-25-keep".into(),
             at: None,
@@ -1566,13 +1572,12 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/other.sh".into()),
-            check_every: Some(600),
         })
         .unwrap();
         let check = read_run("2026-09-25-keep").unwrap().check.unwrap();
         assert!(check.pinned);
         assert_eq!(check.script, CHECK_FILE);
-        assert_eq!(check.every_seconds, 3600);
+        assert_eq!(check.wake_after, 12);
     }
 
     #[test]

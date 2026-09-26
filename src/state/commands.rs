@@ -324,6 +324,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         phase: args.phase.clone(),
         gate: None,
         next_wake_at: None,
+        armed_wake_at: None,
         wake: None,
         check: None,
         incomplete_wakes: 0,
@@ -662,43 +663,33 @@ pub struct ArmTimerArgs {
     pub status: Status,
     #[arg(long)]
     pub note: Option<String>,
-    /// Path, relative to the run dir, to an opt-in script poke runs directly — DESIGN.md §8.
-    /// Requires `--check-every`; give neither to arm a plain timer.
+    /// Path, relative to the run dir, to an opt-in script poke runs directly when this sleep
+    /// comes due, instead of waking the run — DESIGN.md §8.1. "Nothing new" sleeps again for the
+    /// same length of time; anything else wakes the run
     #[arg(long = "check-script")]
     pub check_script: Option<String>,
-    /// How often poke runs the check script, in seconds. Must be less than the time until the
-    /// wake itself, or the check would never run before the real wake does.
-    #[arg(long = "check-every", value_name = "SECONDS")]
-    pub check_every: Option<i64>,
 }
 
 pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
     if args.at.is_some() && args.seconds.is_some() {
         return Err(OttoError::usage("give at most one of --at or --in"));
     }
-    if args.check_script.is_some() != args.check_every.is_some() {
-        return Err(OttoError::usage("give both --check-script and --check-every, or neither"));
-    }
+    // Only an explicit time is the wake's own; no time at all is the period's sleep.
+    let explicit = args.at.is_some() || args.seconds.is_some();
     let wake = match (&args.at, args.seconds) {
         (Some(at), _) => Timestamp::parse(at)?,
         (None, Some(seconds)) => Timestamp::in_seconds(seconds),
         (None, None) => read_run(&args.id)?.period_wake_at(),
     };
-    let check = match (&args.check_script, args.check_every) {
-        (Some(script), Some(every)) => {
-            if every <= 0 {
-                return Err(OttoError::usage("--check-every must be positive"));
-            }
-            let seconds_until_wake = (wake.dt() - crate::clock::now()).whole_seconds();
-            if every >= seconds_until_wake {
-                return Err(OttoError::usage(format!(
-                    "--check-every {every}s must be less than the {seconds_until_wake}s until the wake itself"
-                )));
-            }
+    let check = match &args.check_script {
+        Some(script) => {
+            // A check armed with an explicit sleep asks again at that same gap; with the period's
+            // sleep, at the period.
+            let retry = explicit.then(|| (wake.dt() - crate::clock::now()).whole_seconds().max(60));
             Some(Check {
                 script: script.clone(),
-                every_seconds: every,
-                next_check_at: Timestamp::in_seconds(every),
+                retry_seconds: retry,
+                wake_after: crate::state::DEFAULT_CHECK_WAKE_AFTER,
                 consecutive_no_change: 0,
                 last_result: None,
                 last_at: None,
@@ -712,6 +703,7 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
     let id = args.id.clone();
     let kept_pinned = transaction(&id, |path, state| {
         state.next_wake_at = Some(wake);
+        state.armed_wake_at = explicit.then_some(wake);
         state.status = args.status;
         // A person's check outlives any one sleep: keep it, whatever this call asked for.
         let pinned = state.check.as_ref().is_some_and(|c| c.pinned);
@@ -732,8 +724,15 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
 /// reason that one is (`RunState::spawn_attempts`): a wake rewriting `check` while re-arming its
 /// own timer would otherwise clobber poke's no-change streak. A no-change result never reaches
 /// the journal — only `changed`/`error` do — so a tight cadence over days doesn't spam it.
-pub fn record_check(id: &str, result: CheckResult, note: Option<String>) -> Result<(), OttoError> {
+///
+/// `rearm`: a no-change result the run should sleep on — the wake it stood in front of is put
+/// off by the check's retry gap (else the period). False when the safety net is about to wake the
+/// run anyway, so the due time stays due.
+pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: bool) -> Result<(), OttoError> {
     transaction(id, |path, state| {
+        let period_seconds = state.policy.period_minutes as i64 * 60;
+        let armed = state.wake_armed_timer();
+        let mut rearm_to = None;
         let Some(check) = state.check.as_mut() else { return Ok(()) };
         check.last_at = Some(Timestamp::now());
         check.last_note = note.clone();
@@ -741,7 +740,9 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>) -> Resu
             CheckResult::NoChange => {
                 check.consecutive_no_change += 1;
                 check.no_change_total += 1;
-                check.next_check_at = Timestamp::in_seconds(check.every_seconds);
+                if rearm {
+                    rearm_to = Some(Timestamp::in_seconds(check.retry_seconds.unwrap_or(period_seconds)));
+                }
             }
             CheckResult::Changed | CheckResult::Error => {
                 check.consecutive_no_change = 0;
@@ -754,6 +755,14 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>) -> Resu
                 path,
                 &Event::CheckRan { result, consecutive_no_change, note: note.clone() },
             )?;
+        }
+        if let Some(next) = rearm_to {
+            // A wake's own sleep stays its own across retries, so the rules that keep a person's
+            // check and a period change off it keep holding.
+            if armed {
+                state.armed_wake_at = Some(next);
+            }
+            state.next_wake_at = Some(next);
         }
         Ok(())
     })
@@ -1079,37 +1088,35 @@ mod tests {
     }
 
     #[test]
-    fn arm_timer_rejects_a_check_every_that_wont_fit_before_the_wake() {
+    fn a_check_armed_with_an_explicit_sleep_retries_at_that_gap_and_one_on_the_period_at_the_period() {
         let _home = TempHome::new();
         test_init("run-check", "hello-flow").unwrap();
-        let err = arm_timer(ArmTimerArgs {
+        arm_timer(ArmTimerArgs {
             id: "run-check".to_string(),
             at: None,
-            seconds: Some(60),
+            seconds: Some(600),
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: Some(60),
         })
-        .unwrap_err();
-        assert!(err.to_string().contains("must be less than"), "got: {err}");
-    }
+        .unwrap();
+        let state = read_run("run-check").unwrap();
+        let retry = state.check.as_ref().unwrap().retry_seconds.unwrap();
+        assert!((595..=600).contains(&retry), "got {retry}");
+        assert!(state.wake_armed_timer(), "an explicit --in is the wake's own sleep");
 
-    #[test]
-    fn arm_timer_rejects_one_of_check_script_or_check_every_without_the_other() {
-        let _home = TempHome::new();
-        test_init("run-check-2", "hello-flow").unwrap();
-        let err = arm_timer(ArmTimerArgs {
-            id: "run-check-2".to_string(),
+        arm_timer(ArmTimerArgs {
+            id: "run-check".to_string(),
             at: None,
-            seconds: Some(3600),
+            seconds: None,
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: None,
         })
-        .unwrap_err();
-        assert!(err.to_string().contains("both --check-script and --check-every"), "got: {err}");
+        .unwrap();
+        let state = read_run("run-check").unwrap();
+        assert!(!state.wake_armed_timer());
+        assert_eq!(state.check.unwrap().retry_seconds, None, "the period's sleep retries on the period");
     }
 
     #[test]
@@ -1128,7 +1135,6 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: None,
-            check_every: None,
         })
         .unwrap();
         let at = read_run("run-period").unwrap().next_wake_at.unwrap();
@@ -1170,12 +1176,11 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: Some(900),
         })
         .unwrap();
         let check = read_run("run-check-3").unwrap().check.expect("check must be persisted");
         assert_eq!(check.script, "artifacts/check.sh");
-        assert_eq!(check.every_seconds, 900);
+        assert_eq!(check.wake_after, crate::state::DEFAULT_CHECK_WAKE_AFTER);
         assert_eq!(check.consecutive_no_change, 0);
         assert!(check.last_result.is_none());
     }
@@ -1191,7 +1196,6 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: Some(900),
         })
         .unwrap();
         arm_timer(ArmTimerArgs {
@@ -1201,7 +1205,6 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: None,
-            check_every: None,
         })
         .unwrap();
         assert!(read_run("run-check-4").unwrap().check.is_none(), "a plain re-arm must not leave a stale check");
@@ -1218,11 +1221,15 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: Some(900),
         })
         .unwrap();
-        record_check("run-check-5", CheckResult::NoChange, Some("quiet".to_string())).unwrap();
-        let check = read_run("run-check-5").unwrap().check.unwrap();
+        let before = read_run("run-check-5").unwrap().next_wake_at.unwrap();
+        record_check("run-check-5", CheckResult::NoChange, Some("quiet".to_string()), true).unwrap();
+        let state = read_run("run-check-5").unwrap();
+        // Slept again for the same gap it was armed with, from now.
+        assert!(state.next_wake_at.unwrap().dt() >= before.dt(), "a no-change result puts the wake off");
+        assert!(state.wake_armed_timer(), "still the wake's own sleep");
+        let check = state.check.unwrap();
         assert_eq!(check.consecutive_no_change, 1);
         assert_eq!(check.last_result, Some(CheckResult::NoChange));
         let journal =
@@ -1241,11 +1248,10 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
-            check_every: Some(900),
         })
         .unwrap();
-        record_check("run-check-6", CheckResult::NoChange, None).unwrap();
-        record_check("run-check-6", CheckResult::Changed, Some("3 new comments".to_string())).unwrap();
+        record_check("run-check-6", CheckResult::NoChange, None, true).unwrap();
+        record_check("run-check-6", CheckResult::Changed, Some("3 new comments".to_string()), true).unwrap();
         let check = read_run("run-check-6").unwrap().check.unwrap();
         assert_eq!(check.consecutive_no_change, 0, "a real change resets the no-change streak");
         assert_eq!(check.last_result, Some(CheckResult::Changed));

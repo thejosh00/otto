@@ -213,12 +213,10 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         if let Some(given) = &notes {
             crate::notes::mark_given(state, &given.ids, wake_number);
         }
-        // A wake is a real look at the world, so the check that would have asked "anything new?"
-        // restarts its interval from here. Without this, a change the wake could not clear — a
-        // task it failed to finish — would read as "changed" at the very next poke, and a check
-        // meant to save wakes would spawn one every five minutes instead.
+        // A wake is a real look at the world, so the safety net's count of "nothing new" results
+        // starts again from here — it counts checks since the run was last actually looked at.
         if let Some(check) = state.check.as_mut() {
-            check.next_check_at = Timestamp::at(started.dt() + time::Duration::seconds(check.every_seconds));
+            check.consecutive_no_change = 0;
         }
         crate::event::record(
             path,
@@ -1065,20 +1063,23 @@ mod tests {
         assert!(!call.contains("Skip the e2e suite") && call.contains("Never touch legacy/."));
     }
 
-    /// A change the wake could not clear must not read as "changed" again at the very next poke —
-    /// that would turn a check meant to save wakes into a wake every five minutes.
+    /// The safety net counts "nothing new" results since the run was last actually looked at, so
+    /// a real wake starts the count again.
     #[test]
-    fn a_wake_restarts_its_check_s_interval() {
+    fn a_wake_restarts_the_safety_net_s_count() {
         let _h = TempHome::new();
         test_init("w-check", "a goal").unwrap();
-        crate::core::set_period("w-check", 1440).unwrap();
-        crate::core::set_check("w-check", "#!/bin/sh\nexit 1\n", 3600).unwrap();
-        assert!(read_run("w-check").unwrap().check.unwrap().next_check_at.is_past());
+        crate::core::set_check("w-check", "#!/bin/sh\nexit 0\n", 24).unwrap();
+        for _ in 0..3 {
+            crate::state::commands::record_check("w-check", crate::state::CheckResult::NoChange, None, true).unwrap();
+        }
+        assert_eq!(read_run("w-check").unwrap().check.unwrap().consecutive_no_change, 3);
         let mut exec = FakeExec::new();
         exec.on_exec(|| behave_well("w-check"));
         run_wake(&args("w-check"), &mut exec).unwrap();
-        let next = read_run("w-check").unwrap().check.unwrap().next_check_at;
-        assert!(next.dt() > crate::clock::now() + time::Duration::minutes(59), "{next}");
+        let check = read_run("w-check").unwrap().check.unwrap();
+        assert_eq!(check.consecutive_no_change, 0);
+        assert_eq!(check.no_change_total, 3, "the total is history, not a count to reset");
     }
 
     #[test]

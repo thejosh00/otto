@@ -198,37 +198,40 @@ and carry on. Never replay the ticks you missed.
 
 If what you'd check on the next tick is something a shell script can answer on its own — `gh pr
 view --json` and a cursor diff, `curl` against a status endpoint, `git fetch --dry-run` for a
-moved base — write that script instead of relying on a full wake for every tick. Poke will run it
-directly, no LLM involved, on a tighter cadence than your sleep itself:
+moved base — write that script and arm it with your sleep. When the sleep comes due, poke runs it
+directly, no LLM involved, and only wakes the run if it says something changed:
 
 ```
 write the script       → artifacts/check.sh, executable (chmod +x), exit 0 = no change, exit 1 = changed
-otto state arm-timer <id> --in <seconds> --check-script artifacts/check.sh --check-every <shorter-seconds>
+otto state arm-timer <id> --in <seconds> --check-script artifacts/check.sh
 → then stop, same as any other sleep
 ```
+
+"Nothing new" puts the wake off by the same gap again (`--in 600` → another 600s; no `--in` → the
+period), so the script keeps asking at that pace until something changes. After 24 "nothing new"
+results in a row poke wakes the run anyway — the safety net under a script that is wrong without
+failing.
 
 The script gets `OTTO_RUN_ID` and (if the run has one) `OTTO_REPO` in its environment — nothing
 else, because it has **no `otto state` access and never will**. Its only channel out is its exit
 code and up to 200 characters of stdout, which poke journals on a real change or an error (a
 no-change result never reaches the journal — only `run.json`'s own `check` field, so it stays
-cold-readable via `otto show` without spamming `otto logs` every few minutes).
+cold-readable via `otto show` without spamming `otto logs`).
 
 **Exit 0 for "nothing changed," exit 1 for "changed."** Anything else — a crash, a bad exit code,
 a timeout — is treated as "changed" too: poke fails open to a real wake rather than trust a script
 that might be lying, so write yours defensively (`set -e`, a clear final exit) rather than
 whatever the last command happened to return.
 
-This is purely an accessory to the sleep itself — the period, or the `--in <seconds>` you give
-alongside it, is untouched and still fires a real wake regardless of what the check has been reporting.
-That's on purpose: it's the same re-derivation guarantee every wake already gets, not a new one,
-and it's what catches a check script that's gone stale or wrong. Skip this entirely for anything
-that isn't genuinely cheap to check outside an LLM — a plain `arm-timer` is the right default, and
-this is optional the same way a phase table is (DESIGN.md §11.8).
+Skip this entirely for anything that isn't genuinely cheap to check outside an LLM — a plain
+`arm-timer` is the right default, and this is optional the same way a phase table is (DESIGN.md
+§11.8).
 
 **A check a person set is theirs.** If `run.json`'s `check` has `"pinned": true`, a person gave the
-run that script with `otto check`, and it belongs to the run rather than to one sleep: poke keeps
-running it across your wakes, a plain `arm-timer` keeps it, and your own `--check-script` is
-ignored. Don't write another. The run's period is the heartbeat that comes regardless.
+run that script with `otto check`, and it belongs to the run rather than to one sleep: it stands in
+front of every wake the period brings, a plain `arm-timer` keeps it, and your own `--check-script`
+is ignored. Don't write another. It does **not** stand in front of a timer you arm with `--in` or
+`--at` — that wake comes regardless, because you asked for it for a reason the script doesn't know.
 
 ## Notes
 
