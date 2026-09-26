@@ -67,11 +67,15 @@ pub fn load() -> Result<Config, OttoError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(e) => return Err(e.into()),
     };
-    let config: Config = serde_json::from_str(&text)
-        .map_err(|e| OttoError::usage(format!("{} is not valid: {e}", path.display())))?;
+    parse(&text).map_err(|e| OttoError::usage(format!("{}: {}", path.display(), e.message)))
+}
+
+/// The contents of a `config.json`, checked the way `load` checks the file on disk.
+pub fn parse(text: &str) -> Result<Config, OttoError> {
+    let config: Config = serde_json::from_str(text).map_err(|e| OttoError::usage(format!("not valid: {e}")))?;
     for l in &config.launchers {
         if l.name.trim().is_empty() || l.command.trim().is_empty() {
-            return Err(OttoError::usage(format!("{}: every launcher needs a name and a command", path.display())));
+            return Err(OttoError::usage("every launcher needs a name and a command"));
         }
     }
     Ok(config)

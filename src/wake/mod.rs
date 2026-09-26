@@ -38,6 +38,7 @@ use std::time::Duration;
 
 #[derive(clap::Args, Debug)]
 pub struct WakeArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
     /// A person's answer to the open gate, handed to the wake verbatim
     #[arg(long)]
@@ -213,8 +214,13 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         if let Some(given) = &notes {
             crate::notes::mark_given(state, &given.ids, wake_number);
         }
-        // A wake is a real look at the world, so the safety net's count of "nothing new" results
-        // starts again from here — it counts checks since the run was last actually looked at.
+        // A check a wake armed belonged to the sleep that just ended; left in place it would stand
+        // in front of the next period sleep too, still asking at the old wake's gap. A person's
+        // check belongs to the run, and a wake is a real look at the world, so the safety net's
+        // count of "nothing new" results starts again from here.
+        if state.check.as_ref().is_some_and(|c| !c.pinned) {
+            state.check = None;
+        }
         if let Some(check) = state.check.as_mut() {
             check.consecutive_no_change = 0;
         }
@@ -1080,6 +1086,26 @@ mod tests {
         let check = read_run("w-check").unwrap().check.unwrap();
         assert_eq!(check.consecutive_no_change, 0);
         assert_eq!(check.no_change_total, 3, "the total is history, not a count to reset");
+    }
+
+    /// A wake's own check was for the sleep that just ended, so the wake it let through ends it.
+    #[test]
+    fn a_wake_ends_the_check_the_last_wake_armed() {
+        let _h = TempHome::new();
+        test_init("w-own", "a goal").unwrap();
+        crate::state::commands::arm_timer(crate::state::commands::ArmTimerArgs {
+            id: "w-own".into(),
+            at: None,
+            seconds: Some(600),
+            status: Status::Sleeping,
+            note: None,
+            check_script: Some("artifacts/ci.sh".into()),
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-own"));
+        run_wake(&args("w-own"), &mut exec).unwrap();
+        assert!(read_run("w-own").unwrap().check.is_none());
     }
 
     #[test]

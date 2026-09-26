@@ -55,7 +55,9 @@ fn authorization_key(action: OutwardAction, item: Option<&str>) -> String {
 
 #[derive(clap::Args, Debug)]
 pub struct AuthorizeArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The outward action being authorized
     #[arg(long, value_enum, required = true)]
     pub action: OutwardAction,
     /// the commit this authorizes, full or short sha
@@ -132,7 +134,9 @@ pub fn authorize(args: AuthorizeArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct CheckAuthorizedArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The outward action about to be taken
     #[arg(long, value_enum, required = true)]
     pub action: OutwardAction,
     /// the commit you are about to act on

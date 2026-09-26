@@ -486,16 +486,22 @@ pub fn pass_once(
 
 #[derive(clap::Args, Debug)]
 pub struct PokeArgs {
+    /// Decide, print what it would do, and change nothing — no wake, no check script, no kill
     #[arg(long = "dry-run")]
     pub dry_run: bool,
+    /// Say what it decided for every run, not only the ones where it did something
     #[arg(long)]
     pub verbose: bool,
+    /// Start at most this many wakes in one pass; the rest wait for the next pass
     #[arg(long = "max-starts", default_value_t = MAX_STARTS)]
     pub max_starts: u32,
+    /// Minutes past a run's wake time before poke starts it. 0: as soon as it is due
     #[arg(long, default_value_t = GRACE_MINUTES, value_name = "MINUTES")]
     pub grace: i64,
+    /// Spawn attempts that produce no wake before poke gives up on a run and says so once
     #[arg(long = "max-attempts", default_value_t = MAX_SPAWN_ATTEMPTS)]
     pub max_attempts: u32,
+    /// Minutes past a wake's deadline before poke kills it as stuck rather than finishing
     #[arg(long = "deadline-grace", default_value_t = DEADLINE_GRACE_MINUTES, value_name = "MINUTES")]
     pub deadline_grace: i64,
 }
@@ -905,6 +911,14 @@ mod tests {
     fn a_person_s_check_does_not_stand_in_front_of_a_timer_a_wake_armed() {
         let mut state = due_with_check("r", a_check(24));
         state.armed_wake_at = state.next_wake_at;
+        assert_eq!(decide_with(&state, &idle()).action, Action::Spawn);
+    }
+
+    /// A wake that did not finish is retried whatever the check says — the work is half done.
+    #[test]
+    fn a_check_never_stands_in_front_of_a_failed_wake_s_retry() {
+        let mut state = due_with_check("r", a_check(24));
+        state.incomplete_wakes = 1;
         assert_eq!(decide_with(&state, &idle()).action, Action::Spawn);
     }
 

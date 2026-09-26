@@ -109,7 +109,7 @@ pub struct InitArgs {
 
     /// claude's permission mode for every wake. A wake is unattended, so no prompt can be
     /// answered; `bypass-permissions` is the only mode measured to work, and the real guardrail
-    /// is a sandboxing `--launcher` (README "Launchers", DESIGN.md open question 4)
+    /// is a sandboxing `--launcher` (docs/guides/sandboxing.md)
     #[arg(long = "permission-mode", value_enum, default_value = "bypass-permissions", help_heading = "What it may do")]
     pub permission_mode: PermissionMode,
     /// Tool claude may use without asking, in claude's own syntax (`Read`, `Bash(git *)`); repeatable
@@ -405,6 +405,7 @@ pub fn record_spawn(id: &str, attempts: u32, stamp: bool) -> Result<(), OttoErro
 
 #[derive(clap::Args, Debug)]
 pub struct GetArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
     /// e.g. status, facts.branch, gate.file
     #[arg(long)]
@@ -423,8 +424,10 @@ pub fn get(args: GetArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct ListArgs {
+    /// Print the runs as a JSON array instead of a table
     #[arg(long)]
     pub json: bool,
+    /// Only runs in this status
     #[arg(long, value_enum)]
     pub status: Option<Status>,
 }
@@ -490,11 +493,15 @@ pub fn status_str(status: Status) -> &'static str {
 
 #[derive(clap::Args, Debug)]
 pub struct SetPhaseArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The phase label to enter — free-form, for people and the wrapped instructions
     #[arg(long, required = true)]
     pub phase: String,
+    /// The status to enter with it. `running` also clears any scheduled wake
     #[arg(long, value_enum, default_value = "running")]
     pub status: Status,
+    /// Why, recorded in the journal
     #[arg(long)]
     pub note: Option<String>,
 }
@@ -522,9 +529,12 @@ pub fn set_phase(args: SetPhaseArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct SetStatusArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The status to set. A terminal one (done, failed, stopped) also clears any scheduled wake
     #[arg(long, value_enum, required = true)]
     pub status: Status,
+    /// Why, recorded in the journal (and, for blocked, shown to the person)
     #[arg(long)]
     pub reason: Option<String>,
     /// With `--status blocked`: why. Omitted, otto infers `stall` when the tick counter is what
@@ -562,7 +572,9 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct RecordFactArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// Facts to write into `facts` (`branch=feat/x`). Values parse as JSON when they can
     #[arg(value_name = "K=V", required = true)]
     pub pairs: Vec<String>,
 }
@@ -583,13 +595,18 @@ pub fn record_fact(args: RecordFactArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct OpenGateArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// A short name for the question, used in the gate file's name (`plan-review`)
     #[arg(long, required = true)]
     pub slug: String,
+    /// The question, inline
     #[arg(long)]
     pub question: Option<String>,
+    /// Read the question from this file
     #[arg(long = "question-file")]
     pub question_file: Option<String>,
+    /// Read the question from stdin
     #[arg(long)]
     pub stdin: bool,
     /// ISO time after which no answer counts as none. Only use an expiry where silence has
@@ -622,16 +639,21 @@ pub fn open_gate(args: OpenGateArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct CloseGateArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The answer, inline, recorded verbatim
     #[arg(long)]
     pub answer: Option<String>,
+    /// Read the answer from this file
     #[arg(long = "answer-file")]
     pub answer_file: Option<String>,
+    /// Read the answer from stdin
     #[arg(long)]
     pub stdin: bool,
     /// close an expired gate as unanswered, instead of with an answer
     #[arg(long)]
     pub expired: bool,
+    /// The status the run continues in
     #[arg(long, value_enum, default_value = "running")]
     pub status: Status,
 }
@@ -652,6 +674,7 @@ pub fn close_gate(args: CloseGateArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct ArmTimerArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
     /// ISO-8601 wake time. Give neither this nor `--in` to sleep for the run's own period
     #[arg(long, conflicts_with = "seconds")]
@@ -659,8 +682,10 @@ pub struct ArmTimerArgs {
     /// seconds from now — a one-off override of the run's period, for this sleep only
     #[arg(long = "in", value_name = "SECONDS")]
     pub seconds: Option<i64>,
+    /// The status to sleep in
     #[arg(long, value_enum, default_value = "sleeping")]
     pub status: Status,
+    /// Why, recorded in the journal
     #[arg(long)]
     pub note: Option<String>,
     /// Path, relative to the run dir, to an opt-in script poke runs directly when this sleep
@@ -770,10 +795,12 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: 
 
 #[derive(clap::Args, Debug)]
 pub struct TickArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
     /// something happened: reset the counter
     #[arg(long)]
     pub progress: bool,
+    /// What this tick saw, recorded in the journal
     #[arg(long)]
     pub note: Option<String>,
 }
@@ -823,9 +850,12 @@ pub fn due() -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct HandoffArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// Read the new handoff from this file
     #[arg(long)]
     pub file: Option<String>,
+    /// Read the new handoff from stdin
     #[arg(long)]
     pub stdin: bool,
 }
@@ -859,11 +889,15 @@ pub fn handoff(args: HandoffArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct LogArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The event name (`error`, `decision`, anything the instructions use)
     #[arg(long, required = true)]
     pub event: String,
+    /// A one-line message
     #[arg(long)]
     pub message: Option<String>,
+    /// Extra fields (repeatable). Values parse as JSON when they can
     #[arg(long = "data", value_name = "K=V")]
     pub data: Vec<String>,
 }
@@ -882,7 +916,9 @@ pub fn log(args: LogArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct TailArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// How many of the last journal lines to print
     #[arg(long, default_value_t = 20)]
     pub lines: usize,
 }

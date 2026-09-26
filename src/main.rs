@@ -3,6 +3,8 @@ mod clock;
 mod config;
 mod core;
 mod detach;
+#[cfg(test)]
+mod doc_examples;
 mod error;
 mod event;
 mod exec;

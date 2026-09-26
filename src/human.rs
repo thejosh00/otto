@@ -720,7 +720,9 @@ pub fn logs(args: LogsArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct StopArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// Why, recorded in the journal
     #[arg(long)]
     pub reason: Option<String>,
     /// The run ended because it could not do its job, rather than simply no longer being wanted
@@ -745,7 +747,9 @@ fn stop_with(args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), Ott
 
 #[derive(clap::Args, Debug)]
 pub struct ResumeArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// Why, recorded in the journal
     #[arg(long)]
     pub reason: Option<String>,
     /// Put it back on its schedule without waking it now
@@ -767,6 +771,7 @@ pub fn resume(args: ResumeArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct AttachArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
 }
 

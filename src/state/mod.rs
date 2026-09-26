@@ -716,7 +716,12 @@ impl RunState {
     pub fn check_gates_wake(&self) -> bool {
         match &self.check {
             Some(check) => {
-                self.status == Status::Sleeping && self.gate.is_none() && !(check.pinned && self.wake_armed_timer())
+                // Never in front of the retry of a wake that did not finish: that work is half
+                // done whatever the world outside has been doing.
+                self.status == Status::Sleeping
+                    && self.gate.is_none()
+                    && self.incomplete_wakes == 0
+                    && !(check.pinned && self.wake_armed_timer())
             }
             None => false,
         }

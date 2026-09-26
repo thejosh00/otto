@@ -1,5 +1,11 @@
 # Otto — durable long-horizon agent runs
 
+> **This is the design record: why otto is built the way it is.** To *use* otto, start with the
+> [documentation](docs/README.md) — [concepts](docs/concepts.md), the guides, and the
+> [CLI reference](docs/reference/cli.md). Where this file and the docs disagree about current
+> behaviour, the docs (and the code) win; this file keeps the reasoning, including for decisions
+> that were later changed.
+
 > **v2.** Supersedes the workflow-host design. v1 is preserved in git history; §20 keeps the
 > decisions from it that are still load-bearing. The one-sentence diff: **otto no longer
 > contains workflows. It makes anything survive days.**
@@ -860,32 +866,10 @@ classes. Only the first is supposed to happen.
 
 ## 16. Command surface
 
-```bash
-# start
-otto run --skill <name> | --instructions <path> [--goal "…"] \
-         [--until "…" | --perpetual] [--repo P] [--period 1h] \
-         [--budget-wakes N --budget-hours H] \
-         [--permission-mode M] [--detach tmux|bg|none] [--watch]
-
-# live with it
-otto ls                        # status · goal · who is blocking · wakes spent
-otto show <run>                # state, handoff, the open question, cold-readable
-otto answer <run> --choice approve | --text "…" | --file f  [--no-wake]
-otto note <run> "…" [--standing] [--now] | --list | --drop N
-otto check <run> [--script f [--wake-after N] | --off]
-otto period <run> [4h]         # see or change how often it wakes
-otto logs <run> [-f]           # the journal, readable
-otto attach <run>              # watch the live wake, if there is one
-otto wake <run> [--watch | --detach tmux|none] [--dry-run]
-                               # force one now, backgrounded as the run asks
-otto stop <run> [--reason "…"]  # terminal: stopped
-
-# machinery
-otto poke [--dry-run --verbose]   # launchd, every ~5 min
-otto start | stop                  # register / unregister the launchd agent
-otto state <cmd>                   # the wake's writer surface (§5.3)
-otto serve [--port 7878]           # the same human commands, in a browser
-```
+Every command and flag is in the generated [CLI reference](docs/reference/cli.md); this section
+keeps only the shape. There are three groups: the commands a person uses (`run`, `ls`, `show`,
+`answer`, `note`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`), the machinery
+(`poke`, `agent`, `serve`, `service`, `install`), and `otto state`, the wake's writer surface.
 
 `otto state` is unchanged in role: the only writer, used by a wake, atomic per call. The human
 commands above are thin formatters over the same operations — `otto answer` *is* `close-gate`

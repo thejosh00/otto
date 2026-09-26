@@ -104,7 +104,9 @@ fn holder_is_gone(run_id: &str) -> (bool, String) {
 
 #[derive(clap::Args, Debug)]
 pub struct LockArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
+    /// The repository to claim
     #[arg(long, required = true)]
     pub repo: String,
     /// break a lock you are sure is dead
@@ -163,6 +165,7 @@ pub fn lock(args: LockArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct UnlockArgs {
+    /// The run: its id, a prefix of it, or its slug
     pub id: String,
     /// default: every lock this run holds
     #[arg(long)]
