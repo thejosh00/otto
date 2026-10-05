@@ -133,7 +133,8 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
             continue;
         }
 
-        let title = format!("otto · {short}");
+        // The name, not just the number: on a phone, `#7` alone says nothing about which run.
+        let title = format!("otto · {}", snapshot.label());
         let sent = crate::state::transaction(&snapshot.id, |path, state| {
             let notices = due(state, now, crate::wake::elapsed_hours(state), &short);
             let Some((fresh, next)) = reconcile(&state.notified, &notices, stamp) else {

@@ -55,7 +55,7 @@ fn authorization_key(action: OutwardAction, item: Option<&str>) -> String {
 
 #[derive(clap::Args, Debug)]
 pub struct AuthorizeArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The outward action being authorized
     #[arg(long, value_enum, required = true)]
@@ -134,7 +134,7 @@ pub fn authorize(args: AuthorizeArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct CheckAuthorizedArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The outward action about to be taken
     #[arg(long, value_enum, required = true)]

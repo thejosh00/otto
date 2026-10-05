@@ -193,6 +193,11 @@ button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 4
 button.danger:hover:not(:disabled) { background: var(--bad-soft); }
 button.ghost { border-color: transparent; background: transparent; }
 button .tag { font-size: 11px; opacity: 0.8; font-weight: 500; }
+button.small { font-size: 13px; padding: 4px 10px; min-height: 30px; }
+button.ghost.small { color: var(--ink-3); }
+button.ghost.small:hover:not(:disabled) { color: var(--ink); }
+.row.title { gap: 6px; }
+input.rename { font-size: 20px; font-weight: 600; width: 16ch; max-width: 100%; padding: 2px 8px; }
 
 input, select, textarea {
   font: inherit;
@@ -250,6 +255,8 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 .table tbody tr:hover td { background: var(--surface-2); }
 .table .id { font-family: var(--mono); font-size: 13px; }
 .table .id small { display: block; color: var(--ink-3); font-size: 11px; }
+.table .run a { font-weight: 600; }
+.table .run small { display: block; color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
 
 @media (max-width: 720px) {
   .table thead { display: none; }

@@ -161,6 +161,16 @@ pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Res
 
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameBody {
+    name: String,
+}
+
+pub async fn rename(Path(id): Path<String>, Json(body): Json<RenameBody>) -> Response {
+    blocking(move || crate::core::rename_run(&id, &body.name)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct StopBody {
     reason: Option<String>,
     failed: bool,

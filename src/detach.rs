@@ -105,7 +105,7 @@ pub fn spawn_detached(exec: &mut dyn Exec, run_id: &str, argv: &[&str], cwd: &st
         tmux(exec, &["tmux", "set-option", "-t", &name, key, value]);
     }
     tmux(exec, &["tmux", "set-option", "-t", &name, "@otto_run", run_id]);
-    tmux(exec, &["tmux", "set-option", "-t", &name, "@cc_label", &format!("otto · {run_id}")]);
+    tmux(exec, &["tmux", "set-option", "-t", &name, "@cc_label", &format!("otto · {}", crate::paths::label_of(run_id))]);
     Ok(name)
 }
 

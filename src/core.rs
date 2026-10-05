@@ -124,6 +124,7 @@ pub fn detach_of(id: &str) -> Detach {
 #[serde(rename_all = "camelCase")]
 pub struct Planned {
     pub id: String,
+    pub name: String,
     pub first_wake: String,
 }
 
@@ -133,6 +134,7 @@ pub fn plan_run(init: &InitArgs) -> Result<Planned, OttoError> {
     let planned = crate::state::commands::plan_run(init)?;
     Ok(Planned {
         id: planned.state.id.clone(),
+        name: planned.state.name.clone(),
         first_wake: crate::wake::first_wake_dry_run_line(&planned.state, &planned.path)?,
     })
 }
@@ -204,6 +206,7 @@ pub fn status_label(state: &RunState) -> String {
 pub struct LsRow {
     pub id: String,
     pub short: String,
+    pub name: String,
     pub status: String,
     pub phase: String,
     pub blocking: String,
@@ -224,6 +227,7 @@ pub struct LsRow {
 pub struct NeedsYou {
     pub id: String,
     pub short: String,
+    pub name: String,
     pub label: String,
     /// The default leads, so the first one shown is the one the wake recommended.
     pub options: Vec<String>,
@@ -252,6 +256,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                 if all {
                     let short = short_id_among(&id, &all_ids);
                     rows.push(LsRow {
+                        name: crate::paths::slug_of(&id).to_string(),
                         id,
                         short,
                         status: "unreadable".to_string(),
@@ -278,6 +283,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             needs_you.push(NeedsYou {
                 id: state.id.clone(),
                 short: short_id_among(&state.id, &all_ids),
+                name: state.display_name(),
                 label: format!("gate {} {}", gate.id, gate.slug),
                 options: crate::gate::options_default_first(&question),
             });
@@ -294,6 +300,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         rows.push(LsRow {
             id: state.id.clone(),
             short: short_id_among(&state.id, &all_ids),
+            name: state.display_name(),
             status: status_label(&state),
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
@@ -375,6 +382,8 @@ pub struct GateView {
 pub struct RunDetail {
     pub state: RunState,
     pub short: String,
+    /// `state.name`, or the old id's slug for a run from before names.
+    pub name: String,
     pub status_label: String,
     pub wraps_kind: &'static str,
     pub running: bool,
@@ -454,6 +463,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         workdir: workdir_view(&state),
         usage: run_usage(&dir),
         short,
+        name: state.display_name(),
         notes,
         check,
         wake_cost,
@@ -838,6 +848,108 @@ pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError>
         rescheduled,
         id,
     })
+}
+
+// ---------------------------------------------------------------------------
+// rename / renumber
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renamed {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+}
+
+/// Give a run a new name. Nothing on disk is keyed by the name, so this is one field in
+/// `run.json` — the reason the id and the name are two things.
+pub fn rename_run(id: &str, new_name: &str) -> Result<Renamed, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let to = crate::paths::valid_name(new_name)?;
+    if let Some(other) = crate::paths::run_named(&to, Some(&id)) {
+        return Err(OttoError::conflict(format!("{} already has that name", crate::paths::label(&other, &to))));
+    }
+    let mut from = String::new();
+    crate::state::transaction(&id, |path, state| {
+        from = state.display_name();
+        if from == to {
+            return Ok(());
+        }
+        state.name = to.clone();
+        crate::event::record(path, &crate::event::Event::Renamed { from: from.clone(), to: to.clone() })
+    })?;
+    Ok(Renamed { id, from, to })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Renumbered {
+    pub from: String,
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenumberReport {
+    pub renumbered: Vec<Renumbered>,
+    /// Runs left as they were, and why — a wake running in one, most likely.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// Give every run from before numbering a run number, oldest first, and a short name if it has
+/// none. The run directory is renamed; the old id is kept as `formerId`, which still resolves.
+///
+/// Holds the poke lock for the whole pass, so the reviver can't start a wake in a directory that
+/// is about to move, and each run's wake lock across its own move, so nothing else can either. A
+/// run with a wake in flight is skipped, not waited for — run it again once the wake is over.
+pub fn renumber_runs() -> Result<RenumberReport, OttoError> {
+    let lock_path = crate::paths::poke_lock_path()?;
+    let lock_file = std::fs::OpenOptions::new().create(true).append(true).open(&lock_path)?;
+    if fs4::fs_std::FileExt::try_lock_exclusive(&lock_file).is_err() {
+        return Err(OttoError::conflict("a poke pass is running — try again in a moment"));
+    }
+    let mut legacy: Vec<RunState> = read_all_runs()?
+        .into_iter()
+        .filter_map(|entry| match entry {
+            RunEntry::Readable(state) if state.id.parse::<u64>().is_err() => Some(state),
+            _ => None,
+        })
+        .collect();
+    legacy.sort_by_key(|state| state.created_at);
+
+    let mut report = RenumberReport::default();
+    for state in legacy {
+        let from = state.id.clone();
+        let Ok(wake_lock) = crate::liveness::WakeLock::acquire(&from) else {
+            report.skipped.push((from, "a wake is running".to_string()));
+            continue;
+        };
+        let (id, claimed) = crate::paths::claim_next_run_id()?;
+        // Onto the empty directory just claimed: `rename` replaces an empty directory, and the
+        // claim is what keeps a run started meanwhile from taking the same number.
+        if let Err(e) = std::fs::rename(crate::paths::runs_dir().join(&from), &claimed) {
+            let _ = std::fs::remove_dir(&claimed);
+            return Err(e.into());
+        }
+        drop(wake_lock);
+        let name = if state.name.is_empty() {
+            let slug = crate::paths::slug_of(&from);
+            crate::paths::unique_name(&crate::paths::name_from(slug).unwrap_or_else(|| "run".to_string()))
+        } else {
+            state.name.clone()
+        };
+        crate::state::transaction(&id, |path, st| {
+            st.id = id.clone();
+            st.name = name.clone();
+            st.former_id = Some(from.clone());
+            crate::event::record(path, &crate::event::Event::Renumbered { from: from.clone() })
+        })?;
+        crate::state::locks::repoint(&from, &id);
+        report.renumbered.push(Renumbered { from, id, name });
+    }
+    Ok(report)
 }
 
 /// Run a run's check script once, now, exactly as poke would, and report what it said — without
@@ -1560,7 +1672,7 @@ pub fn read_logs(id: &str, query: &LogQuery, offset: time::UtcOffset) -> Result<
     let start = kept.len().saturating_sub(limit);
     let mut cursor = LogCursor { path, filter, renderer: Renderer::new(offset), seen: text.len() };
     let lines = kept[start..].iter().map(|l| cursor.log_line(l)).collect();
-    Ok(LogPage { header: logs_header(&state, &short_id(&id), offset), lines, cursor })
+    Ok(LogPage { header: logs_header(&state, &state.label(), offset), lines, cursor })
 }
 
 // ---------------------------------------------------------------------------
@@ -2045,5 +2157,63 @@ mod tests {
         gate_open("2026-09-20-logs");
         let fresh = page.cursor.poll();
         assert!(fresh.iter().any(|l| l.event == "gate-opened"), "got {:?}", fresh.iter().map(|l| &l.event).collect::<Vec<_>>());
+    }
+
+    /// A run from before names: an old-style id, and no `name` in its `run.json`.
+    fn legacy_run(id: &str) {
+        test_init(id, "a goal").unwrap();
+        crate::state::transaction(id, |_, state| {
+            state.name.clear();
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_rename_is_checked_journaled_and_resolves_at_once() {
+        let _h = TempHome::new();
+        test_init("7", "a goal").unwrap();
+        test_init("8", "a goal").unwrap();
+        rename_run("7", "Legenda Picks").unwrap();
+        assert_eq!(crate::paths::resolve_run_id("legenda").unwrap(), "7");
+        assert_eq!(rename_run("8", "legenda-picks").unwrap_err().code, 2, "taken");
+        assert_eq!(rename_run("8", "99").unwrap_err().code, 1, "a number is an id");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("7").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("\"event\":\"renamed\"") && journal.contains("legenda-picks"), "{journal}");
+    }
+
+    /// The migration: oldest first, numbered after anything already numbered, a short name from
+    /// the old slug, the old id kept as an alias, and a repo lock following its run.
+    #[test]
+    fn renumber_moves_old_runs_onto_numbers_and_keeps_their_old_ids() {
+        let _h = TempHome::new();
+        legacy_run("2026-09-13-once-an-hour-check-for-tasks-to-complete");
+        legacy_run("2026-10-04-once-a-day-find-new-things");
+        let fresh = crate::state::commands::init_run(InitArgs { goal: "g".into(), name: Some("fresh".into()), ..Default::default() }).unwrap();
+        assert_eq!(fresh, "1");
+        let lock = crate::paths::repo_locks_dir().unwrap().join("repo-x.json");
+        std::fs::write(&lock, r#"{"repo": "/x", "run": "2026-10-04-once-a-day-find-new-things"}"#).unwrap();
+
+        let report = renumber_runs().unwrap();
+        let moved: Vec<(&str, &str)> = report.renumbered.iter().map(|r| (r.id.as_str(), r.name.as_str())).collect();
+        assert_eq!(moved, [("2", "once-an-hour"), ("3", "once-a-day")]);
+        assert_eq!(crate::paths::all_run_ids(), ["1", "2", "3"]);
+        let state = read_run("2").unwrap();
+        assert_eq!(state.id, "2");
+        assert_eq!(state.former_id.as_deref(), Some("2026-09-13-once-an-hour-check-for-tasks-to-complete"));
+        assert_eq!(crate::paths::resolve_run_id("2026-10-04-once-a-day-find-new-things").unwrap(), "3");
+        assert!(std::fs::read_to_string(&lock).unwrap().contains("\"run\": \"3\""));
+        assert!(renumber_runs().unwrap().renumbered.is_empty(), "a second pass has nothing to do");
+    }
+
+    #[test]
+    fn renumber_skips_a_run_with_a_wake_in_flight() {
+        let _h = TempHome::new();
+        legacy_run("2026-09-13-busy");
+        let _wake = crate::liveness::WakeLock::acquire("2026-09-13-busy").unwrap();
+        let report = renumber_runs().unwrap();
+        assert!(report.renumbered.is_empty());
+        assert_eq!(report.skipped.len(), 1);
+        assert!(read_run("2026-09-13-busy").is_ok(), "left exactly where it was");
     }
 }

@@ -38,7 +38,7 @@ use std::time::Duration;
 
 #[derive(clap::Args, Debug)]
 pub struct WakeArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// A person's answer to the open gate, handed to the wake verbatim
     #[arg(long)]

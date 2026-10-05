@@ -236,6 +236,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         NoteDropped { note: s(), standing: false },
         CheckSet { script: s(), wake_after: 24, by: s() },
         PeriodSet { period_minutes: 60, previous_minutes: 60 },
+        Renamed { from: s(), to: s() },
+        Renumbered { from: s() },
         CheckCleared { script: s(), by: s() },
         Notified { key: s(), title: s(), message: s() },
     ];
@@ -249,7 +251,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
             | NoteAdded { .. } | NotesDelivered { .. } | NoteDropped { .. } | CheckSet { .. }
-            | PeriodSet { .. } | CheckCleared { .. } | Notified { .. } => {}
+            | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
+            | Notified { .. } => {}
         }
     }
     events

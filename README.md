@@ -54,7 +54,7 @@ otto run --instructions test/fixtures/hello-flow.md \
 otto ls                       # which runs need you
 otto show                     # the one that needs you, and its question in full
 otto answer --choice Approve  # answer it
-otto logs <id> -f             # the journal, readably (a prefix of the id will do)
+otto logs <id> -f             # the journal, readably (the run's number, or its name)
 otto serve --open             # or all of the above in a browser
 ```
 

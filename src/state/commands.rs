@@ -9,7 +9,6 @@ use crate::clock::Timestamp;
 use crate::error::OttoError;
 use crate::event::Event;
 use serde_json::{json, Map, Value};
-use time::macros::format_description;
 
 /// Replaces v1's `brief.md`. One file, not two: a rolling human summary and a
 /// next-wake handoff are the same thing written twice, and two accounts of one event mean
@@ -123,12 +122,16 @@ pub struct InitArgs {
     #[arg(long = "deny-tool", value_name = "TOOL", help_heading = "What it may do")]
     pub disallowed_tools: Vec<String>,
 
-    /// The run id, instead of the generated <date>-<slug>
+    /// What to call the run — short, unique, and what you type to mean it (`otto show legenda`).
+    /// Change it later with `otto rename` [default: the target, the wrapped skill or file, else
+    /// the goal's first words]
+    #[arg(long, alias = "slug", help_heading = "What to run")]
+    #[serde(alias = "slug")]
+    pub name: Option<String>,
+
+    /// The run id, instead of the next run number
     #[arg(long, help_heading = "Advanced")]
     pub id: Option<String>,
-    /// The slug for the generated id (default: from --target, else the goal)
-    #[arg(long, help_heading = "Advanced")]
-    pub slug: Option<String>,
     /// The phase label the run starts in — free-form, for the wrapped instructions and `otto ls`
     #[arg(long, default_value = "start", help_heading = "Advanced")]
     pub phase: String,
@@ -158,7 +161,7 @@ impl Default for InitArgs {
             period: None,
             target: None,
             id: None,
-            slug: None,
+            name: None,
             phase: "start".to_string(),
             launcher: crate::config::DEFAULT_LAUNCHER.to_string(),
             workdir: None,
@@ -189,6 +192,36 @@ pub fn init(args: InitArgs) -> Result<(), OttoError> {
 pub struct PlannedRun {
     pub state: RunState,
     pub path: std::path::PathBuf,
+}
+
+/// The run's name: `--name` as given (refused if taken), or one made up from what the run is
+/// about and made unique with a `-2`. A made-up name is a fallback, not the point — the first
+/// words of a goal are what made the old ids blur together.
+fn run_name_for(args: &InitArgs, wraps: &Wraps) -> Result<String, OttoError> {
+    if let Some(given) = &args.name {
+        let name = crate::paths::valid_name(given)?;
+        if let Some(other) = crate::paths::run_named(&name, None) {
+            return Err(OttoError::conflict(format!(
+                "a run is already called {name} ({}) — pick another --name, or `otto rename {other} <new>`",
+                crate::paths::label(&other, &name)
+            )));
+        }
+        return Ok(name);
+    }
+    let base = [
+        args.id.as_deref().map(crate::paths::slug_of),
+        args.target.as_deref(),
+        wraps.reference.as_deref().map(|r| {
+            let file = r.rsplit('/').next().unwrap_or(r);
+            file.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(file)
+        }),
+        Some(args.goal.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(crate::paths::name_from)
+    .unwrap_or_else(|| "run".to_string());
+    Ok(crate::paths::unique_name(&base))
 }
 
 /// Decide everything about a run — id, wraps, policy, facts — without writing any of it.
@@ -223,52 +256,22 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         (Some(_), Some(_)) => return Err(OttoError::usage("pass --skill or --instructions, not both")),
     };
 
-    let fallback_slug = match &wraps.reference {
-        Some(reference) => reference.rsplit('/').next().unwrap_or("run").to_string(),
-        None => "run".to_string(),
+    let name = run_name_for(args, &wraps)?;
+    // The number is only peeked here: `init_run` claims it, and may get the next one if another
+    // run took this one in between. A dry run shows what it would most likely be.
+    let run_id = match &args.id {
+        Some(id) => id.clone(),
+        None => crate::paths::peek_next_run_id().to_string(),
     };
-    let slug_source = args
-        .slug
-        .as_deref()
-        .or(args.target.as_deref())
-        .unwrap_or_else(|| args.goal.as_str());
-    let slug = crate::clock::slugify(slug_source, &fallback_slug);
-    let mut run_id = match args.id.clone() {
-        Some(id) => id,
-        None => {
-            let date = crate::clock::now().date();
-            let fmt = format_description!("[year]-[month]-[day]");
-            format!("{}-{slug}", date.format(&fmt).expect("a valid date always formats"))
-        }
-    };
-    let mut path = crate::paths::runs_dir().join(&run_id);
-    if path.exists() {
-        if args.id.is_some() {
-            // An explicit --id is a deliberate choice, so this refuses rather than silently
-            // picking a different one — but the old message pointed at a `resume` command that
-            // has never existed. Name the actual recovery instead.
-            return Err(OttoError::conflict(format!(
-                "run already exists: {run_id} — `otto stop {run_id}` or remove {} yourself, \
-                 then retry, or pass a different --id",
-                path.display()
-            )));
-        }
-        // No --id means the id is `<date>-<slug>`, which collides on the very common case this
-        // is meant to smooth over: retrying a same-day run that failed before it did anything.
-        // Suffix a counter rather than dead-ending on an id nobody actually asked for.
-        let base = run_id.clone();
-        let mut n = 2u32;
-        loop {
-            run_id = format!("{base}-{n}");
-            path = crate::paths::runs_dir().join(&run_id);
-            if !path.exists() {
-                break;
-            }
-            n += 1;
-            if n > 1000 {
-                return Err(OttoError::conflict(format!("could not find a free id near {base} after 1000 tries")));
-            }
-        }
+    let path = crate::paths::runs_dir().join(&run_id);
+    if args.id.is_some() && path.exists() {
+        // An explicit --id is a deliberate choice, so this refuses rather than silently
+        // picking a different one.
+        return Err(OttoError::conflict(format!(
+            "run already exists: {run_id} — `otto stop {run_id}` or remove {} yourself, \
+             then retry, or pass a different --id",
+            path.display()
+        )));
     }
     let created = Timestamp::now();
 
@@ -322,6 +325,8 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
     let state = RunState {
         schema_version: SCHEMA_VERSION,
         id: run_id.clone(),
+        name,
+        former_id: None,
         wraps,
         goal: args.goal.clone(),
         done_condition: args.until.clone(),
@@ -376,7 +381,14 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
 /// Create the run and hand back its id, so `otto run` can go straight on to waking it instead
 /// of parsing the id back out of stdout.
 pub fn init_run(args: InitArgs) -> Result<String, OttoError> {
-    let PlannedRun { mut state, path } = plan_run(&args)?;
+    let PlannedRun { mut state, mut path } = plan_run(&args)?;
+    if args.id.is_some() {
+        std::fs::create_dir_all(&path)?;
+    } else {
+        let (id, claimed) = crate::paths::claim_next_run_id()?;
+        state.id = id;
+        path = claimed;
+    }
     let run_id = state.id.clone();
     let wraps_ref = state.wraps.reference.clone();
     let wraps_kind = state.wraps.kind;
@@ -416,7 +428,7 @@ pub fn record_spawn(id: &str, attempts: u32, stamp: bool) -> Result<(), OttoErro
 
 #[derive(clap::Args, Debug)]
 pub struct GetArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// e.g. status, facts.branch, gate.file
     #[arg(long)]
@@ -504,7 +516,7 @@ pub fn status_str(status: Status) -> &'static str {
 
 #[derive(clap::Args, Debug)]
 pub struct SetPhaseArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The phase label to enter — free-form, for people and the wrapped instructions
     #[arg(long, required = true)]
@@ -540,7 +552,7 @@ pub fn set_phase(args: SetPhaseArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct SetStatusArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The status to set. A terminal one (done, failed, stopped) also clears any scheduled wake
     #[arg(long, value_enum, required = true)]
@@ -583,7 +595,7 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct RecordFactArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Facts to write into `facts` (`branch=feat/x`). Values parse as JSON when they can
     #[arg(value_name = "K=V", required = true)]
@@ -606,7 +618,7 @@ pub fn record_fact(args: RecordFactArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct OpenGateArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// A short name for the question, used in the gate file's name (`plan-review`)
     #[arg(long, required = true)]
@@ -650,7 +662,7 @@ pub fn open_gate(args: OpenGateArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct CloseGateArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The answer, inline, recorded verbatim
     #[arg(long)]
@@ -685,7 +697,7 @@ pub fn close_gate(args: CloseGateArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct ArmTimerArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// ISO-8601 wake time. Give neither this nor `--in` to sleep for the run's own period
     #[arg(long, conflicts_with = "seconds")]
@@ -762,7 +774,7 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct SetCheckArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Path, relative to the run dir, to an executable script poke runs whenever the run's period
     /// comes due, instead of waking it: exit 0 = nothing new (no wake), anything else = wake
@@ -884,7 +896,7 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: 
 
 #[derive(clap::Args, Debug)]
 pub struct TickArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// something happened: reset the counter
     #[arg(long)]
@@ -939,7 +951,7 @@ pub fn due() -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct HandoffArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Read the new handoff from this file
     #[arg(long)]
@@ -978,7 +990,7 @@ pub fn handoff(args: HandoffArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct LogArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The event name (`error`, `decision`, anything the instructions use)
     #[arg(long, required = true)]
@@ -1005,7 +1017,7 @@ pub fn log(args: LogArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct TailArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// How many of the last journal lines to print
     #[arg(long, default_value_t = 20)]
@@ -1045,11 +1057,11 @@ mod tests {
         let _h = crate::paths::test_support::TempHome::new();
         let planned = super::plan_run(&super::InitArgs {
             goal: "a goal".into(),
-            slug: Some("planned".into()),
+            name: Some("planned".into()),
             ..Default::default()
         })
         .unwrap();
-        assert!(planned.state.id.ends_with("-planned"));
+        assert_eq!((planned.state.id.as_str(), planned.state.name.as_str()), ("1", "planned"));
         assert!(!planned.path.exists(), "planning must not create the run directory");
         assert!(crate::paths::all_run_ids().is_empty());
 
@@ -1112,28 +1124,38 @@ mod tests {
     use super::*;
     use crate::paths::test_support::TempHome;
 
-    /// The case this exists for: retrying a same-day run that failed before doing anything. The
-    /// default id is `<date>-<slug>`, so a bare retry collides every time — and used to dead-end
-    /// on a `resume` command that never existed.
+    /// Runs are numbered in order, and a number is never handed out twice — not even after the
+    /// run that had it is removed, since old gates and journal lines still name it.
     #[test]
-    fn a_colliding_auto_generated_id_gets_suffixed_rather_than_failing() {
+    fn runs_are_numbered_and_numbers_are_never_reused() {
         let _home = TempHome::new();
-        let id1 = init_run(InitArgs {
-            goal: "a goal".to_string(),
-            slug: Some("dup-goal".to_string()),
-            ..Default::default()
-        })
-        .unwrap();
-        let id2 = init_run(InitArgs {
-            goal: "a goal".to_string(),
-            slug: Some("dup-goal".to_string()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_ne!(id1, id2);
-        assert_eq!(id2, format!("{id1}-2"));
-        assert!(read_run(&id1).is_ok());
-        assert!(read_run(&id2).is_ok());
+        let first = init_run(InitArgs { goal: "a goal".into(), name: Some("one".into()), ..Default::default() }).unwrap();
+        let second = init_run(InitArgs { goal: "a goal".into(), name: Some("two".into()), ..Default::default() }).unwrap();
+        assert_eq!((first.as_str(), second.as_str()), ("1", "2"));
+        std::fs::remove_dir_all(crate::paths::runs_dir().join(&second)).unwrap();
+        let third = init_run(InitArgs { goal: "a goal".into(), name: Some("three".into()), ..Default::default() }).unwrap();
+        assert_eq!(third, "3");
+        assert_eq!(read_run("three").unwrap().id, "3");
+    }
+
+    /// A name given is the name you get, or a refusal saying who has it. A name made up gets a
+    /// suffix instead — retrying the same goal is the common case.
+    #[test]
+    fn a_given_name_must_be_free_and_a_made_up_one_is_suffixed() {
+        let _home = TempHome::new();
+        init_run(InitArgs { goal: "watch the deploy please".into(), name: Some("Deploy Watch".into()), ..Default::default() }).unwrap();
+        assert_eq!(read_run("1").unwrap().name, "deploy-watch");
+        let err = init_run(InitArgs { goal: "x".into(), name: Some("deploy-watch".into()), ..Default::default() })
+            .expect_err("taken");
+        assert!(err.to_string().contains("#1 deploy-watch"), "got: {err}");
+        let err = init_run(InitArgs { goal: "x".into(), name: Some("42".into()), ..Default::default() })
+            .expect_err("a number is an id");
+        assert_eq!(err.code, 1);
+
+        let a = init_run(InitArgs { goal: "check the queue every hour".into(), ..Default::default() }).unwrap();
+        let b = init_run(InitArgs { goal: "check the queue every hour".into(), ..Default::default() }).unwrap();
+        assert_eq!(read_run(&a).unwrap().name, "check-the-queue");
+        assert_eq!(read_run(&b).unwrap().name, "check-the-queue-2");
     }
 
     /// An explicit `--id` is a deliberate choice, so a collision still refuses — but must name

@@ -48,6 +48,22 @@ fn repo_lock_entries() -> Result<Vec<PathBuf>, OttoError> {
     Ok(entries)
 }
 
+/// Hand every repo lock `from` holds to `to` — the same run under its new id, after
+/// `otto renumber`. Best-effort: a lock that can't be rewritten is left naming the old id, which
+/// `holder_is_gone` then reads as a run that no longer exists.
+pub fn repoint(from: &str, to: &str) {
+    for path in repo_lock_entries().unwrap_or_default() {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(mut held) = serde_json::from_str::<Value>(&text) else { continue };
+        if held.get("run").and_then(Value::as_str) == Some(from) {
+            held["run"] = Value::String(to.to_string());
+            if let Ok(json) = serde_json::to_string_pretty(&held) {
+                let _ = write_atomic(&path, &(json + "\n"));
+            }
+        }
+    }
+}
+
 /// Whether the run holding a lock has stopped existing in any useful sense.
 ///
 /// v1 asked this by reading `heartbeatAt` and deciding whether the owner had gone quiet.
@@ -104,7 +120,7 @@ fn holder_is_gone(run_id: &str) -> (bool, String) {
 
 #[derive(clap::Args, Debug)]
 pub struct LockArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The repository to claim
     #[arg(long, required = true)]
@@ -165,7 +181,7 @@ pub fn lock(args: LockArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct UnlockArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// default: every lock this run holds
     #[arg(long)]

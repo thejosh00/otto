@@ -4,7 +4,7 @@
 
 Every command and flag, exactly as `--help` prints it. For what the commands are *for*, start with [concepts](../concepts.md) and the [guides](../README.md#guides).
 
-Every `<ID>` takes the full run id, a unique prefix of it, or a unique prefix of its slug (`otto show verify`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.
+Every `<ID>` takes the run number (`otto show 7`), its name, or a unique prefix of the name (`otto show leg`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.
 
 ## `otto run`
 
@@ -35,6 +35,9 @@ What to run:
 
       --repo <DIR>
           A repository the wake may work in (repeatable). Granted to claude with `--add-dir`, and opened in the sandbox too when the launcher has a `grantFlag`
+
+      --name <NAME>
+          What to call the run — short, unique, and what you type to mean it (`otto show legenda`). Change it later with `otto rename` [default: the target, the wrapped skill or file, else the goal's first words]
 
 When it is done:
       --until <UNTIL>
@@ -89,10 +92,7 @@ What it may do:
 
 Advanced:
       --id <ID>
-          The run id, instead of the generated <date>-<slug>
-
-      --slug <SLUG>
-          The slug for the generated id (default: from --target, else the goal)
+          The run id, instead of the next run number
 
       --phase <PHASE>
           The phase label the run starts in — free-form, for the wrapped instructions and `otto ls`
@@ -130,7 +130,7 @@ Usage: otto show [ID]
 
 Arguments:
   [ID]
-          The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you — or the only live run, if there is just one
+          The run: its number or name (a unique prefix of the name will do). Omitted, the one run waiting on you — or the only live run, if there is just one
 
 Options:
   -h, --help
@@ -146,7 +146,7 @@ Usage: otto answer [OPTIONS] [ID]
 
 Arguments:
   [ID]
-          The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you
+          The run: its number or name (a unique prefix of the name will do). Omitted, the one run waiting on you
 
 Options:
       --choice <CHOICE>
@@ -174,7 +174,7 @@ Usage: otto note [OPTIONS] <ID> [TEXT]
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
   [TEXT]
           What to tell it, verbatim. Guidance on how to do the work — not an answer to a gate
@@ -208,7 +208,7 @@ Usage: otto check [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --script <FILE>
@@ -235,7 +235,7 @@ Usage: otto logs [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
   -n, --lines <LINES>
@@ -293,7 +293,7 @@ Usage: otto attach <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
   -h, --help
@@ -309,10 +309,41 @@ Usage: otto period <ID> [DURATION]
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
   [DURATION]
           How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured from the start of one wake to the start of the next. Omit it to see the current period
+
+Options:
+  -h, --help
+          Print help
+```
+
+## `otto rename`
+
+```text
+Give a run a new name
+
+Usage: otto rename <ID> <NAME>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <NAME>
+          Its new name — letters, digits and hyphens, not just a number, and not another run's
+
+Options:
+  -h, --help
+          Print help
+```
+
+## `otto renumber`
+
+```text
+Give every run from before run numbers a number, keeping its old id as an alias
+
+Usage: otto renumber
 
 Options:
   -h, --help
@@ -328,7 +359,7 @@ Usage: otto stop [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --reason <REASON>
@@ -350,7 +381,7 @@ Usage: otto resume [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --reason <REASON>
@@ -372,7 +403,7 @@ Usage: otto wake [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --answer <ANSWER>
@@ -673,6 +704,9 @@ What to run:
       --repo <DIR>
           A repository the wake may work in (repeatable). Granted to claude with `--add-dir`, and opened in the sandbox too when the launcher has a `grantFlag`
 
+      --name <NAME>
+          What to call the run — short, unique, and what you type to mean it (`otto show legenda`). Change it later with `otto rename` [default: the target, the wrapped skill or file, else the goal's first words]
+
 When it is done:
       --until <UNTIL>
           The done-condition, stated outright. Otherwise the first wake proposes one and gates it
@@ -723,10 +757,7 @@ What it may do:
 
 Advanced:
       --id <ID>
-          The run id, instead of the generated <date>-<slug>
-
-      --slug <SLUG>
-          The slug for the generated id (default: from --target, else the goal)
+          The run id, instead of the next run number
 
       --phase <PHASE>
           The phase label the run starts in — free-form, for the wrapped instructions and `otto ls`
@@ -749,7 +780,7 @@ Usage: otto state get [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --field <FIELD>
@@ -788,7 +819,7 @@ Usage: otto state set-phase [OPTIONS] --phase <PHASE> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --phase <PHASE>
@@ -816,7 +847,7 @@ Usage: otto state set-status [OPTIONS] --status <STATUS> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --status <STATUS>
@@ -849,7 +880,7 @@ Usage: otto state record-fact <ID> <K=V>...
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
   <K=V>...
           Facts to write into `facts` (`branch=feat/x`). Values parse as JSON when they can
@@ -868,7 +899,7 @@ Usage: otto state open-gate [OPTIONS] --slug <SLUG> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --slug <SLUG>
@@ -902,7 +933,7 @@ Usage: otto state close-gate [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --answer <ANSWER>
@@ -936,7 +967,7 @@ Usage: otto state arm-timer [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --at <AT>
@@ -970,7 +1001,7 @@ Usage: otto state set-check [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --script <PATH>
@@ -997,7 +1028,7 @@ Usage: otto state tick [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --progress
@@ -1031,7 +1062,7 @@ Usage: otto state authorize [OPTIONS] --action <ACTION> --head <HEAD> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --action <ACTION>
@@ -1067,7 +1098,7 @@ Usage: otto state check-authorized [OPTIONS] --action <ACTION> --head <HEAD> <ID
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --action <ACTION>
@@ -1094,7 +1125,7 @@ Usage: otto state lock [OPTIONS] --repo <REPO> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --repo <REPO>
@@ -1116,7 +1147,7 @@ Usage: otto state unlock [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --repo <REPO>
@@ -1147,7 +1178,7 @@ Usage: otto state handoff [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --file <FILE>
@@ -1169,7 +1200,7 @@ Usage: otto state log [OPTIONS] --event <EVENT> <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --event <EVENT>
@@ -1194,7 +1225,7 @@ Usage: otto state tail [OPTIONS] <ID>
 
 Arguments:
   <ID>
-          The run: its id, a prefix of it, or its slug
+          The run: its number or name (a unique prefix of the name will do)
 
 Options:
       --lines <LINES>

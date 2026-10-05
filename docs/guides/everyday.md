@@ -5,10 +5,19 @@ happened. Everything here works from the terminal or the [web UI](#the-web-ui).
 
 ## Naming a run
 
-Every command that takes a run takes its full id (`2026-09-11-verify-1789130664`), a unique prefix
-of it, or a unique prefix of just the part after the date — `otto show verify` works as long as
-no other run starts with `verify`. `otto ls` prints that shortest form in its `SHORT` column, and
-every command otto prints for you to paste back uses it.
+Every run has a number and a name: `#7 legenda`. The number is handed out in order and never
+reused; the name is yours — give it with `otto run --name legenda`, or let otto make one up from the
+target, the wrapped skill or the first words of the goal. Names are unique, and `otto rename 7
+picks` changes one at any time.
+
+Every command that takes a run takes either: `otto show 7` (or `#7`), `otto show legenda`, or a
+unique prefix of the name — `otto show leg`. A number only ever matches exactly, so `1` never means
+run 12. `otto ls` shows both in its `ID` and `NAME` columns, and every command otto prints for you
+to paste back uses the number.
+
+Runs from before numbering keep their `<date>-<slug>` ids until you run `otto renumber`, which
+gives each one a number, oldest first, and a short name from its old slug. It skips any run with a
+wake in flight. The old id still works afterwards — it is kept as `formerId`.
 
 ## What needs me?
 

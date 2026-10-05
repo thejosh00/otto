@@ -84,7 +84,7 @@ pub fn all_run_ids() -> Vec<String> {
 
 /// The slug half of an id shaped `YYYY-MM-DD-<slug>` (what `init_run` generates by default), or
 /// the whole id if it isn't shaped that way (an explicit `--id` can be anything).
-fn slug_of(id: &str) -> &str {
+pub(crate) fn slug_of(id: &str) -> &str {
     let parts: Vec<&str> = id.splitn(4, '-').collect();
     let is_date = parts.len() == 4
         && parts[0].len() == 4
@@ -98,10 +98,135 @@ fn slug_of(id: &str) -> &str {
     }
 }
 
-/// Does a person-typed `input` name this run? The one rule `resolve_run_id` and `short_id_among`
-/// share, so that what one prints the other accepts.
+/// Does a person-typed `input` name this run by prefix? The one rule `resolve_run_id` and
+/// `short_id_among` share, so that what one prints the other accepts. A number is never a prefix
+/// of anything: `1` must not also mean runs 10 through 19.
 fn names(id: &str, input: &str) -> bool {
-    id.starts_with(input) || slug_of(id).starts_with(input)
+    !is_number(input) && !is_number(id) && (id.starts_with(input) || slug_of(id).starts_with(input))
+}
+
+fn is_number(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The file that remembers the highest run number ever handed out, so a number is never reused
+/// after its run is removed: gate files, the journal and old notifications all carry the id, and
+/// a new run answering to it would make every one of them point at the wrong thing.
+fn next_id_path() -> PathBuf {
+    runs_dir().join(".last-id")
+}
+
+/// The number the next run would get, without claiming it — `otto run --dry-run`'s answer.
+pub fn peek_next_run_id() -> u64 {
+    let issued = std::fs::read_to_string(next_id_path()).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+    let existing = all_run_ids().iter().filter_map(|id| id.parse::<u64>().ok()).max().unwrap_or(0);
+    issued.max(existing) + 1
+}
+
+/// Claim the next run number by creating its directory. `create_dir` failing on a directory
+/// that exists is the lock: two runs started at once both try 7, one gets it, the other moves on
+/// to 8. Returns the id and the (empty) directory, now the caller's to fill.
+pub fn claim_next_run_id() -> Result<(String, PathBuf), OttoError> {
+    std::fs::create_dir_all(runs_dir())?;
+    let mut n = peek_next_run_id();
+    for _ in 0..1000 {
+        let path = runs_dir().join(n.to_string());
+        match std::fs::create_dir(&path) {
+            Ok(()) => {
+                let _ = std::fs::write(next_id_path(), n.to_string());
+                return Ok((n.to_string(), path));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(OttoError::conflict(format!("could not claim a run number near {n} after 1000 tries")))
+}
+
+/// How a person can refer to one run, read from its `run.json`.
+#[derive(Debug, Clone)]
+pub struct RunNaming {
+    pub id: String,
+    /// Its `name`, or — for a run from before names, or one whose `run.json` can't be read — the
+    /// slug of its id.
+    pub name: String,
+    /// The `<date>-<slug>` id it had before `otto renumber`, which still names it exactly.
+    pub former_id: Option<String>,
+}
+
+pub fn run_naming(id: &str) -> RunNaming {
+    let json = std::fs::read_to_string(runs_dir().join(id).join("run.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    let field = |key: &str| {
+        json.as_ref().and_then(|v| v.get(key)).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+    };
+    RunNaming {
+        id: id.to_string(),
+        name: field("name").unwrap_or_else(|| slug_of(id).to_string()),
+        former_id: field("formerId"),
+    }
+}
+
+/// Every run's id with its name. One `run.json` read per run — the scale this is for is a
+/// handful of runs, not thousands.
+pub fn all_run_names() -> Vec<RunNaming> {
+    all_run_ids().iter().map(|id| run_naming(id)).collect()
+}
+
+/// A name a person can type: the slug of `text`, which must not be a bare number (it would be
+/// read as a run id). Refuses rather than rewriting, so the name a person gave is the name they
+/// get, or they hear why not.
+pub fn valid_name(text: &str) -> Result<String, OttoError> {
+    let name = crate::clock::slugify(text, "");
+    if name.is_empty() {
+        return Err(OttoError::usage(format!("{text:?} is not a usable name — use letters, digits and hyphens")));
+    }
+    if is_number(&name) {
+        return Err(OttoError::usage(format!("a name can't be just a number ({name}) — numbers are run ids")));
+    }
+    Ok(name)
+}
+
+/// The id of the run already called `name`, other than `except`.
+pub fn run_named(name: &str, except: Option<&str>) -> Option<String> {
+    all_run_names().into_iter().find(|r| r.name == name && Some(r.id.as_str()) != except).map(|r| r.id)
+}
+
+/// `base`, or `base-2`, `base-3`… — the first no run is called yet.
+pub fn unique_name(base: &str) -> String {
+    let taken: Vec<String> = all_run_names().into_iter().map(|r| r.name).collect();
+    let mut name = base.to_string();
+    let mut n = 2;
+    while taken.contains(&name) {
+        name = format!("{base}-{n}");
+        n += 1;
+    }
+    name
+}
+
+/// A name from free text: its first three words, slugged — enough to tell runs apart without
+/// becoming the sentence-long ids that numbering replaced. `None` if nothing usable is left.
+pub fn name_from(text: &str) -> Option<String> {
+    let words = crate::clock::slugify(text, "").split('-').take(3).collect::<Vec<_>>().join("-");
+    valid_name(&words).ok()
+}
+
+/// `label` for a run on disk, reading its name.
+pub fn label_of(id: &str) -> String {
+    label(id, &run_naming(id).name)
+}
+
+/// How a run reads to a person: `#7 legenda`. For a run whose id is not a number (one from
+/// before numbering, or an explicit `--id`), the id itself stands in for the number.
+pub fn label(id: &str, name: &str) -> String {
+    if is_number(id) {
+        format!("#{id} {name}")
+    } else if slug_of(id) == name {
+        id.to_string()
+    } else {
+        format!("{id} {name}")
+    }
 }
 
 /// The shortest thing a person can type for `id` that `resolve_run_id` will bring back to it,
@@ -114,6 +239,10 @@ fn names(id: &str, input: &str) -> bool {
 /// back now, wrong for anything written to disk, where a run created tomorrow could make it
 /// ambiguous. Gate files and the journal always carry the full id.
 pub fn short_id_among(id: &str, all_ids: &[String]) -> String {
+    // A number is already as short and as unambiguous as anything could be.
+    if is_number(id) {
+        return id.to_string();
+    }
     let slug = slug_of(id);
     let ends = slug.char_indices().map(|(i, _)| i).skip(1).chain(std::iter::once(slug.len()));
     for end in ends {
@@ -136,11 +265,12 @@ pub fn short_id(id: &str) -> String {
     short_id_among(id, &all_run_ids())
 }
 
-/// Resolve a person-typed id to the real one: an exact match, else a unique prefix of the whole
-/// id, or of just the slug (the part after `YYYY-MM-DD-`, if it looks like one). The slug prefix
-/// is what makes this actually useful from a phone: `2026-09-11-verify-1789130664`'s date tells
-/// you nothing to type, but `verify` does.
+/// Resolve a person-typed id to the real one, in order: the run number (`7` or `#7`) or any exact
+/// id; the run's exact name; a unique prefix of a name; and, for runs from before numbering, a
+/// unique prefix of the old `<date>-<slug>` id or of its slug. A number only ever matches
+/// exactly — `1` never means run 12.
 pub fn resolve_run_id(input: &str) -> Result<String, OttoError> {
+    let input = input.strip_prefix('#').filter(|rest| is_number(rest)).unwrap_or(input);
     // An id is one directory name. Anything that could step out of `runs/` names no run — which
     // matters most for the web server, where the id arrives in a URL.
     if input.is_empty() || input.contains('/') || input.contains('\\') || input.starts_with('.') {
@@ -151,14 +281,29 @@ pub fn resolve_run_id(input: &str) -> Result<String, OttoError> {
     if runs_dir().join(input).is_dir() {
         return Ok(input.to_string());
     }
-    let ids = all_run_ids();
-    let candidates: Vec<&String> = ids.iter().filter(|id| names(id, input)).collect();
-    match candidates.len() {
-        0 => Err(OttoError::not_found(format!("no such run: {input} (looked in {})", runs_dir().display()))),
-        1 => Ok(candidates[0].clone()),
-        _ => {
-            let names: Vec<&str> = candidates.iter().map(|s| s.as_str()).collect();
-            Err(OttoError::usage(format!("\"{input}\" matches {} runs: {} — use more of the id", names.len(), names.join(", "))))
+    let not_found = || OttoError::not_found(format!("no such run: {input} (looked in {})", runs_dir().display()));
+    if is_number(input) {
+        return Err(not_found());
+    }
+    let runs = all_run_names();
+    let exact = |r: &&RunNaming| r.name == input || r.former_id.as_deref() == Some(input);
+    if let Some(run) = runs.iter().find(exact) {
+        return Ok(run.id.clone());
+    }
+    let candidates: Vec<&RunNaming> = runs
+        .iter()
+        .filter(|r| r.name.starts_with(input) || names(&r.id, input) || r.former_id.as_deref().is_some_and(|f| names(f, input)))
+        .collect();
+    match candidates.as_slice() {
+        [] => Err(not_found()),
+        [run] => Ok(run.id.clone()),
+        several => {
+            let labels: Vec<String> = several.iter().map(|r| label(&r.id, &r.name)).collect();
+            Err(OttoError::usage(format!(
+                "\"{input}\" matches {} runs: {} — use more of the name, or the number",
+                labels.len(),
+                labels.join(", ")
+            )))
         }
     }
 }
@@ -422,6 +567,40 @@ mod tests {
         }
         // The slug `u` is a prefix of `upgrade-…`, so nothing shorter than the id itself is unique.
         assert_eq!(short_id_among("2026-09-12-u", &ids), "2026-09-12-u");
+    }
+
+    fn stub_named(id: &str, name: &str, former: Option<&str>) {
+        let dir = runs_dir().join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = serde_json::json!({"name": name, "formerId": former});
+        std::fs::write(dir.join("run.json"), json.to_string()).unwrap();
+    }
+
+    /// A number means exactly that run: `1` is never a prefix of 12, and `#1` reads the same.
+    #[test]
+    fn a_number_only_ever_matches_exactly() {
+        let _h = test_support::TempHome::new();
+        stub_named("1", "legenda", None);
+        stub_named("12", "tasks", None);
+        assert_eq!(resolve_run_id("1").unwrap(), "1");
+        assert_eq!(resolve_run_id("#12").unwrap(), "12");
+        assert_eq!(resolve_run_id("2").unwrap_err().code, 3, "2 is not a prefix of 12");
+        assert_eq!(short_id_among("12", &all_run_ids()), "12");
+    }
+
+    /// A name resolves exactly, by a unique prefix, or — for a renumbered run — by its old id.
+    /// An exact name wins over being a prefix of another one.
+    #[test]
+    fn a_name_or_a_former_id_resolves() {
+        let _h = test_support::TempHome::new();
+        stub_named("1", "deploy", Some("2026-09-13-once-an-hour-check"));
+        stub_named("2", "deploy-watch", None);
+        assert_eq!(resolve_run_id("deploy").unwrap(), "1");
+        assert_eq!(resolve_run_id("deploy-w").unwrap(), "2");
+        assert_eq!(resolve_run_id("2026-09-13-once-an-hour-check").unwrap(), "1");
+        assert_eq!(resolve_run_id("once").unwrap(), "1", "the old slug's prefix still works");
+        let err = resolve_run_id("dep").expect_err("ambiguous");
+        assert!(err.to_string().contains("#1 deploy") && err.to_string().contains("#2 deploy-watch"), "{err}");
     }
 
     #[test]

@@ -49,6 +49,8 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Usage(args) => human::usage(args),
         Command::Attach(args) => human::attach(args),
         Command::Period(args) => human::period(args),
+        Command::Rename(args) => human::rename(args),
+        Command::Renumber => human::renumber(),
         Command::Stop(args) => human::stop(args),
         Command::Resume(args) => human::resume(args),
         Command::Install(args) => install::install(args),

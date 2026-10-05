@@ -467,7 +467,17 @@ impl Policy {
 pub struct RunState {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u32,
+    /// The run number (`7`) for every run created since numbering; older runs keep the
+    /// `<date>-<slug>` id they were made with until `otto renumber`. Also the directory name.
     pub id: String,
+    /// What a person calls the run — unique, typeable, and changeable with `otto rename`, since
+    /// nothing on disk is keyed by it. Empty only on a run from before names.
+    #[serde(default)]
+    pub name: String,
+    /// The `<date>-<slug>` id this run had before `otto renumber` gave it a number. Still
+    /// resolves, so a command in an old handoff or a person's shell history keeps working.
+    #[serde(rename = "formerId", default, skip_serializing_if = "Option::is_none")]
+    pub former_id: Option<String>,
     pub wraps: Wraps,
     /// Verbatim from `--goal` — the only field a wake must never rewrite.
     pub goal: String,
@@ -711,6 +721,20 @@ where
 }
 
 impl RunState {
+    /// The name to show: `name`, or the old id's slug for a run from before names.
+    pub fn display_name(&self) -> String {
+        if self.name.is_empty() {
+            crate::paths::slug_of(&self.id).to_string()
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// `#7 legenda` — how the run reads to a person.
+    pub fn label(&self) -> String {
+        crate::paths::label(&self.id, &self.display_name())
+    }
+
     /// When the next wake is due by `policy.periodMinutes` alone. Anchored on the start of the
     /// wake in progress, so an hourly run stays hourly instead of drifting by each wake's own
     /// length; with no wake in progress (a person arming it by hand), anchored on now. Never in
@@ -879,6 +903,8 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
     RunState {
         schema_version: SCHEMA_VERSION,
         id: id.to_string(),
+        name: id.to_string(),
+        former_id: None,
         wraps: Wraps { kind: WrapKind::GoalOnly, reference: None },
         goal: "a goal".to_string(),
         done_condition: None,

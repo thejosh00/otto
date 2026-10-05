@@ -21,6 +21,8 @@ the budget events, and the wake failures.
 | `phase-changed` | `from`, `to`, `status`, `note` | A wake entered a new phase |
 | `status-changed` | `from`, `to`, `reason`, `because` | The status changed; `because` is the cause when it became `blocked` |
 | `facts-recorded` | `facts` | A wake recorded facts it re-derived |
+| `renamed` | `from`, `to` | A person renamed the run (`otto rename`) |
+| `renumbered` | `from` | `otto renumber` gave a run from before numbering its number; `from` is its old id |
 
 ## Wakes
 

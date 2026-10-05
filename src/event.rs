@@ -214,6 +214,10 @@ pub enum Event {
         /// `person` or `wake`.
         by: String,
     },
+    /// A person renamed the run (`otto rename`).
+    Renamed { from: String, to: String },
+    /// `otto renumber` gave a run from before numbering its run number; `from` is the old id.
+    Renumbered { from: String },
     /// A person changed how often the run wakes (`otto period`).
     PeriodSet {
         #[serde(rename = "periodMinutes")]

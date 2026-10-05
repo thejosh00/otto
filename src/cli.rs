@@ -36,6 +36,10 @@ pub enum Command {
     Attach(crate::human::AttachArgs),
     /// See or change how often a run wakes.
     Period(crate::human::PeriodArgs),
+    /// Give a run a new name.
+    Rename(crate::human::RenameArgs),
+    /// Give every run from before run numbers a number, keeping its old id as an alias.
+    Renumber,
     /// Retire a run.
     Stop(crate::human::StopArgs),
     /// Bring a stopped or failed run back, and wake it.
@@ -187,8 +191,8 @@ mod reference {
              Do not edit by hand. -->\n\n\
              Every command and flag, exactly as `--help` prints it. For what the commands are *for*, \
              start with [concepts](../concepts.md) and the [guides](../README.md#guides).\n\n\
-             Every `<ID>` takes the full run id, a unique prefix of it, or a unique prefix of its slug \
-             (`otto show verify`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.\n\n",
+             Every `<ID>` takes the run number (`otto show 7`), its name, or a unique prefix of the \
+             name (`otto show leg`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.\n\n",
         );
         for sub in cmd.get_subcommands() {
             section(&mut out, sub, &format!("otto {}", sub.get_name()), 2);

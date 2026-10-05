@@ -12,7 +12,9 @@ what the ideas mean.
 | Field | Meaning |
 |---|---|
 | `schemaVersion` | The file's format version |
-| `id` | The run's id, `<date>-<slug>` unless `--id` was given |
+| `id` | The run's number (`7`), unless `--id` was given; a run from before numbering keeps its `<date>-<slug>` id until `otto renumber` |
+| `name` | What a person calls it: unique, set by `--name` or made up, changed by `otto rename`. Absent on a run from before names |
+| `formerId` | The `<date>-<slug>` id it had before `otto renumber`; still resolves. Absent otherwise |
 | `wraps` | `{kind, ref}`: `skill`, `instructions` or `goal_only`, and the skill name or file path |
 | `goal` | Verbatim from `--goal`. No wake ever rewrites it |
 | `doneCondition` | What makes the run finished; `null` until stated or agreed at the first gate |

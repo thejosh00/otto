@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/notes", post(handlers::add_note))
         .route("/runs/{id}/notes/{note}/drop", post(handlers::drop_note))
         .route("/runs/{id}/period", post(handlers::period))
+        .route("/runs/{id}/rename", post(handlers::rename))
         .route("/runs/{id}/stop", post(handlers::stop))
         .route("/runs/{id}/resume", post(handlers::resume))
         .route("/runs/{id}/wake", post(handlers::wake))
@@ -287,15 +288,28 @@ mod tests {
     }
 
     #[test]
+    fn a_run_is_renamed_from_the_page_and_a_taken_name_is_a_conflict() {
+        let _h = TempHome::new();
+        crate::state::commands::test_init("1", "a goal").unwrap();
+        crate::state::commands::test_init("2", "a goal").unwrap();
+        let (status, body) = rt().block_on(send(post_req("/api/runs/1/rename", serde_json::json!({"name": "picks"}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["to"], "picks");
+        let (status, _) = rt().block_on(send(post_req("/api/runs/2/rename", serde_json::json!({"name": "picks"}))));
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[test]
     fn a_dry_run_from_the_form_creates_nothing() {
         let h = TempHome::new();
         let workdir = h.path().display().to_string();
         let (status, body) = rt().block_on(send(post_req(
             "/api/runs?dryRun=true",
-            serde_json::json!({"goal": "a goal", "slug": "dry", "workdir": workdir}),
+            serde_json::json!({"goal": "a goal", "name": "dry", "workdir": workdir}),
         )));
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert!(body["planned"]["id"].as_str().unwrap().contains("dry"));
+        assert_eq!(body["planned"]["id"], "1");
+        assert_eq!(body["planned"]["name"], "dry");
         assert!(crate::paths::all_run_ids().is_empty());
     }
 

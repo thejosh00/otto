@@ -72,6 +72,12 @@ async function busy(button, work) {
   }
 }
 
+// Mirrors paths::label: a run is `#7 legenda`; one from before numbering is its old id.
+function runLabel(id, name) {
+  if (/^\d+$/.test(id)) return name ? `#${id} ${name}` : `#${id}`;
+  return name && !id.endsWith(name) ? `${id} ${name}` : id;
+}
+
 function relative(iso) {
   if (!iso) return "";
   const seconds = Math.round((new Date(iso) - Date.now()) / 1000);
@@ -273,7 +279,7 @@ function runsView() {
       h("h2", `Needs you · ${list.length}`),
       ...list.map((n) => h("div.card.needs",
         h("div.row.spread",
-          h("div", h("h3", h("a", { href: `#/run/${encodeURIComponent(n.id)}` }, n.short)), h("div.faint.mono", n.label)),
+          h("div", h("h3", h("a", { href: `#/run/${encodeURIComponent(n.id)}` }, runLabel(n.id, n.name))), h("div.faint.mono", n.label)),
           h("a.btn", { href: `#/run/${encodeURIComponent(n.id)}` }, "Read the question")),
         n.options.length
           ? optionButtons(n.id, n.options, n.options[0], () => false, refresh)
@@ -291,7 +297,10 @@ function runsView() {
     table.replaceChildren(h("table.table",
       h("thead", h("tr", ["Run", "Status", "Phase", "Waiting on", "Next wake", "Period", "Wakes"].map((t) => h("th", t)))),
       h("tbody", rows.map((r) => h("tr", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
-        h("td.id", h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.short), h("small", r.id)),
+        // The name leads — it's what a person recognises; the number underneath is what to type.
+        h("td.run",
+          h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
+          h("small", /^\d+$/.test(r.id) ? `#${r.id}` : r.id)),
         h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
         h("td", { dataset: { label: "phase" } }, r.phase),
         h("td", { dataset: { label: "waiting on" } }, r.blocking),
@@ -358,9 +367,45 @@ function runView(id) {
   }
 
   function renderHead(d) {
+    if (head.dataset.editing) return; // a rename is being typed; a refresh must not eat it
     head.replaceChildren(h("div.row.spread",
-      h("div", h("h1", d.short), h("div.faint.mono", d.state.id)),
+      h("div",
+        h("div.row.title",
+          h("h1", runLabel(d.state.id, d.name)),
+          h("button.ghost.small", { title: "Rename this run", onclick: () => renameInPlace(d) }, "Rename")),
+        d.state.formerId ? h("div.faint.mono", `was ${d.state.formerId}`) : ""),
       pill(d.statusLabel, d.running)));
+  }
+
+  // The name is edited where it is shown. Any run can be renamed, finished or not: nothing on
+  // disk is keyed by the name, and the page's URL is the run's number, which never changes.
+  function renameInPlace(d) {
+    head.dataset.editing = "1";
+    const input = h("input.rename", { value: d.name, "aria-label": "Name", spellcheck: false });
+    const close = () => { delete head.dataset.editing; refresh(); };
+    let saveButton;
+    const save = (button) => busy(button, async () => {
+      if (input.value.trim() === d.name) { close(); return; }
+      const r = await api(path + "/rename", { name: input.value });
+      toast(r.from === r.to ? "Name unchanged" : `Renamed to ${runLabel(r.id, r.to)}`);
+      close();
+    });
+    const number = /^\d+$/.test(d.state.id) ? `#${d.state.id}` : d.state.id;
+    head.replaceChildren(h("div.row.spread",
+      h("div",
+        h("div.row.title",
+          h("h1", number),
+          input,
+          (saveButton = h("button.primary.small", { onclick: (e) => save(e.currentTarget) }, "Save")),
+          h("button.ghost.small", { onclick: close }, "Cancel")),
+        h("div.faint", "Letters, digits and hyphens — not just a number, and not another run's name.")),
+      pill(d.statusLabel, d.running)));
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") saveButton.click();
+      if (e.key === "Escape") close();
+    });
+    input.focus();
+    input.select();
   }
 
   // Mirrors clock::format_minutes: the largest unit that divides evenly.
@@ -532,7 +577,7 @@ function runView(id) {
           title: d.running ? "A wake is still running" : "Bring this run back and wake it",
           onclick: (e) => busy(e.currentTarget, async () => {
             const r = await api(path + "/resume", {});
-            toast(`${r.id} is ${r.status}${r.note ? " — " + r.note : ""}`);
+            toast(`${runLabel(r.id)} is ${r.status}${r.note ? " — " + r.note : ""}`);
             refresh();
           }),
         }, "Resume run")));
@@ -595,7 +640,7 @@ function runView(id) {
           h("button.danger", {
             onclick: (e) => busy(e.currentTarget, async () => {
               const r = await api(path + "/stop", { reason: reason.value, failed: failed.checked });
-              toast(`${r.id} is ${r.status}${r.killedWake ? " — killed the live wake" : ""}`);
+              toast(`${runLabel(r.id)} is ${r.status}${r.killedWake ? " — killed the live wake" : ""}`);
               close();
             }),
           }, "Stop run")))));
@@ -799,10 +844,12 @@ function newRunView() {
     h("fieldset", h("legend", "What to run"),
       field("goal", "Goal", h("textarea", { required: true, placeholder: "What this run is trying to achieve" }),
         "The only thing that survives every wake unaltered."),
+      field("name", "Name", h("input", { placeholder: "legenda-picks" }),
+        "Short and unique — what you'll call it. Empty: made up from the target, the wrapped skill or the goal."),
       h("div.field", h("span", "Wraps"), wrap),
       skillField, instrField,
       h("div.grid2",
-        field("target", "Target", h("input", { placeholder: "PROJ-123, a PR URL…" }), "Recorded as facts.target and used for the id."),
+        field("target", "Target", h("input", { placeholder: "PROJ-123, a PR URL…" }), "Recorded as facts.target."),
         field("repos", "Repositories", h("textarea", { rows: 2, placeholder: "One directory per line" })))),
     h("fieldset", h("legend", "When it is done"),
       field("until", "Done when", h("input", { placeholder: "Otherwise the first wake proposes one and asks" })),
@@ -831,9 +878,7 @@ function newRunView() {
         field("disallowedTools", "Denied tools", h("textarea", { rows: 2, placeholder: "WebFetch" })))),
     h("details", h("summary", "Advanced"),
       h("fieldset", { style: "margin-top:10px" },
-        h("div.grid2",
-          field("id", "Run id", h("input", { placeholder: "generated: <date>-<slug>" })),
-          field("slug", "Slug", h("input", { placeholder: "from the target, else the goal" }))),
+        field("id", "Run id", h("input", { placeholder: "the next number" })),
         field("phase", "Starting phase", h("input", { value: "start" })),
         h("div.grid2",
           field("fact", "Facts", h("textarea", { rows: 2, placeholder: "branch=feat/x" }), "K=V, one per line."),
@@ -881,7 +926,7 @@ function newRunView() {
       allowedTools: lines(f.allowedTools),
       disallowedTools: lines(f.disallowedTools),
       id: text("id"),
-      slug: text("slug"),
+      name: text("name"),
       phase: text("phase") || "start",
       fact: lines(f.fact),
       policy: lines(f.policy),
@@ -906,12 +951,12 @@ function newRunView() {
     if (dry) {
       result.replaceChildren(h("div.card",
         h("h3", "Dry run — nothing was created"),
-        h("dl.facts", { style: "margin-top:10px" }, h("dt", "Id"), h("dd.mono", r.planned.id)),
+        h("dl.facts", { style: "margin-top:10px" }, h("dt", "Run"), h("dd.mono", runLabel(r.planned.id, r.planned.name))),
         h("div.prose", r.planned.firstWake)));
       return;
     }
-    if (r.wakeError) toast(`Created ${r.id}, but its first wake did not start: ${r.wakeError}`, true);
-    else toast(`Started ${r.id}`);
+    if (r.wakeError) toast(`Created ${runLabel(r.id)}, but its first wake did not start: ${r.wakeError}`, true);
+    else toast(`Started ${runLabel(r.id)}`);
     location.hash = `#/run/${encodeURIComponent(r.id)}`;
   }
 

@@ -54,12 +54,12 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
     ensure_default_workdir(&args.init)?;
     if args.dry_run {
         let planned = crate::core::plan_run(&args.init)?;
-        println!("{}", planned.id);
+        println!("{}", crate::paths::label(&planned.id, &planned.name));
         println!("{}", planned.first_wake);
         return Ok(());
     }
     let id = crate::core::create_run(args.init)?;
-    println!("{id}");
+    println!("{}", crate::paths::label_of(&id));
     start_wake(&id, detach, None)
 }
 
@@ -276,22 +276,23 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         println!("no runs{}", if args.all { "" } else { " (--all includes finished ones)" });
         return Ok(());
     }
-    let width = rows.iter().map(|r| r.id.len()).max().unwrap_or(2).max(2);
-    // SHORT is what to type back: every command otto prints uses it, and every `<id>` accepts it.
-    let short_width = rows.iter().map(|r| r.short.len()).max().unwrap_or(5).max("SHORT".len());
+    // ID is what to type back: every command otto prints uses it, and every `<id>` accepts it —
+    // as does the NAME, or enough of it to be unique.
+    let width = rows.iter().map(|r| r.short.len()).max().unwrap_or(2).max(2);
+    let name_width = rows.iter().map(|r| r.name.len()).max().unwrap_or(4).max("NAME".len());
     let status_width = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max("awaiting_human".len());
     let waiting = rows.iter().map(|r| r.blocking.len()).max().unwrap_or(10).max("WAITING ON".len());
     let next_width = rows.iter().map(|r| r.next_wake.chars().count()).max().unwrap_or(9).max("NEXT WAKE".len());
     let period_width = rows.iter().map(|r| r.period.chars().count()).max().unwrap_or(6).max("PERIOD".len());
     println!(
-        "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  WAKES",
-        "ID", "SHORT", "STATUS", "PHASE", "WAITING ON", "NEXT WAKE", "PERIOD"
+        "{:<width$}  {:<name_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  WAKES",
+        "ID", "NAME", "STATUS", "PHASE", "WAITING ON", "NEXT WAKE", "PERIOD"
     );
     for row in rows {
         // `—` is one column wide but three bytes, and `{:<n}` pads by chars, so this lines up.
         println!(
-            "{:<width$}  {:<short_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  {}",
-            row.id, row.short, row.status, row.phase, row.blocking, row.next_wake, row.period, row.wakes
+            "{:<width$}  {:<name_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  {}",
+            row.short, row.name, row.status, row.phase, row.blocking, row.next_wake, row.period, row.wakes
         );
     }
     if let Some(sleeping_count) = view.stranded_sleepers {
@@ -303,7 +304,7 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     if !view.needs_you.is_empty() {
         println!("\nneeds you:");
         for needs in &view.needs_you {
-            let (id, label) = (&needs.short, &needs.label);
+            let (id, label) = (&needs.short, format!("{} · {}", needs.name, needs.label));
             match needs.options.as_slice() {
                 [] => println!("  otto answer {id} --choice <option>   # {label} — `otto show {id}` for the question"),
                 [only] => println!("  otto answer {id} --choice \"{only}\"   # {label}"),
@@ -323,7 +324,7 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct ShowArgs {
-    /// The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you — or the
+    /// The run: its number or name (a unique prefix of the name will do). Omitted, the one run waiting on you — or the
     /// only live run, if there is just one
     pub id: Option<String>,
 }
@@ -333,10 +334,10 @@ pub struct ShowArgs {
 pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     let detail = crate::core::run_detail(args.id.as_deref())?;
     let state = &detail.state;
-    // The full id leads the screen; the commands below it use the short form `otto ls` shows.
+    // `#7 name` leads the screen; the commands below it use the short form `otto ls` shows.
     let short = &detail.short;
 
-    println!("{}  ({:?})", state.id, state.status);
+    println!("{}  ({:?})", crate::paths::label(&state.id, &detail.name), state.status);
     println!("  goal      {}", state.goal);
     match &state.done_condition {
         Some(done) => println!("  done when {done}"),
@@ -433,7 +434,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct AnswerArgs {
-    /// The run: its id, a prefix of it, or its slug. Omitted, the one run waiting on you
+    /// The run: its number or name (a unique prefix of the name will do). Omitted, the one run waiting on you
     pub id: Option<String>,
     /// The option you are choosing, by name — checked against the gate's own options when it
     /// lists any, and rejected (naming the valid ones) if it matches none
@@ -563,7 +564,7 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct NoteArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// What to tell it, verbatim. Guidance on how to do the work — not an answer to a gate
     #[arg(conflicts_with = "file")]
@@ -645,7 +646,7 @@ fn print_notes(notes: &[crate::core::NoteView]) {
 
 #[derive(clap::Args, Debug)]
 pub struct CheckArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// A script poke runs directly, no model involved, whenever the run's period comes due:
     /// exit 0 = nothing new (no wake is spent; it sleeps another period), 1 = changed (a wake),
@@ -700,12 +701,51 @@ pub fn check(args: CheckArgs) -> Result<(), OttoError> {
 }
 
 // ---------------------------------------------------------------------------
+// otto rename / otto renumber
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct RenameArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// Its new name — letters, digits and hyphens, not just a number, and not another run's
+    pub name: String,
+}
+
+pub fn rename(args: RenameArgs) -> Result<(), OttoError> {
+    let renamed = crate::core::rename_run(&args.id, &args.name)?;
+    if renamed.from == renamed.to {
+        println!("{} is already called that", crate::paths::label(&renamed.id, &renamed.to));
+    } else {
+        println!("{} (was {})", crate::paths::label(&renamed.id, &renamed.to), renamed.from);
+    }
+    Ok(())
+}
+
+pub fn renumber() -> Result<(), OttoError> {
+    let report = crate::core::renumber_runs()?;
+    if report.renumbered.is_empty() && report.skipped.is_empty() {
+        println!("every run already has a number");
+    }
+    for run in &report.renumbered {
+        println!("{} → {}", run.from, crate::paths::label(&run.id, &run.name));
+    }
+    for (id, why) in &report.skipped {
+        println!("skipped {id}: {why} — run `otto renumber` again once it is idle");
+    }
+    if !report.renumbered.is_empty() {
+        println!("\nthe old ids still work; `otto rename <number> <name>` to pick better names");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // otto period
 // ---------------------------------------------------------------------------
 
 #[derive(clap::Args, Debug)]
 pub struct PeriodArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured
     /// from the start of one wake to the start of the next. Omit it to see the current period
@@ -716,7 +756,7 @@ pub struct PeriodArgs {
 pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
     let Some(text) = &args.period else {
         let state = crate::state::read_run(&args.id)?;
-        println!("{} wakes every {}", state.id, crate::clock::format_minutes(state.policy.period_minutes));
+        println!("{} wakes every {}", state.label(), crate::clock::format_minutes(state.policy.period_minutes));
         return Ok(());
     };
     let minutes = parse_duration("the period", text)?.whole_minutes();
@@ -726,7 +766,7 @@ pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
     let outcome = crate::core::set_period(&args.id, minutes as u64)?;
     println!(
         "{} now wakes every {} (was {})",
-        outcome.id,
+        crate::paths::label_of(&outcome.id),
         crate::clock::format_minutes(outcome.period_minutes),
         crate::clock::format_minutes(outcome.previous_minutes)
     );
@@ -819,7 +859,7 @@ fn print_check_summary(detail: &crate::core::RunDetail) {
 
 #[derive(clap::Args, Debug)]
 pub struct LogsArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Trailing lines to show, like `tail -n` [default: 40, or everything with --since]
     #[arg(long, short = 'n')]
@@ -867,7 +907,7 @@ pub fn logs(args: LogsArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct StopArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Why, recorded in the journal
     #[arg(long)]
@@ -886,15 +926,15 @@ pub fn stop(args: StopArgs) -> Result<(), OttoError> {
 fn stop_with(args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), OttoError> {
     let outcome = crate::core::stop_run(&args.id, args.reason, args.failed, exec)?;
     if outcome.killed_wake {
-        println!("killed the live wake for {}", outcome.id);
+        println!("killed the live wake for {}", crate::paths::label_of(&outcome.id));
     }
-    println!("{} is {:?} — {}", outcome.id, outcome.status, outcome.reason);
+    println!("{} is {:?} — {}", crate::paths::label_of(&outcome.id), outcome.status, outcome.reason);
     Ok(())
 }
 
 #[derive(clap::Args, Debug)]
 pub struct ResumeArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// Why, recorded in the journal
     #[arg(long)]
@@ -907,7 +947,7 @@ pub struct ResumeArgs {
 /// Undo `otto stop`. The wake goes wherever the run's wakes go — `otto attach` to watch it.
 pub fn resume(args: ResumeArgs) -> Result<(), OttoError> {
     let outcome = crate::core::resume_run(&args.id, args.reason, args.no_wake)?;
-    println!("{} is {:?} — {}", outcome.id, outcome.status, outcome.reason);
+    println!("{} is {:?} — {}", crate::paths::label_of(&outcome.id), outcome.status, outcome.reason);
     match (&outcome.wake, &outcome.note) {
         (Some(wake), _) => println!("{}", wake.note.as_deref().unwrap_or("wake started")),
         (None, Some(note)) => println!("{note}"),
@@ -918,7 +958,7 @@ pub fn resume(args: ResumeArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct AttachArgs {
-    /// The run: its id, a prefix of it, or its slug
+    /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
 }
 
@@ -1359,7 +1399,7 @@ mod tests {
     #[test]
     fn a_run_needs_a_workdir_and_records_it() {
         let h = TempHome::new();
-        let init = || InitArgs { goal: "a goal".into(), slug: Some("wd".into()), ..Default::default() };
+        let init = || InitArgs { goal: "a goal".into(), name: Some("wd".into()), ..Default::default() };
         let err = run(RunArgs { init: init(), watch: false, dry_run: true }).unwrap_err();
         assert!(err.to_string().contains("otto config workdir"), "{err}");
 
@@ -1385,7 +1425,7 @@ mod tests {
         run(RunArgs {
             init: InitArgs {
                 goal: "a goal".into(),
-                slug: Some("dry".into()),
+                name: Some("dry".into()),
                 repos: vec!["/w/a".into()],
                 workdir: workdir.clone(),
                 ..Default::default()
