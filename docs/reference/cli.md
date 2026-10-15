@@ -826,9 +826,8 @@ Options:
           The phase label to enter — free-form, for people and the wrapped instructions
 
       --status <STATUS>
-          The status to enter with it. `running` also clears any scheduled wake
+          The status to enter with it. `running` also clears any scheduled wake. Omitted: `running`, unless a gate is open, when the status is left as it is
           
-          [default: running]
           [possible values: running, awaiting_human, sleeping, blocked, done, failed, stopped]
 
       --note <NOTE>

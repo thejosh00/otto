@@ -521,9 +521,10 @@ pub struct SetPhaseArgs {
     /// The phase label to enter — free-form, for people and the wrapped instructions
     #[arg(long, required = true)]
     pub phase: String,
-    /// The status to enter with it. `running` also clears any scheduled wake
-    #[arg(long, value_enum, default_value = "running")]
-    pub status: Status,
+    /// The status to enter with it. `running` also clears any scheduled wake. Omitted: `running`,
+    /// unless a gate is open, when the status is left as it is
+    #[arg(long, value_enum)]
+    pub status: Option<Status>,
     /// Why, recorded in the journal
     #[arg(long)]
     pub note: Option<String>,
@@ -534,8 +535,15 @@ pub fn set_phase(args: SetPhaseArgs) -> Result<(), OttoError> {
     transaction(&id, |path, state| {
         let previous = state.phase.clone();
         state.phase = args.phase.clone();
-        state.status = args.status;
-        if matches!(args.status, Status::Running) {
+        // A wake that names the phase after opening its gate — seen in a live run — used to put the
+        // run back to `running` with the question still open, and had to notice and restore it.
+        let status = match (args.status, &state.gate) {
+            (Some(status), _) => status,
+            (None, Some(_)) => state.status,
+            (None, None) => Status::Running,
+        };
+        state.status = status;
+        if matches!(status, Status::Running) {
             state.next_wake_at = None;
         }
         crate::event::record(
@@ -543,7 +551,7 @@ pub fn set_phase(args: SetPhaseArgs) -> Result<(), OttoError> {
             &Event::PhaseChanged {
                 from: previous,
                 to: args.phase.clone(),
-                status: status_str(args.status).to_string(),
+                status: status_str(status).to_string(),
                 note: args.note.clone(),
             },
         )
@@ -1090,6 +1098,26 @@ mod tests {
         assert!(err.to_string().contains("--budget-usd"));
         assert!(crate::paths::all_run_ids().is_empty(), "a refused run must leave no directory");
         assert!(std::fs::read_dir(crate::paths::runs_dir()).map(|d| d.count() == 0).unwrap_or(true), "not even an empty one");
+    }
+
+    /// Naming a phase with a gate open leaves the run waiting on the gate; naming one with none
+    /// open, or saying the status outright, works as it always has.
+    #[test]
+    fn set_phase_leaves_an_open_gate_s_status_alone_unless_told() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-phase", "a goal").unwrap();
+        let phase = |name: &str, status: Option<Status>| {
+            super::set_phase(super::SetPhaseArgs { id: "s-phase".into(), phase: name.into(), status, note: None }).unwrap();
+            super::read_run("s-phase").unwrap().status
+        };
+        assert_eq!(phase("plan", None), Status::Running);
+
+        crate::state::ops::open_gate("s-phase", "plan-review", "Approve the plan?", None).unwrap();
+        assert_eq!(super::read_run("s-phase").unwrap().status, Status::AwaitingHuman);
+        assert_eq!(phase("review", None), Status::AwaitingHuman, "the question is still open");
+        assert_eq!(super::read_run("s-phase").unwrap().phase, "review");
+        assert_eq!(phase("review", Some(Status::Running)), Status::Running, "said outright, it is done");
     }
 
     /// `done` is never refused for an open todo item — only journaled with the items, so the
