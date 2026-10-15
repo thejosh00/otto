@@ -28,15 +28,6 @@ fn mark_of(todo: &str, word: &str) -> Option<char> {
         .and_then(|rest| rest.chars().next())
 }
 
-/// `otto show`'s todo line as (accounted for, total) — read through otto's own parser, the one
-/// the page and the CLI use, rather than a second one here.
-fn shown_progress(run: &Run) -> Option<(usize, usize)> {
-    let shown = stdout(&otto(&["show", &run.id]));
-    let line = shown.lines().find(|l| l.trim_start().starts_with("todo "))?;
-    let (done, total) = line.split_whitespace().nth(1)?.split_once('/')?;
-    Some((done.parse().ok()?, total.parse().ok()?))
-}
-
 #[test]
 #[ignore = "spawns a real claude session and spends real money — run with --ignored"]
 fn live_todo() {
@@ -94,7 +85,7 @@ fn live_todo() {
             format!("gamma is {gamma:?} at the gate; it should still be open"),
         );
     }
-    let at_gate_progress = shown_progress(&run);
+    let at_gate_progress = run.shown_progress();
     match at_gate_progress {
         Some((done, total)) => checks.ok(format!("otto show counts it: {done}/{total}")),
         None if !at_gate.trim().is_empty() => checks.bad("otto show has no todo line for a todo that exists"),
@@ -134,7 +125,7 @@ fn live_todo() {
         None if at_done.trim().is_empty() => checks.bad("no todo at done"),
         None => checks.bad("gamma's item is gone: dropped work was deleted rather than marked [-]"),
     }
-    match (at_gate_progress, shown_progress(&run)) {
+    match (at_gate_progress, run.shown_progress()) {
         (Some((_, before)), Some((done, total))) => {
             checks.check(total >= before, format!("no item deleted ({before} → {total})"), format!("the todo shrank from {before} items to {total}"));
             checks.check(done == total, format!("every item accounted for ({done}/{total})"), format!("{} item(s) left open at done", total - done));
@@ -142,8 +133,7 @@ fn live_todo() {
         (_, Some((done, total))) => checks.check(done == total, format!("every item accounted for ({done}/{total})"), format!("{} item(s) left open at done", total - done)),
         (_, None) => {}
     }
-    let shown = stdout(&otto(&["show", &run.id]));
-    checks.check(!shown.contains("still open in its todo"), "otto show flags nothing left open", "otto show flags items left open at done");
+    checks.check(!run.shown_left_open(), "otto show flags nothing left open", "otto show flags items left open at done");
     let journal = std::fs::read_to_string(run.dir.join("journal.jsonl")).unwrap_or_default();
     match journal.lines().find(|l| l.contains(r#""event":"status-changed""#) && l.contains(r#""to":"done""#)) {
         Some(line) => checks.check(!line.contains("leftOpen"), "journaled done with nothing left open", format!("journaled done with items open: {line}")),

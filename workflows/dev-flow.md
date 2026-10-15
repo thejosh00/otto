@@ -60,17 +60,48 @@ Cheap and phase-scoped — never fetch a PR during `plan`. On every wake:
 `babysit` tick. Stopping anywhere else leaves the run with nothing to wake it (see the skill's
 wake loop): if you have to, open a gate first.
 
+## The todo
+
+`intake` writes `artifacts/todo.md` as its first act, one item per phase in order, and every phase
+keeps its own item true. It is what a person sees of this run's progress, and what makes a skipped
+phase visible: the run in DESIGN.md §19.1 went `land → done`, and nothing on disk said `cleanup`
+never happened. Here its item stays `[ ]`, and otto flags a `done` run that leaves one open.
+
+```markdown
+# <key>: <the spec's one-line summary>
+- [ ] intake — artifacts/spec.md, and the repo chosen
+- [ ] prepare — a worktree on the branch, baseline green
+- [ ] plan — artifacts/plan.md, approved at plan-review
+- [ ] implement — committed, lint and tests green
+- [ ] verify — artifacts/test-report.md, approved at result-review
+- [ ] publish — pushed, and the PR opened, at push-confirm
+- [ ] babysit — approved and green
+- [ ] land — merged, at merge-confirm
+- [ ] cleanup — worktree reaped, ticket update and summary written
+```
+
+- **`[~]` while a phase is under way, including while its gate waits on a person; `[x]` once the
+  run moves past it.** What a later wake or a person will want from a phase (the branch, the PR,
+  the merged sha) goes on an indented line under its item, not in a new item.
+- **A phase the run does not go through is `[-]`, with why**: `babysit` when the remote has no PR
+  host; `publish` to `cleanup` after **Stop here**; `land` when someone else merged the PR.
+- **Ticks don't touch it.** `babysit` stays `[~]` for as long as review takes. A tick that
+  rewrote the todo every hour would be paying to say nothing.
+- **It reports progress; it doesn't decide it.** Git, the gates on disk and the artifacts are the
+  truth, and a re-entered phase re-derives from them as it always has, then corrects its item if
+  the two disagree. A todo that says `implement` is done is not a commit.
+
 ## Phase 0 — `intake`
 
 | | |
 |---|---|
 | **goal** | Turn the request into a spec this run can be driven from, and choose the repo |
 | **preconditions** | `facts.target` is set |
-| **actions** | If the target looks like a Jira key (`[A-Z]+-\d+`), fetch it with the Jira MCP (`getJiraIssue`) and record `jiraKey` + `ticketUpdatedAt`; otherwise treat the target as the request itself. Distil into `artifacts/spec.md`: the problem, the acceptance criteria, what is explicitly out of scope, and open questions. Resolve the repo (see below) and `record-fact mainRepo=<abs path>`. Set policy explicitly |
-| **durableOutput** | `artifacts/spec.md`, `facts.jiraKey`, `facts.ticketUpdatedAt`, `facts.mainRepo` |
+| **actions** | Write the todo (above). If the target looks like a Jira key (`[A-Z]+-\d+`), fetch it with the Jira MCP (`getJiraIssue`) and record `jiraKey` + `ticketUpdatedAt`; otherwise treat the target as the request itself. Distil into `artifacts/spec.md`: the problem, the acceptance criteria, what is explicitly out of scope, and open questions. Resolve the repo (see below) and `record-fact mainRepo=<abs path>`. Set policy explicitly |
+| **durableOutput** | `artifacts/todo.md`, `artifacts/spec.md`, `facts.jiraKey`, `facts.ticketUpdatedAt`, `facts.mainRepo` |
 | **exitCondition** | `artifacts/spec.md` exists with acceptance criteria, and `facts.mainRepo` is a git repo |
 | **gate** | `continue` — **unless** the repo is ambiguous or the acceptance criteria cannot be stated, then **ask-human** |
-| **idempotency** | If `artifacts/spec.md` exists and `mainRepo` is set, adopt them; only re-read the ticket if reconciliation says it changed |
+| **idempotency** | If `artifacts/todo.md`, `artifacts/spec.md` and `mainRepo` exist, adopt them; only re-read the ticket if reconciliation says it changed |
 
 **Resolving the repo.** In order: an explicit repo in the request; a repo named in the ticket
 (component, fix-version, or a path in the description); a single obvious match among
@@ -223,9 +254,10 @@ Gate question — `open-gate --slug result-review`, then stop:
 
 **Stop here** is worth keeping: it is the whole of build phase 3's behaviour, still available for a
 change you would rather push yourself. On that answer, write `artifacts/ready-to-push.md` (worktree,
-branch, base, commits, verification summary, the exact push and PR commands), a defensive bare
-`unlock` (a no-op by now — `prepare` already released it once the worktree was green), and
-`set-status --status done --reason "ready to push, by request"`.
+branch, base, commits, verification summary, the exact push and PR commands), mark `publish` to
+`cleanup` `[-]` with the gate that stopped them (the worktree is left for you on purpose), a
+defensive bare `unlock` (a no-op by now — `prepare` already released it once the worktree was
+green), and `set-status --status done --reason "ready to push, by request"`.
 
 ## Phase 5 — `publish`
 
@@ -388,13 +420,15 @@ you trust the logs, not before.
 > directly and left its worktree behind — the journal never mentioned `cleanup` at all, and otto's
 > contract could not notice, because `done` with a handoff written is a legal way to stop. If the
 > merge is the last thing you do, the run is not finished; it is finished when the worktree is
-> reaped and the ticket is updated.
+> reaped and the ticket is updated. The todo is what makes the omission visible now: `cleanup`
+> would still be `[ ]`, and `set-status done` names it to the wake that tried, while it can still
+> do the work.
 
 | | |
 |---|---|
 | **goal** | Leave nothing behind but the record |
 | **preconditions** | The PR is merged or closed |
-| **actions** | Reap the worktree (`manage-pr`'s Step 0 rules: contained-in-base, or the squash-merge heuristic — **offer**, do not force); `unlock` as a defensive no-op (each earlier phase already released it after its own git work — this catches a lock left behind by an interrupted phase); write the ticket update; rewrite `handoff.md`; `set-status done` |
+| **actions** | Reap the worktree (`manage-pr`'s Step 0 rules: contained-in-base, or the squash-merge heuristic — **offer**, do not force); `unlock` as a defensive no-op (each earlier phase already released it after its own git work — this catches a lock left behind by an interrupted phase); write the ticket update; mark `cleanup` `[x]` (or `[-]` with what was left and why); rewrite `handoff.md`; `set-status done` |
 | **durableOutput** | `artifacts/summary.md`; worktree gone; no lock held (should already be true) |
 | **exitCondition** | `status: done`, no lock held, and the worktree either removed or explicitly left with a reason |
 | **gate** | — |
@@ -421,4 +455,5 @@ facts(mergedSha), `lock-released`, `phase-changed`(→cleanup), `status-changed`
 
 Three or four human gates. Two `authorized` lines, each naming a commit. A `lock-acquired` /
 `lock-released` pair around each phase that actually touches shared repo state, and *nothing*
-holding the lock across a gate or a sleep. Everything else is the run doing its job.
+holding the lock across a gate or a sleep. And a todo with every item `[x]`, or `[-]` with why
+(`babysit`, on a remote with no PR host). Everything else is the run doing its job.

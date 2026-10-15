@@ -55,6 +55,7 @@ fn run_devflow(stop_at: StopAt) {
 
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
+    use_this_build_first_on_path();
 
     checks.step("1 - scratch repo with a real (local) remote");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -149,7 +150,13 @@ fn run_devflow(stop_at: StopAt) {
     } else {
         checks.bad(format!("facts.worktree={worktree} is not a directory"));
     }
-    checks.check(repo_is_locked(&repo), "the repo is locked by the run", "the repo was never locked");
+    // `prepare` holds the lock only while it sets up the worktree, and releases it before `plan`:
+    // a run that kept it through the plan-review gate would block every other run on this repo
+    // for as long as the review took.
+    checks.check(run.events("lock-acquired") >= 1, "prepare locked the repo", "the repo was never locked");
+    checks.check(!repo_is_locked(&repo), "and released it before the gate", "the lock is held across the plan-review gate");
+    checks.check(await_idle(Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the plan gate");
+    check_todo(&mut checks, &run, &[("intake", "x"), ("prepare", "x"), ("plan", "~"), ("implement", " "), ("cleanup", " ")]);
     checks.check(is_nonempty_file(&run.artifact("plan.md")), "artifacts/plan.md", "no plan was written");
     let plan_text = std::fs::read_to_string(run.artifact("plan.md")).unwrap_or_default();
     if plan_text.contains("greet.py") {
@@ -176,6 +183,8 @@ fn run_devflow(stop_at: StopAt) {
     checks.check(greet_py.contains("farewell"), "greet.py has farewell()", "farewell() was never written");
     checks.check(run_make_test(&wt), "make test passes in the worktree", "the suite fails there");
     checks.check(is_nonempty_file(&run.artifact("test-report.md")), "artifacts/test-report.md", "no test report");
+    checks.check(await_idle(Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the result gate");
+    check_todo(&mut checks, &run, &[("plan", "x"), ("implement", "x"), ("verify", "~"), ("publish", " ")]);
 
     checks.step("5 - nothing has left this machine");
     let branch_ref = format!("refs/heads/{branch}");
@@ -195,6 +204,13 @@ fn run_devflow(stop_at: StopAt) {
         let branch_on_origin = git(&origin, &["show-ref", "--quiet", "--verify", &branch_ref]).status.success();
         checks.check(!branch_on_origin, "still nothing on origin", "something pushed anyway");
         checks.check(!repo_is_locked(&repo), "lock released", "the lock was never released");
+        checks.check(await_idle(Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
+        check_todo(
+            &mut checks,
+            &run,
+            &[("verify", "x"), ("publish", "-"), ("babysit", "-"), ("land", "-"), ("cleanup", "-")],
+        );
+        check_nothing_left_open(&mut checks, &run);
         if checks.fail_count() > 0 {
             scratch.keep();
         }
@@ -298,11 +314,65 @@ fn run_devflow(stop_at: StopAt) {
     } else {
         checks.note("no summary artifact");
     }
+    checks.check(await_idle(Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
+    // The scratch remote is a bare repo, so there is no PR host and `babysit` never happens.
+    check_todo(
+        &mut checks,
+        &run,
+        &[("publish", "x"), ("babysit", "-"), ("land", "x"), ("cleanup", "x")],
+    );
+    check_nothing_left_open(&mut checks, &run);
 
     if checks.fail_count() > 0 {
         scratch.keep();
     }
     finish_run(checks, &run, "done", Some(&wt), Some(&repo));
+}
+
+/// `dev-flow`'s phases, in order: its todo has one item per phase, each starting with the name.
+const PHASES: [&str; 9] = ["intake", "prepare", "plan", "implement", "verify", "publish", "babysit", "land", "cleanup"];
+
+/// The mark on a phase's todo item — the first item whose text starts with the phase's name — as
+/// the file has it: `x`, ` `, `~`, `-` or `!`.
+fn phase_mark(todo: &str, phase: &str) -> Option<char> {
+    todo.lines()
+        .filter_map(|line| line.strip_prefix("- [").or_else(|| line.strip_prefix("* [")))
+        .find(|rest| rest.get(3..).is_some_and(|text| text.trim_start_matches(['`', '*', ' ']).to_lowercase().starts_with(phase)))
+        .and_then(|rest| rest.chars().next())
+}
+
+/// The todo as a gate (or `done`) finds it: an item for every phase, and each phase named in
+/// `want` marked with one of the marks given for it.
+fn check_todo(checks: &mut Checks, run: &Run, want: &[(&str, &str)]) {
+    let todo = std::fs::read_to_string(run.artifact("todo.md")).unwrap_or_default();
+    if todo.trim().is_empty() {
+        checks.bad("no artifacts/todo.md — intake should have written it first");
+        return;
+    }
+    for line in todo.lines() {
+        checks.note(format!("| {line}"));
+    }
+    let missing: Vec<&str> = PHASES.iter().copied().filter(|phase| phase_mark(&todo, phase).is_none()).collect();
+    checks.check(missing.is_empty(), "the todo has an item for every phase", format!("the todo has no item for {missing:?}"));
+    for (phase, marks) in want {
+        let mark = phase_mark(&todo, phase);
+        checks.check(
+            mark.is_some_and(|m| marks.contains(m)),
+            format!("{phase} is [{}]", mark.unwrap_or('?')),
+            format!("{phase} is {mark:?}, expected [{marks}]"),
+        );
+    }
+}
+
+/// `done`, with every item `[x]` or `[-]`: what otto counts, and what it would flag.
+fn check_nothing_left_open(checks: &mut Checks, run: &Run) {
+    match run.shown_progress() {
+        Some((done, total)) => {
+            checks.check(done == total, format!("every item accounted for ({done}/{total})"), format!("{} item(s) left open", total - done))
+        }
+        None => checks.bad("otto show counts no todo"),
+    }
+    checks.check(!run.shown_left_open(), "otto show flags nothing left open", "otto show flags items left open at done");
 }
 
 fn is_nonempty_file(path: &Path) -> bool {

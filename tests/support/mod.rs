@@ -259,6 +259,20 @@ impl Run {
         self.dir.join("handoff.md")
     }
 
+    /// `otto show`'s todo line as (accounted for, total) — read through otto's own parser, the
+    /// one the page and the CLI use, rather than a second one in the tests. `None` with no todo.
+    pub fn shown_progress(&self) -> Option<(usize, usize)> {
+        let shown = stdout(&otto(&["show", &self.id]));
+        let line = shown.lines().find(|l| l.trim_start().starts_with("todo "))?;
+        let (done, total) = line.split_whitespace().nth(1)?.split_once('/')?;
+        Some((done.parse().ok()?, total.parse().ok()?))
+    }
+
+    /// Whether `otto show` flags this run as done with todo items still open.
+    pub fn shown_left_open(&self) -> bool {
+        stdout(&otto(&["show", &self.id])).contains("still open in its todo")
+    }
+
     pub fn wake_log(&self, lines: usize) -> String {
         let Ok(text) = std::fs::read_to_string(self.dir.join("wake.log")) else {
             return String::new();
@@ -387,6 +401,13 @@ pub fn answer_gate(checks: &mut Checks, run: &Run, expected_slug: &str, answer: 
         checks.note(format!("gate slug is '{actual}', expected '{expected_slug}'"));
         actual
     };
+    // A person answers after the wake that asked has gone. Answering while it is still running —
+    // a gate is on disk a few seconds before its wake exits — let a live `dev-flow` wake read the
+    // answer and push in the same wake that asked, which is not the cold pickup being tested.
+    if !await_idle(timeout) {
+        checks.bad(format!("the wake that asked {slug} never exited"));
+        return false;
+    }
     let before = run.events("gate-closed");
     // No --no-wake: answering must actually continue the run, or the test would wait for a
     // gate nothing is working toward.
