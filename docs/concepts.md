@@ -233,7 +233,9 @@ a gate unanswered past `gateStaleAfterHours`, or passes 80% of a budget.
 ## What a wake costs
 
 otto runs `claude` without `-p`: print mode bills SDK credits instead of your subscription, the
-wrong meter for something that wakes forever. So a wake's cost is measured in tokens, read back
+wrong meter for something that wakes forever. For the same reason a wake never inherits an
+`ANTHROPIC_API_KEY` from whatever started it, which claude would bill instead (a
+[launcher](guides/sandboxing.md) can set one on purpose). So a wake's cost is measured in tokens, read back
 from the session transcript claude leaves behind and journaled as `wake-spent` (turns, input and
 output tokens, cache reads and creation). `otto usage` totals it across runs, by run or by day;
 `otto show <id>` gives one run's total; `otto check <id>` shows the recent average per wake.

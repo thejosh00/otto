@@ -47,7 +47,8 @@
 //! what takes effect even under a sandbox that would otherwise supply its own.
 //!
 //! On macOS every launcher is wrapped in `caffeinate` — see `sleep_guard`. That is a property of
-//! the machine, not of the launcher, which is why it sits in front of whichever one runs.
+//! the machine, not of the launcher, which is why it sits in front of whichever one runs. So is
+//! what a wake must not inherit from whoever started it — `env_guard` — and it sits there too.
 
 use crate::config::LauncherDef;
 use crate::error::OttoError;
@@ -98,6 +99,42 @@ fn sleep_guard() -> Vec<String> {
     }
 }
 
+/// What a wake does not inherit from the process that started it, cleared with `env -u` ahead of
+/// every launcher. A wake is started by whoever happens to be there — a terminal, the web page,
+/// poke, a Claude Code session — and should be the same wake whichever it was.
+///
+/// - **`ANTHROPIC_API_KEY`.** claude prefers it to the logged-in subscription, so a key in the
+///   starting environment silently puts the wake on the API meter: the wrong-meter problem that
+///   dropping `-p` was for (see the module doc). Seen in a live test started from inside a Claude
+///   Code session, whose key had no credit: the wake died in four seconds on "Credit balance is
+///   too low". A launcher that does want API billing can set it again; it runs after this.
+/// - **What a Claude Code session hands its children** — its id, its IDE port, its messaging
+///   socket and token. They describe that session, and a wake is not part of it: it outlives it.
+const UNINHERITED: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_PID",
+];
+
+/// `env -u …` for each of `UNINHERITED`. `env` execs what follows, so it adds no process: the
+/// deadline's kill still reaches claude.
+fn env_guard() -> Vec<String> {
+    let mut words = vec!["env".to_string()];
+    for var in UNINHERITED {
+        words.push("-u".to_string());
+        words.push(var.to_string());
+    }
+    words
+}
+
 /// The launcher this run's wakes go under, from the config as it is now — so a launcher edited
 /// in `config.json` applies from the next wake, and one removed from it refuses the wake up front
 /// rather than spawning something that is not there.
@@ -124,8 +161,9 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|d| seen.insert(d.clone()));
 
-    // The guard leads, so what follows is the launcher's own command line.
+    // The guards lead, so what follows is the launcher's own command line.
     let mut argv = sleep_guard();
+    argv.extend(env_guard());
     let mut command = launcher.command_words();
     if let Some(flag) = &launcher.grant_flag {
         // A sandbox only opens paths it was told about, so `--add-dir` alone would let claude try
@@ -188,7 +226,7 @@ mod tests {
     /// argv from the launcher's own command onward. The sleep guard is there on macOS and absent
     /// everywhere else, so every position-sensitive assertion counts from here rather than from 0.
     fn launched(argv: &[String]) -> Vec<String> {
-        argv[sleep_guard().len()..].to_vec()
+        argv[sleep_guard().len() + env_guard().len()..].to_vec()
     }
 
     /// Where claude's own arguments start: straight after the launcher's command and grants.
@@ -351,11 +389,42 @@ mod tests {
             let argv = argv(&state(), &launcher, "wake r1", SID);
             if cfg!(target_os = "macos") {
                 assert_eq!(&argv[..3], ["caffeinate", "-i", "-s"], "{} must not let the mac sleep", launcher.name);
-                assert_eq!(argv[3], launcher.command_words()[0], "the launcher follows the guard");
+                assert_eq!(launched(&argv)[0], launcher.command_words()[0], "the launcher follows the guards");
             } else {
                 assert_ne!(argv[0], "caffeinate", "caffeinate is macOS-only");
             }
         }
+    }
+
+    /// A key in the environment of whoever started the wake would move it off the subscription,
+    /// and a Claude Code session's own variables would follow it into a process that outlives it.
+    /// Cleared ahead of every launcher, so a launcher can still set them again on purpose.
+    #[test]
+    fn a_wake_does_not_inherit_an_api_key_or_the_session_that_started_it() {
+        for launcher in all() {
+            let argv = argv(&state(), &launcher, "wake r1", SID);
+            let at = argv.iter().position(|w| w == "env").expect("the env guard is there");
+            let launcher_at = argv.len() - launched(&argv).len();
+            assert!(at < launcher_at, "{}: the guard runs before the launcher", launcher.name);
+            let cleared: Vec<&str> =
+                argv[at + 1..launcher_at].chunks(2).filter(|pair| pair[0] == "-u").map(|pair| pair[1].as_str()).collect();
+            for var in ["ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"] {
+                assert!(cleared.contains(&var), "{}: {var} must be cleared", launcher.name);
+            }
+        }
+    }
+
+    /// Really cleared, by the `env` a wake runs under — not just named on the command line.
+    #[test]
+    fn the_env_guard_clears_what_it_names() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("ANTHROPIC_API_KEY".to_string(), "sk-not-a-real-key".to_string());
+        env.insert("OTTO_KEPT".to_string(), "kept".to_string());
+        let mut command = env_guard();
+        command.extend(["sh", "-c", "printf '%s|%s' \"${ANTHROPIC_API_KEY:-cleared}\" \"$OTTO_KEPT\""].map(String::from));
+        let refs: Vec<&str> = command.iter().map(String::as_str).collect();
+        let out = crate::exec::Exec::exec(&mut crate::exec::RealExec, &refs, Some(&env), std::time::Duration::from_secs(10));
+        assert_eq!(out.stdout, "cleared|kept", "everything else passes through");
     }
 
     #[test]

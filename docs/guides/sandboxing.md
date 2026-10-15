@@ -34,10 +34,14 @@ otto appends the wake's prompt and claude's own flags to your `command`, so the 
 wake runs:
 
 ```
-caffeinate -i -s nono run --profile nolabs-ai/claude --allow ~/.otto --allow ~/work --allow ~/work/svc -- claude '<prompt>' --add-dir ~/.otto --add-dir ~/work --add-dir ~/work/svc --session-id … --permission-mode … …
+caffeinate -i -s env -u ANTHROPIC_API_KEY -u CLAUDECODE … nono run --profile nolabs-ai/claude --allow ~/.otto --allow ~/work --allow ~/work/svc -- claude '<prompt>' --add-dir ~/.otto --add-dir ~/work --add-dir ~/work/svc --session-id … --permission-mode … …
 ```
 
 - **`caffeinate`** keeps the Mac awake for exactly as long as the wake runs (macOS only).
+- **`env -u`** clears what a wake must not inherit from whatever started it: an
+  `ANTHROPIC_API_KEY`, which claude would bill instead of your subscription, and the variables of
+  a Claude Code session the wake was started from. Your launcher runs after it, so a launcher that
+  wants API billing can set the key again.
 - **`grantFlag`** is how the sandbox opens a directory. otto passes it once for `$OTTO_HOME` —
   the wake must be able to read `run.json` and write its handoff — once for the run's working
   directory, which the wake starts in, and once per `--repo`, placed before the command's first
