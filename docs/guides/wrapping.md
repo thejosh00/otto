@@ -74,8 +74,10 @@ built for long horizons does. In rough order of value:
 2. **Gates written as decisions.** Named options so `otto answer --choice` works, each with its
    consequence, a stated default, and a pointer to what to read.
 3. **A ledger when the handoff won't fit.** The handoff is capped and rewritten; anything that
-   accumulates — one line per target, per proposal, per cycle — goes in an append-only artifact.
-   It doubles as the position marker: a crash at target 12 of 20 resumes at 12.
+   accumulates — one line per target, per proposal, per cycle — goes in an artifact. It doubles as
+   the position marker: a crash at target 12 of 20 resumes at 12. When the work is a list of things
+   to finish, make it the [todo](../concepts.md#the-todo) and otto shows it as the run's progress
+   (`workflows/upgrade-flow.md` does); a perpetual run's history of cycles stays a ledger of its own.
 4. **Cheap ticks.** A polling phase should be one cheap look and `otto state tick`, not a full
    re-plan — and where a shell script can do the look, a [check script](check-scripts.md).
 5. **Outward actions behind authorization.** Push, merge and comment only with a recorded

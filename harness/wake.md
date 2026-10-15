@@ -117,6 +117,35 @@ a history of the run. The journal is the history.
 
 Write it as though for a competent stranger, because that is exactly who reads it.
 
+## The todo
+
+When the work comes in pieces (several targets, several deliverables, steps that span wakes),
+keep `artifacts/todo.md`: the plan of record, one line per piece, marked as you go. otto shows it
+to the person as the run's progress, so it must be true whenever you stop. Skip it for a run that
+only watches or polls, where there is nothing to tick off.
+
+```markdown
+# <what this is>
+## <a group, when the items fall into groups>
+- [x] Survey the repos
+- [~] Bump acme-api
+- [ ] Bump acme-web
+- [-] Bump acme-cli — skipped: already at 2.31.0
+- [!] Bump acme-jobs — failed: 3 tests in test_client.py
+  Indented lines under an item are its detail: a sha, a PR, a path.
+```
+
+- `[ ]` to do, `[~]` doing, `[x]` done, `[-]` skipped, `[!]` failed. Skipped and failed always
+  say why.
+- One item per line at the left margin, never nested. Write it with your own file tools: it is an
+  artifact, not run state.
+- **Never delete an item to make the list look finished.** When the plan changes, mark what you
+  drop `[-]` with why, and add what is new.
+- The handoff points into the todo ("the first `[ ]` under Publish") rather than copying it. If
+  the wrapped instructions keep a ledger of their own, that is the list; don't keep a second one.
+- `set-status done` names any item still `[ ]` or `[~]`. Each one either happened (mark it `[x]`)
+  or didn't (mark it `[-]` and say why). Left open, it reads as work that silently never happened.
+
 ## When the instructions assume a live session
 
 Most skills and runbooks were written for one continuous sitting and never say so. When what

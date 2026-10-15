@@ -20,6 +20,7 @@ mod poke;
 mod server;
 mod spawner;
 mod state;
+mod todo;
 mod wake;
 
 use cli::{AgentCommand, Cli, Command, ConfigCommand, ServiceCommand, StateCommand};

@@ -568,7 +568,7 @@ pub struct SetStatusArgs {
 
 pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
     let id = args.id.clone();
-    transaction(&id, |path, state| {
+    let left_open = transaction(&id, |path, state| {
         let previous = status_str(state.status).to_string();
         let mut because = None;
         if args.status == Status::Blocked {
@@ -581,6 +581,12 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
         if args.status.is_terminal() {
             state.next_wake_at = None;
         }
+        // `done` with todo items still open is allowed — nothing here can know whether they
+        // happened — but journaled, and said back to the wake while it can still account for them.
+        let left_open = match args.status {
+            Status::Done => crate::todo::read(path).map(|t| t.open_items()).unwrap_or_default(),
+            _ => Vec::new(),
+        };
         crate::event::record(
             path,
             &Event::StatusChanged {
@@ -588,9 +594,23 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
                 to: status_str(args.status).to_string(),
                 reason: args.reason.clone(),
                 because,
+                left_open: left_open.clone(),
             },
-        )
-    })
+        )?;
+        Ok(left_open)
+    })?;
+    if !left_open.is_empty() {
+        let items: Vec<String> = left_open.iter().map(|item| format!("  - {item}")).collect();
+        eprintln!(
+            "otto: done, with {} item(s) in {} still open:\n{}\n\
+             Each one either happened (mark it [x]) or didn't (mark it [-] and say why). Left open, it \
+             reads to a person as work that silently never happened.",
+            left_open.len(),
+            crate::todo::TODO_FILE,
+            items.join("\n")
+        );
+    }
+    Ok(())
 }
 
 #[derive(clap::Args, Debug)]
@@ -1070,6 +1090,27 @@ mod tests {
         assert!(err.to_string().contains("--budget-usd"));
         assert!(crate::paths::all_run_ids().is_empty(), "a refused run must leave no directory");
         assert!(std::fs::read_dir(crate::paths::runs_dir()).map(|d| d.count() == 0).unwrap_or(true), "not even an empty one");
+    }
+
+    /// `done` is never refused for an open todo item — only journaled with the items, so the
+    /// record says what the run claimed to finish without.
+    #[test]
+    fn done_with_todo_items_open_is_journaled_with_them() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-todo", "a goal").unwrap();
+        let dir = crate::paths::run_dir("s-todo").unwrap();
+        let journal = || std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+        std::fs::write(dir.join(crate::todo::TODO_FILE), "- [x] land\n- [ ] cleanup\n- [-] babysit — no PR host\n").unwrap();
+
+        super::set_status(super::SetStatusArgs { id: "s-todo".into(), status: Status::Running, reason: None, because: None })
+            .unwrap();
+        assert!(!journal().contains("leftOpen"), "only `done` claims the work is finished");
+
+        super::set_status(super::SetStatusArgs { id: "s-todo".into(), status: Status::Done, reason: None, because: None })
+            .unwrap();
+        assert_eq!(super::read_run("s-todo").unwrap().status, Status::Done);
+        assert!(journal().contains(r#""leftOpen":["cleanup"]"#), "got: {}", journal());
     }
 
     /// `set-status --status blocked` from a wake carries a cause, said or inferred, and the

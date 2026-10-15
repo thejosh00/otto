@@ -273,6 +273,35 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
   .top { gap: 12px; }
 }
 
+/* a todo's progress: in the runs list under the phase, and atop the run page's todo */
+.progress { margin-top: 6px; max-width: 160px; }
+.card > .progress { max-width: 320px; margin-top: 0; }
+.progress .bar { display: flex; gap: 1px; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line); }
+.progress .bar span { flex-basis: 0; }
+.progress .bar .done { background: var(--ok); }
+.progress .bar .failed { background: var(--bad); }
+.progress .bar .skipped { background: var(--ink-3); }
+.progress .bar .doing { background: var(--accent); }
+.progress .bar .open { background: transparent; }
+.progress small { display: block; margin-top: 3px; color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.progress small .failed { color: var(--bad); }
+.progress small .left-open { color: var(--warn); font-weight: 600; }
+
+/* a run's todo */
+.todo { margin-top: 12px; max-height: 60vh; overflow: auto; }
+.todo-title { font-weight: 600; margin: 4px 0 8px; }
+.todo-group { font-size: 12px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.05em; margin: 14px 0 6px; }
+.todo-text { margin: 6px 0; }
+.todo-item { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 3px 0; line-height: 1.45; overflow-wrap: anywhere; }
+.todo-item .mark { text-align: center; color: var(--ink-3); }
+.todo-item.done, .todo-item.skipped { color: var(--ink-2); }
+.todo-item.done .mark { color: var(--ok); }
+.todo-item.doing .mark { color: var(--accent); }
+.todo-item.failed .mark { color: var(--bad); }
+.todo-item .detail { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.left-open .todo-item.open .mark, .left-open .todo-item.doing .mark { color: var(--warn); }
+.left-open .todo-item.open, .left-open .todo-item.doing { font-weight: 600; }
+
 /* run detail */
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
 .facts dt { color: var(--ink-3); font-size: 13px; }

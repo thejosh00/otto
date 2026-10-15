@@ -682,6 +682,25 @@ per target, per cycle — goes in an append-only artifact, read at the top of ev
 **The ledger is also the position marker.** A crash at target 12 of 20 resumes at 12 because the
 statuses are on disk, not because anything remembered.
 
+**When the ledger is a list of things to finish, it is the todo** (`artifacts/todo.md`, a markdown
+checklist; concepts.md has the format). Every workflow had invented its own ledger shape, so nothing
+but the wake could read one, and a person coming back after three days had the handoff and the
+journal and no idea how far along the run was. One shape lets otto show progress for any run that
+keeps one. Choices worth keeping:
+
+- **The wake writes it; otto only reads it.** It is an artifact, so the same single-writer rule
+  as `run.json` holds from the other side: a person steers it with a note, never by editing a file
+  a wake may be halfway through.
+- **Markdown, not JSON.** Models write task lists reliably, and a person reads it unrendered in a
+  terminal. The same bet as gate `## Options` (§7).
+- **Five marks, not two.** `[-]` skipped and `[!]` failed, each with why, make an item *accounted
+  for*. That is what lets `done` with an item still `[ ]` mean something: §19.1's skipped
+  `cleanup` was exactly an item nobody accounted for.
+- **Flagged, not refused.** `set-status done` with open items succeeds, journals them under
+  `leftOpen`, and tells the wake while it can still fix them; `otto show` and the page flag the
+  run. Refusing would put completeness in the contract (§5.2), and otto cannot know whether an
+  item happened, only that nothing says so.
+
 ### 11.5 Perpetual runs change four habits
 
 - **`done` never arrives.** Retirement is `status: stopped` — healthy, just no longer wanted.

@@ -348,6 +348,10 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     }
     println!("  wraps     {} {}", detail.wraps_kind, state.wraps.reference.as_deref().unwrap_or(""));
     println!("  phase     {}", state.phase);
+    if let Some(todo) = &detail.todo {
+        let c = &todo.counts;
+        println!("  todo      {}/{} — {} ({})", c.total - c.left(), c.total, c.summary(), crate::todo::TODO_FILE);
+    }
     if let Some(wake) = &state.wake {
         println!(
             "  wake      {} — {}{}",
@@ -397,6 +401,12 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     }
     if let Some(explanation) = &detail.blocked_explanation {
         println!("\n{explanation}");
+    }
+    if let Some(todo) = detail.todo.as_ref().filter(|_| detail.todo_left_open) {
+        println!("\nmarked done with these still open in its todo — nothing says whether they happened:");
+        for item in todo.open_items() {
+            println!("  - {item}");
+        }
     }
     if !detail.notes.is_empty() {
         println!();

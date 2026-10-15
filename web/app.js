@@ -113,6 +113,20 @@ function pill(status, live = false) {
   return h("span.pill." + statusClass(status) + (live ? ".live" : ""), status.replace("_", " "));
 }
 
+// A todo's counts (`todo::Counts`) as a bar in the marks' proportions — what's finished leads,
+// what's left trails — over "accounted for / total". `leftOpen` is a done run that wasn't.
+function progressBar(t, leftOpen) {
+  const left = t.open + t.doing;
+  const segments = [["done", t.done], ["failed", t.failed], ["skipped", t.skipped], ["doing", t.doing], ["open", t.open]];
+  const said = [[t.done, "done"], [t.doing, "doing"], [t.open, "to do"], [t.skipped, "skipped"], [t.failed, "failed"]]
+    .filter(([n]) => n).map(([n, what]) => `${n} ${what}`).join(" · ");
+  return h("div.progress", { title: said },
+    h("div.bar", segments.filter(([, n]) => n).map(([mark, n]) => h(`span.${mark}`, { style: `flex-grow:${n}` }))),
+    h("small", `${t.total - left}/${t.total}`,
+      t.failed ? h("span.failed", ` · ${t.failed} failed`) : null,
+      leftOpen ? h("span.left-open", ` · ${left} left open`) : null));
+}
+
 // Timers and streams belong to one view; leaving it closes them.
 let cleanups = [];
 function onLeave(fn) { cleanups.push(fn); }
@@ -306,7 +320,7 @@ function runsView() {
             h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
             h("small", /^\d+$/.test(r.id) ? `#${r.id}` : r.id)),
           h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
-          h("td", { dataset: { label: "phase" } }, r.phase),
+          h("td", { dataset: { label: "phase" } }, r.phase, r.todo ? progressBar(r.todo, r.todoLeftOpen) : null),
           h("td", { dataset: { label: "waiting on" } }, r.blocking),
           h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
             r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
@@ -333,6 +347,7 @@ function runView(id) {
   const head = h("div");
   const facts = h("div");
   const gateBox = h("div");
+  const todoBox = h("div");
   const notesBox = h("div");
   const actions = h("div");
   const panel = h("div");
@@ -341,7 +356,7 @@ function runView(id) {
 
   view.replaceChildren(
     h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, facts, gateBox, notesBox, actions,
+    head, facts, todoBox, gateBox, notesBox, actions,
     h("div.tabs", { role: "tablist" },
       tabButton("logs", "Logs"),
       tabButton("live", "Live wake")),
@@ -371,6 +386,7 @@ function runView(id) {
     renderHead(d);
     renderFacts(d);
     renderGate(d);
+    renderTodo(d);
     renderNotes(d);
     renderActions(d);
   }
@@ -517,6 +533,36 @@ function runView(id) {
               if (await sendAnswer(d.state.id, { text: text.value, noWake: noWake.checked }, e.currentTarget)) after();
             },
           }, "Send answer"))),
+    );
+  }
+
+  // The run's checklist, as the wake last wrote it (`todo::Todo`). Read-only: a person steers it
+  // with a note, since the wake is its only writer.
+  const marks = { open: ["○", "to do"], doing: ["◐", "doing"], done: ["✓", "done"], skipped: ["–", "skipped"], failed: ["✕", "failed"] };
+  let shownTodo = null;
+
+  function renderTodo(d) {
+    const key = JSON.stringify([d.todo, d.todoLeftOpen]);
+    if (key === shownTodo) return;
+    shownTodo = key;
+    const t = d.todo;
+    if (!t) { todoBox.replaceChildren(); return; }
+    const left = t.counts.open + t.counts.doing;
+    todoBox.replaceChildren(
+      h("h2", "Todo"),
+      d.todoLeftOpen
+        ? h("div.banner.warn", `Marked done with ${left} item(s) still open, and nothing says whether they happened. They're highlighted below.`)
+        : "",
+      h(d.todoLeftOpen ? "div.card.left-open" : "div.card", { style: "margin-top:10px" },
+        progressBar(t.counts, d.todoLeftOpen),
+        h("div.todo", t.lines.map((line) => {
+          if (line.kind === "heading") return h(line.level === 1 ? "div.todo-title" : "div.todo-group", line.text);
+          if (line.kind === "text") return h("p.muted.todo-text", line.text);
+          const [glyph, name] = marks[line.mark];
+          return h(`div.todo-item.${line.mark}`,
+            h("span.mark", { title: name, "aria-label": name }, glyph),
+            h("div", line.text, line.detail.length ? h("div.detail", line.detail.join("\n")) : null));
+        }))),
     );
   }
 

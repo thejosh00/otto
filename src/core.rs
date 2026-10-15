@@ -191,6 +191,15 @@ pub fn next_wake(state: &RunState, wake_running: bool) -> String {
     }
 }
 
+/// A run that says it is `done` while its todo still has items to do or under way: work it
+/// declared and never accounted for — the gap DESIGN.md §19.1 found, when `dev-flow` went
+/// `land → done` and its cleanup never happened. Not a failure, and nothing refuses it; the list and
+/// the page say so, so a person can tell. Only `done` claims the work is finished: a stopped or
+/// failed run is expected to leave items open.
+pub fn todo_left_open(state: &RunState, todo: Option<&crate::todo::Counts>) -> bool {
+    state.status == Status::Done && todo.is_some_and(|t| t.left() > 0)
+}
+
 /// The status as a person should read it. `blocked` on its own sends them to the logs; the
 /// cause says whether that is even the right place to look.
 pub fn status_label(state: &RunState) -> String {
@@ -232,6 +241,10 @@ pub struct LsRow {
     /// Where the run stands, in the last wake's words (`where_this_is`). The web list shows it
     /// under each run; `otto ls` stays one line per run.
     pub where_this_is: Option<String>,
+    /// How far along its todo is, when it keeps one (`crate::todo`).
+    pub todo: Option<crate::todo::Counts>,
+    /// See `todo_left_open`.
+    pub todo_left_open: bool,
     pub wakes: String,
     /// `1h`, `30m`; `—` for a finished run, which will never wake again.
     pub period: String,
@@ -285,6 +298,8 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         phase: "?".to_string(),
                         blocking: "a person needs to look".to_string(),
                         where_this_is: None,
+                        todo: None,
+                        todo_left_open: false,
                         wakes: "?".to_string(),
                         period: "?".to_string(),
                         next_wake_at: None,
@@ -320,7 +335,10 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         let spent = state.budget.spent_wakes;
         let limit = state.budget.wakes;
         let wakes = if limit > 0 { format!("{spent}/{limit}") } else { spent.to_string() };
+        let todo = dir.as_deref().and_then(crate::todo::read).map(|t| t.counts);
         rows.push(LsRow {
+            todo_left_open: todo_left_open(&state, todo.as_ref()),
+            todo,
             id: state.id.clone(),
             short: short_id_among(&state.id, &all_ids),
             name: state.display_name(),
@@ -418,6 +436,10 @@ pub struct RunDetail {
     pub gate: Option<GateView>,
     /// Shown when no gate is open: what the last wake left for the next one.
     pub handoff: Option<String>,
+    /// The run's checklist, when it keeps one (`crate::todo`).
+    pub todo: Option<crate::todo::Todo>,
+    /// See `todo_left_open`.
+    pub todo_left_open: bool,
     /// Standing notes, and one-off notes not yet delivered.
     pub notes: Vec<NoteView>,
     /// `None` means every wake is a full model session — worth saying, since a check is the
@@ -486,7 +508,10 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let notes = note_views(&dir, &state);
     let check = check_view(&dir, &state);
     let wake_cost = wake_cost(&dir);
+    let todo = crate::todo::read(&dir);
     Ok(RunDetail {
+        todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
+        todo,
         workdir: workdir_view(&state),
         usage: run_usage(&dir),
         short,
@@ -1257,6 +1282,7 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
                 to: crate::state::commands::status_str(state.status).to_string(),
                 reason: Some(reason.clone()),
                 because: None,
+                left_open: vec![],
             },
         )?;
         Ok(state.status)
@@ -2083,6 +2109,38 @@ mod tests {
         assert!(summary("2026-09-20-fresh").unwrap().contains("No wake has run yet."));
         let json = serde_json::to_value(&view).unwrap();
         assert!(json["rows"][0].get("whereThisIs").is_some(), "the web page reads it in camelCase");
+    }
+
+    #[test]
+    fn the_list_and_the_detail_carry_the_todo_and_flag_one_left_open_at_done() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-todo", "a goal").unwrap();
+        test_init("2026-09-20-none", "a goal").unwrap();
+        let dir = crate::paths::run_dir("2026-09-20-todo").unwrap();
+        std::fs::write(dir.join(crate::todo::TODO_FILE), "- [x] land\n- [ ] cleanup\n").unwrap();
+        let row = |id: &str| list_runs(true).unwrap().rows.into_iter().find(|r| r.id == id).unwrap();
+
+        assert!(row("2026-09-20-none").todo.is_none());
+        let counts = row("2026-09-20-todo").todo.expect("it keeps one");
+        assert_eq!((counts.total, counts.done, counts.open), (2, 1, 1));
+        assert!(!row("2026-09-20-todo").todo_left_open, "open items are the normal state of a live run");
+
+        crate::state::transaction("2026-09-20-todo", |_p, state| {
+            state.status = Status::Done;
+            Ok(())
+        })
+        .unwrap();
+        assert!(row("2026-09-20-todo").todo_left_open);
+        let detail = run_detail(Some("todo")).unwrap();
+        assert!(detail.todo_left_open);
+        assert_eq!(detail.todo.unwrap().open_items(), vec!["cleanup"]);
+
+        crate::state::transaction("2026-09-20-todo", |_p, state| {
+            state.status = Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!row("2026-09-20-todo").todo_left_open, "a person retired it; nothing was claimed");
     }
 
     #[test]

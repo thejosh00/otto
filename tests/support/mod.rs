@@ -49,6 +49,16 @@ pub fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+/// Put the otto under test first on `PATH`. A wake's own `otto state` calls go to whichever otto
+/// its shell finds, and that is otherwise the installed one — an older build that may not have
+/// the change being tested. Wakes inherit `PATH` (`detach` hands it to the tmux session), so this
+/// reaches them, unless the shell a wake runs in puts another otto first.
+pub fn use_this_build_first_on_path() {
+    let dir = otto_bin().parent().expect("the binary has a directory").to_path_buf();
+    let path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{path}", dir.display()));
+}
+
 /// otto (and `claude`) exist on PATH — checked first, so a missing prerequisite reads as a
 /// clear message rather than a wall of unrelated timeouts.
 pub fn require_launcher(checks: &mut Checks) {
@@ -319,12 +329,15 @@ pub fn await_gate(run: &Run, slug: &str, timeout: Duration) -> bool {
     await_field(run, "gate.slug", slug, timeout)
 }
 
-/// Wait for a wake to stop holding the run, so a poll does not race a wake mid-write.
+/// Wait for a wake to stop holding the run, so a poll does not race a wake mid-write. A running
+/// wake shows in `otto ls` as `working (wake N)`, or — once it has opened a gate, which is where
+/// this is most often called — as `(wake N still running)`, and both have to clear. `--all`,
+/// because a wake that has just set `done` is still running, and plain `ls` hides finished runs.
 pub fn await_idle(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        let out = otto(&["ls"]);
-        if !stdout(&out).contains("working (wake") {
+        let listed = stdout(&otto(&["ls", "--all"]));
+        if !listed.contains("working (wake") && !listed.contains("still running)") {
             return true;
         }
         if Instant::now() >= deadline {

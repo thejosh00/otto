@@ -50,6 +50,9 @@ pub enum Event {
         /// Only when `to` is `blocked`: the `BlockedCause` label, so the journal says why.
         #[serde(skip_serializing_if = "Option::is_none")]
         because: Option<String>,
+        /// Only when `to` is `done`: the todo items still open at that moment (`crate::todo`).
+        #[serde(rename = "leftOpen", default, skip_serializing_if = "Vec::is_empty")]
+        left_open: Vec<String>,
     },
     FactsRecorded {
         facts: Map<String, Value>,
@@ -271,8 +274,10 @@ mod tests {
             to: "done".into(),
             reason: None,
             because: None,
+            left_open: vec![],
         })
         .unwrap();
         assert!(value.get("reason").is_none(), "a None field must not appear, not appear as null");
+        assert!(value.get("leftOpen").is_none(), "nor an empty list");
     }
 }

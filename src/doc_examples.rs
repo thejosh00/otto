@@ -207,7 +207,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
     let events = vec![
         RunCreated { wraps: s(), reference: some(), goal: s(), done_condition: some(), perpetual: false, phase: s(), target: some(), launcher: s() },
         PhaseChanged { from: s(), to: s(), status: s(), note: some() },
-        StatusChanged { from: s(), to: s(), reason: some(), because: some() },
+        StatusChanged { from: s(), to: s(), reason: some(), because: some(), left_open: vec![s()] },
         FactsRecorded { facts: serde_json::Map::new() },
         GateOpened { gate: s(), slug: s(), phase: s(), expires_at: Some(at) },
         GateClosed { gate: s(), slug: s(), asked_at: at, answered_at: at, answer: s() },

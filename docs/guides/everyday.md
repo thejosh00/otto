@@ -135,9 +135,10 @@ otto service start         # or keep it running from login — see running-as-a-
 
 Everything above, in a browser:
 
-- The **runs list**: each run with the last wake's *where this is* under it, and a *needs you*
-  section whose option buttons answer a gate in one click.
-- A **run page**: its state, handoff, open question and token use; answering in your own words; notes;
+- The **runs list**: each run with the last wake's *where this is* under it and, when it keeps a
+  [todo](../concepts.md#the-todo), a progress bar; and a *needs you* section whose option buttons
+  answer a gate in one click.
+- A **run page**: its state, handoff, todo, open question and token use; answering in your own words; notes;
   wake, stop, resume and change-period buttons; the check script; the journal with filters and
   live follow; and a live feed of what the running wake is saying and doing.
 - A **new run** form that mirrors `otto run`'s flags, with a dry run.

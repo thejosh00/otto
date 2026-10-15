@@ -17,9 +17,9 @@ workflow has to answer them the same way.
    repo *alone*, serially, while the rest wait. Thirty simultaneous questions would not be a review
    anyway.
 2. **`facts` is a small flat dict, and must stay one.** Per-target state does not go there — it
-   goes in `artifacts/targets.md`, one row per repo, rewritten as each finishes. `facts` holds only
-   the scalars: which dependency, which version, how many done. A run.json that grows with the work
-   stops being cheap to read on every wake, which is what rehydration depends on.
+   goes in `artifacts/todo.md`, one item per repo, marked as each finishes. `facts` holds only
+   the scalars: which dependency, which version. A run.json that grows with the work stops being
+   cheap to read on every wake, which is what rehydration depends on.
 3. **Authorizations are per action *and per item*.** `authorize --action push --item <repo>`:
    without `--item`, approving the second repo's head silently voids the first, and the run could
    push code nobody cleared. One key per repo, each bound to that repo's commit.
@@ -32,30 +32,45 @@ workflow has to answer them the same way.
 | `targetVersion` | `init` or `survey` | The version to move to. `survey` resolves "latest" to a number and records it, so every repo gets the *same* version even if a new one ships mid-run |
 | `candidates` | `survey` | How many repos were considered |
 | `targets` | `survey` | How many are actually affected, after the confirm gate |
-| `done`, `failed`, `skipped` | `upgrade` | Running tallies. The detail is in the ledger |
-| `published` | `publish` | How many pushed so far |
+
+No running tallies: how many are done, failed, skipped or published is the todo's own count, which
+otto shows (`otto show`, the web page). A count kept in two places is soon two different counts.
 
 **Policy**: `askBeforePush: true`, `autoMergeWhenGreen: false`, `maxAttemptsPerTarget: 1` (a
 dependency bump that fails its tests is a report, not a puzzle to solve), `stopOnFirstFailure:
 false`.
 
-## The ledger
+## The ledger is the todo
 
-`artifacts/targets.md` is the run's memory and its product. One row per repo, and the wake
-reads it at the top of every wake — never a remembered list:
+`artifacts/todo.md` is the run's memory and its product, and the progress otto shows a person. A
+section per phase that has per-repo work, and the wake reads it at the top of every wake — never a
+remembered list:
 
+```markdown
+# requests → 2.32.3
+
+## Upgrade
+- [x] acme-web — 2.28.1, green at a1b2c3d
+- [!] acme-api — 2.28.1, red: 3 failures in test_client.py, see artifacts/targets/acme-api/
+- [-] acme-cli — skipped: already at 2.31.0
+- [x] acme-jobs — 2.28.1, green at e4f5a6b
+
+## Publish
+- [x] acme-jobs — PR #91, pushed e4f5a6b
+- [-] acme-web — declined at batch-review (gate 002)
+
+## Report
+- [ ] artifacts/summary.md written
+- [ ] every lock released; worktrees reaped, or listed in the summary
 ```
-| repo | current | status | head | notes |
-|---|---|---|---|---|
-| acme-web  | 2.28.1 | green     | a1b2c3d | tests pass |
-| acme-api  | 2.28.1 | red       | —       | 3 failures in test_client.py — see cycles/acme-api/ |
-| acme-cli  | 2.31.0 | skipped   | —       | already at or above target |
-| acme-jobs | 2.28.1 | published | e4f5a6b | PR #91 |
-```
 
-`status` is the state machine, on disk: `pending → green|red|skipped → published|declined`. A repo
-in a terminal state is never touched again, which is what makes the phase re-enterable after a
-crash halfway down a list of twenty.
+The marks are the state machine, on disk. Under **Upgrade**, `[ ]` pending, `[~]` the repo in
+hand, `[x]` green, `[!]` red, `[-]` skipped. **Publish** is written at the batch review: an item per
+green repo, `[ ]` if approved and `[-]` if declined, then `[x]` once pushed. **Report** is written
+at `survey`, so the cleanup is on the list from the start and a run that skips it says so. An
+item's text carries what later phases need: the version it started from, the head that went green,
+the PR. A marked repo is never touched again in that phase, which is what makes the phase
+re-enterable after a crash halfway down a list of twenty.
 
 ## Phase 0 — `survey`
 
@@ -63,11 +78,11 @@ crash halfway down a list of twenty.
 |---|---|
 | **goal** | Know exactly which repos are affected, and agree the list before touching anything |
 | **preconditions** | `facts.dependency` set; a repo root to search (default: every git repo one level under the workspace) |
-| **actions** | Resolve `targetVersion` to a concrete number. Delegate the search to **one** subagent: for each repo, the manifest that pins this dependency and the pinned version. Write the ledger with `pending`/`skipped` |
-| **durableOutput** | `artifacts/targets.md`, `facts.candidates`, `facts.targetVersion` |
-| **exitCondition** | Every candidate repo has a row with a `current` version or a `skipped` reason |
+| **actions** | Resolve `targetVersion` to a concrete number. Delegate the search to **one** subagent: for each repo, the manifest that pins this dependency and the pinned version. Write the todo: an **Upgrade** item per candidate, `[ ]` or `[-]` with why, and the **Report** items |
+| **durableOutput** | `artifacts/todo.md`, `facts.candidates`, `facts.targetVersion` |
+| **exitCondition** | Every candidate repo has an Upgrade item: `[ ]` with its current version, or `[-]` with why |
 | **gate** | **ask-human** — confirm the list |
-| **idempotency** | If the ledger exists, adopt it; re-surveying would find the same repos and lose any statuses already recorded |
+| **idempotency** | If the todo exists, adopt it; re-surveying would find the same repos and lose any marks already recorded |
 
 **Read-only, and cheap.** One subagent greps manifests; it does not clone, lock, or build anything.
 A survey that takes twenty minutes for twenty repos is a survey doing too much.
@@ -75,7 +90,7 @@ A survey that takes twenty minutes for twenty repos is a survey doing too much.
 Gate question — slug `target-list`:
 
 > `<dependency>` → `<targetVersion>`. Found N repos pinning it, M already at or above it. The list
-> is in `artifacts/targets.md`. Nothing has been touched.
+> is in `artifacts/todo.md`. Nothing has been touched.
 >
 > - **Upgrade all N** *(default)*.
 > - **Subset** — name the repos to include, or the ones to drop.
@@ -90,18 +105,18 @@ run.
 | | |
 |---|---|
 | **goal** | Every target upgraded and tested, with the result recorded per repo |
-| **preconditions** | The `target-list` gate is closed and approved; the ledger has `pending` rows |
-| **actions** | For each `pending` repo, **one at a time**: lock → worktree via `manage-pr` → edit the pin → run the tests → record `green`/`red` with the head sha → **unlock** → next |
-| **durableOutput** | The ledger, updated after **each** repo; `artifacts/targets/<repo>/{diff.txt,test-output.txt}` |
-| **exitCondition** | No row is `pending` |
+| **preconditions** | The `target-list` gate is closed and approved; the todo has `[ ]` Upgrade items |
+| **actions** | For each `[ ]` Upgrade item, **one at a time**: mark it `[~]` → lock → worktree via `manage-pr` → edit the pin → run the tests → mark it `[x]` with the head sha, or `[!]` with why → **unlock** → next |
+| **durableOutput** | The todo, updated after **each** repo; `artifacts/targets/<repo>/{diff.txt,test-output.txt}` |
+| **exitCondition** | No Upgrade item is `[ ]` or `[~]` |
 | **gate** | `continue` → `review` |
-| **idempotency** | The ledger is the position marker: a repo that is `green`, `red` or `skipped` is skipped on re-entry. A crash at repo 12 of 20 resumes at 12, not at 1 |
+| **idempotency** | The todo is the position marker: an Upgrade item marked `[x]`, `[!]` or `[-]` is skipped on re-entry, and a `[~]` one was interrupted — adopt its worktree and finish it. A crash at repo 12 of 20 resumes at 12, not at 1 |
 
 ```
+…mark this repo's Upgrade item [~] in artifacts/todo.md…
 otto state lock <id> --repo <repo>          # one repo at a time
 …manage-pr for the worktree; bump the pin; run the repo's own test command…
-otto state record-fact <id> done=<n>        # scalars only
-…rewrite artifacts/targets.md with this repo's row…
+…mark the item [x] with the head sha, or [!] with why…
 otto state unlock <id> --repo <repo>        # BEFORE the next repo, always
 ```
 
@@ -109,13 +124,13 @@ otto state unlock <id> --repo <repo>        # BEFORE the next repo, always
 through twenty repos blocks every other run in the workspace for the duration. The lock exists to
 protect a worktree in use, not to reserve a queue.
 
-**A failing test suite is a result, not a task.** Record `red` with the output path and move on —
+**A failing test suite is a result, not a task.** Mark it `[!]` with the output path and move on —
 `maxAttemptsPerTarget: 1`. Chasing a fix in repo 7 while nineteen others wait is how a batch job
 becomes a hostage. The `review` gate is where a human decides whether any red one is worth
 pursuing, usually as its own `dev-flow` run.
 
 **Environmental failures are not results.** A missing `.env`, a denied host, an unbuildable venv:
-retry per the skill's classification, and if it stays broken record `red` with the reason *marked
+retry per the skill's classification, and if it stays broken mark it `[!]` with the reason *marked
 environmental*, so the batch summary does not read like a code problem.
 
 ## Phase 2 — `review`
@@ -123,10 +138,10 @@ environmental*, so the batch summary does not read like a code problem.
 | | |
 |---|---|
 | **goal** | One decision over the whole batch |
-| **preconditions** | No `pending` rows |
+| **preconditions** | No Upgrade item is `[ ]` or `[~]` |
 | **actions** | Summarise: how many green, red, skipped; the diff shape they share; the notable exceptions. Then ask once |
-| **durableOutput** | `artifacts/batch-report.md` |
-| **exitCondition** | Every green row is marked `approved` or `declined` in the ledger |
+| **durableOutput** | `artifacts/batch-report.md`; the todo's **Publish** section |
+| **exitCondition** | Every green repo has a Publish item: `[ ]` approved, or `[-]` declined, naming the gate |
 | **gate** | **ask-human** — the batch |
 | **idempotency** | If the report exists and the branch heads have not moved, re-open the gate rather than re-running the phase |
 
@@ -149,12 +164,12 @@ implicitly deciding not to fix.
 | | |
 |---|---|
 | **goal** | The approved repos pushed, each with its own PR and its own authorization |
-| **preconditions** | The `batch-review` gate is closed; approved rows have heads recorded |
-| **actions** | Per approved repo, **serially**: `authorize --item <repo> --head <that repo's sha>` → `check-authorized --item <repo>` → push → PR → record `published` with the PR number |
-| **durableOutput** | Ledger rows moved to `published`; `facts.published` |
-| **exitCondition** | No approved row is un-`published`, or the un-published ones carry a recorded reason |
+| **preconditions** | The `batch-review` gate is closed; each `[ ]` Publish item's repo has its head recorded under Upgrade |
+| **actions** | Per `[ ]` Publish item, **serially**: `authorize --item <repo> --head <that repo's sha>` → `check-authorized --item <repo>` → push → PR → mark it `[x]` with the PR number |
+| **durableOutput** | Publish items marked |
+| **exitCondition** | No Publish item is `[ ]`: each is `[x]`, or `[!]`/`[-]` with why it did not go out |
 | **gate** | `continue` → `report`. Each *repo* is gated by the batch answer, which is what authorizes it |
-| **idempotency** | `published` rows are skipped. If the remote already has this sha, adopt it; if a PR exists for the branch, adopt that PR — never a second |
+| **idempotency** | `[x]` Publish items are skipped. If the remote already has this sha, adopt it; if a PR exists for the branch, adopt that PR — never a second |
 
 ```
 for each approved repo:
@@ -171,7 +186,7 @@ later become.
 
 **Stage them.** Push in sequence and stop on the first *unexpected* failure (a rejected push, a
 protected branch) rather than plowing through twenty. Record what got out and what did not; a
-half-published batch is a normal state and the ledger describes it exactly.
+half-published batch is a normal state and the todo describes it exactly.
 
 ## Phase 4 — `report`
 
@@ -179,16 +194,17 @@ half-published batch is a normal state and the ledger describes it exactly.
 |---|---|
 | **goal** | Leave a batch anyone can act on, and let go of everything |
 | **preconditions** | `publish` is finished or was declined |
-| **actions** | Write the summary; release **every** lock (`unlock <id>` with no `--repo`); reap the worktrees `manage-pr` would reap and list the rest; `set-status done` |
+| **actions** | Write the summary; release **every** lock (`unlock <id>` with no `--repo`); reap the worktrees `manage-pr` would reap and list the rest; mark each **Report** item; `set-status done` |
 | **durableOutput** | `artifacts/summary.md` — per repo: version moved, test result, PR link or why not |
 | **exitCondition** | `status: done`, no locks held |
 | **gate** | — |
 | **idempotency** | Every step is a no-op when already done |
 
 **`done` does not mean "everything worked."** A run that upgraded 5, failed 2, and skipped 3 is a
-complete run — the ledger says what happened, and the status only says the run finished. There is no
+complete run — the todo says what happened, and the status only says the run finished. There is no
 `partial` status and there should not be: it would mean re-deriving from a summary field what the
-ledger already states precisely.
+todo already states precisely. What `done` does mean is that nothing is still `[ ]`: `[!]` and
+`[-]` are accounted for, and an item left open is the one thing otto flags on a finished run.
 
 **Babysitting N PRs is not this workflow's job.** Reviews arrive per repo, on their own schedules,
 and one hourly tick cannot sensibly chase twenty. Hand each PR that needs following to its own
@@ -198,9 +214,9 @@ and one hourly tick cannot sensibly chase twenty. Hand each PR that needs follow
 
 `journal.jsonl`: `run-created`, `phase-changed`(→survey), facts(candidates, targetVersion),
 `gate-opened`/`gate-closed`(target-list), `phase-changed`(→upgrade), then per repo a
-`lock-acquired` … `facts-recorded` … `lock-released` triple, `phase-changed`(→review),
+`lock-acquired` … `lock-released` pair, `phase-changed`(→review),
 `gate-opened`/`gate-closed`(batch-review), `phase-changed`(→publish), then **one `authorized` line
 per published repo**, `phase-changed`(→report), `status-changed`(→done).
 
 Two human gates for the whole batch. As many `authorized` lines as repos pushed, each naming a
-commit. The ledger is the thing to read afterwards.
+commit. The todo is the thing to read afterwards, and `otto show` counts it.

@@ -6,6 +6,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 
 - [Runs and wakes](#runs-and-wakes)
 - [The handoff](#the-handoff)
+- [The todo](#the-todo)
 - [The contract](#the-contract)
 - [Statuses](#statuses)
 - [When a run wakes: the period and timers](#when-a-run-wakes-the-period-and-timers)
@@ -57,6 +58,31 @@ reason a run survives a reboot, a crash or a week away.
 **rewrites** it (never appends) in fixed sections — where the run is, what was decided, what this
 wake did, what the next wake must do first, what it needs — capped at 8KB. Anything that has to
 accumulate goes in an artifact the handoff points to. `otto show` prints it.
+
+## The todo
+
+When a run's work comes in pieces — twenty repos to bump, four things to build, a cleanup that
+mustn't be forgotten — the wake keeps `artifacts/todo.md`: a markdown checklist, one line per
+piece, marked as it goes.
+
+```markdown
+## Upgrade
+- [x] acme-web — green at a1b2c3d
+- [~] acme-api
+- [ ] acme-jobs
+- [-] acme-cli — skipped: already at 2.31.0
+- [!] acme-old — failed: tests red, see artifacts/targets/acme-old/
+```
+
+`[ ]` to do, `[~]` doing, `[x]` done, `[-]` skipped and `[!]` failed, the last two saying why.
+otto reads it and never writes it: `otto show` has a `todo` line counting it, and the web page shows
+a progress bar in the runs list and the whole list on the run page. A run that keeps no todo — one
+that only watches, say — just shows none.
+
+A run marked `done` with items still `[ ]` or `[~]` is allowed, but never silent: `set-status`
+says so to the wake that did it, the `status-changed` line in the journal lists them, and `otto
+show` and the web page flag the run. A skipped or failed item is accounted for; only one left open
+is work nothing says happened.
 
 ## The contract
 
@@ -228,7 +254,7 @@ available for a polling run.
     journal.jsonl                every event, append-only — see reference/journal.md
     gates/NNN-<slug>.md          questions, and their answers verbatim
     notes/NNN.md                 notes, verbatim
-    artifacts/                   whatever the work produces: plans, ledgers, check.sh
+    artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   logs/poke.log, serve.log       the launchd jobs' output
 ```

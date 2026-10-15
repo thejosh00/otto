@@ -19,7 +19,7 @@ the budget events, and the wake failures.
 |---|---|---|
 | `run-created` | `wraps`, `ref`, `goal`, `doneCondition`, `perpetual`, `phase`, `target`, `launcher` | `otto run` created it |
 | `phase-changed` | `from`, `to`, `status`, `note` | A wake entered a new phase |
-| `status-changed` | `from`, `to`, `reason`, `because` | The status changed; `because` is the cause when it became `blocked` |
+| `status-changed` | `from`, `to`, `reason`, `because`, `leftOpen` | The status changed; `because` is the cause when it became `blocked`, and `leftOpen` the [todo](../concepts.md#the-todo) items still open when it became `done` |
 | `facts-recorded` | `facts` | A wake recorded facts it re-derived |
 | `renamed` | `from`, `to` | A person renamed the run (`otto rename`) |
 | `renumbered` | `from` | `otto renumber` gave a run from before numbering its number; `from` is its old id |
