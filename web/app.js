@@ -294,20 +294,29 @@ function runsView() {
         h("a.btn", { href: "#/new" }, "Start one")));
       return;
     }
+    const columns = ["Run", "Status", "Phase", "Waiting on", "Next wake", "Period", "Wakes"];
     table.replaceChildren(h("table.table",
-      h("thead", h("tr", ["Run", "Status", "Phase", "Waiting on", "Next wake", "Period", "Wakes"].map((t) => h("th", t)))),
-      h("tbody", rows.map((r) => h("tr", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
-        // The name leads — it's what a person recognises; the number underneath is what to type.
-        h("td.run",
-          h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
-          h("small", /^\d+$/.test(r.id) ? `#${r.id}` : r.id)),
-        h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
-        h("td", { dataset: { label: "phase" } }, r.phase),
-        h("td", { dataset: { label: "waiting on" } }, r.blocking),
-        h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
-          r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
-        h("td.mono", { dataset: { label: "period" } }, r.period),
-        h("td.mono", { dataset: { label: "wakes" } }, r.wakes)))),
+      h("thead", h("tr", columns.map((t) => h("th", t)))),
+      // A tbody per run, so the run's row and its where-this-is line under it are one thing to
+      // hover and click.
+      rows.map((r) => h("tbody", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
+        h(r.whereThisIs ? "tr.has-where" : "tr",
+          // The name leads — it's what a person recognises; the number underneath is what to type.
+          h("td.run",
+            h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
+            h("small", /^\d+$/.test(r.id) ? `#${r.id}` : r.id)),
+          h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
+          h("td", { dataset: { label: "phase" } }, r.phase),
+          h("td", { dataset: { label: "waiting on" } }, r.blocking),
+          h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
+            r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
+          h("td.mono", { dataset: { label: "period" } }, r.period),
+          h("td.mono", { dataset: { label: "wakes" } }, r.wakes)),
+        // The last wake's own account of where the run stands, clamped to two lines; the rest is
+        // on hover and on the run page.
+        r.whereThisIs
+          ? h("tr.where", h("td", { colSpan: columns.length, title: r.whereThisIs }, h("div", r.whereThisIs)))
+          : null)),
     ));
   }
 

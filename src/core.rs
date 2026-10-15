@@ -201,6 +201,25 @@ pub fn status_label(state: &RunState) -> String {
     }
 }
 
+/// The handoff's `## Where this is` section — the 2–4 lines a wake writes so that someone arriving
+/// cold is not lost — joined onto one line for a list that has room for a sentence or two, not a
+/// layout. The section runs to the next heading. `None` when it is missing or empty.
+pub fn where_this_is(handoff: &str) -> Option<String> {
+    // A markdown heading is `#`s then a space; `#123 merged` at the start of a line is not one.
+    fn heading(line: &str) -> Option<&str> {
+        let line = line.trim_start();
+        let rest = line.trim_start_matches('#');
+        (rest.len() < line.len() && (rest.is_empty() || rest.starts_with(' '))).then(|| rest.trim())
+    }
+    let mut lines = handoff.lines().skip_while(|line| {
+        !heading(line).is_some_and(|text| text.to_lowercase().starts_with("where this is"))
+    });
+    lines.next()?;
+    let body: Vec<&str> =
+        lines.take_while(|line| heading(line).is_none()).map(str::trim).filter(|line| !line.is_empty()).collect();
+    (!body.is_empty()).then(|| body.join(" "))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LsRow {
@@ -210,6 +229,9 @@ pub struct LsRow {
     pub status: String,
     pub phase: String,
     pub blocking: String,
+    /// Where the run stands, in the last wake's words (`where_this_is`). The web list shows it
+    /// under each run; `otto ls` stays one line per run.
+    pub where_this_is: Option<String>,
     pub wakes: String,
     /// `1h`, `30m`; `—` for a finished run, which will never wake again.
     pub period: String,
@@ -262,6 +284,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         status: "unreadable".to_string(),
                         phase: "?".to_string(),
                         blocking: "a person needs to look".to_string(),
+                        where_this_is: None,
                         wakes: "?".to_string(),
                         period: "?".to_string(),
                         next_wake_at: None,
@@ -277,9 +300,9 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             continue;
         }
         let running = liveness.probe(&state.id).is_busy();
+        let dir = crate::paths::run_dir(&state.id).ok();
         if let Some(gate) = &state.gate {
-            let dir = crate::paths::run_dir(&state.id).ok();
-            let question = dir.and_then(|d| crate::gate::read_question(&d, gate).ok()).unwrap_or_default();
+            let question = dir.as_ref().and_then(|d| crate::gate::read_question(d, gate).ok()).unwrap_or_default();
             needs_you.push(NeedsYou {
                 id: state.id.clone(),
                 short: short_id_among(&state.id, &all_ids),
@@ -304,6 +327,10 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             status: status_label(&state),
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
+            where_this_is: dir
+                .as_ref()
+                .and_then(|d| std::fs::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
+                .and_then(|handoff| where_this_is(&handoff)),
             wakes,
             period: if state.status.is_terminal() {
                 "—".to_string()
@@ -2029,6 +2056,33 @@ mod tests {
         assert_eq!(needs.id, "2026-09-20-gated");
         assert_eq!(needs.short, "gated");
         assert_eq!(needs.options, vec!["Revise".to_string(), "Approve".to_string()]);
+    }
+
+    #[test]
+    fn where_this_is_is_the_section_up_to_the_next_heading_on_one_line() {
+        let handoff = "# r · plan · wake 3\n\n## Goal\nShip it\n\n## Where this is\nPlan written,\n\
+                       waiting on review.\n\n#123 is the PR.\n## Decided\nNothing yet.\n";
+        assert_eq!(where_this_is(handoff).as_deref(), Some("Plan written, waiting on review. #123 is the PR."));
+        assert_eq!(where_this_is("## where this is — today\n  Rebasing.  \n").as_deref(), Some("Rebasing."));
+        assert_eq!(where_this_is("## Where this is\n\n## Decided\nx\n"), None, "an empty section is no summary");
+        assert_eq!(where_this_is("## Goal\nShip it\n"), None);
+        assert_eq!(where_this_is("##Where this is\nnot a heading\n"), None);
+    }
+
+    #[test]
+    fn the_list_carries_each_run_s_where_this_is() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-fresh", "a goal").unwrap();
+        test_init("2026-09-20-moved", "a goal").unwrap();
+        let dir = crate::paths::run_dir("2026-09-20-moved").unwrap();
+        std::fs::write(dir.join(crate::state::commands::HANDOFF_FILE), "## Where this is\nHalfway.\n## Needs\nnothing\n").unwrap();
+        let view = list_runs(false).unwrap();
+        let summary = |id: &str| view.rows.iter().find(|r| r.id == id).unwrap().where_this_is.clone();
+        assert_eq!(summary("2026-09-20-moved").as_deref(), Some("Halfway."));
+        // `init`'s own handoff has the section, so a run that has never woken still says something.
+        assert!(summary("2026-09-20-fresh").unwrap().contains("No wake has run yet."));
+        let json = serde_json::to_value(&view).unwrap();
+        assert!(json["rows"][0].get("whereThisIs").is_some(), "the web page reads it in camelCase");
     }
 
     #[test]

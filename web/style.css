@@ -250,19 +250,25 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 .table { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .table th, .table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .table th { font-size: 12px; color: var(--ink-3); font-weight: 600; background: var(--surface-2); }
-.table tr:last-child td { border-bottom: 0; }
-.table tbody tr { cursor: pointer; }
-.table tbody tr:hover td { background: var(--surface-2); }
+.table tbody:last-child tr:last-child td { border-bottom: 0; }
+.table tbody { cursor: pointer; }
+.table tbody:hover td { background: var(--surface-2); }
 .table .id { font-family: var(--mono); font-size: 13px; }
 .table .id small { display: block; color: var(--ink-3); font-size: 11px; }
 .table .run a { font-weight: 600; }
 .table .run small { display: block; color: var(--ink-3); font-family: var(--mono); font-size: 11px; }
+/* a run's where-this-is line, under its row and part of it */
+.table tr.has-where td { border-bottom: 0; padding-bottom: 4px; }
+.table tr.where td { padding-top: 0; color: var(--ink-2); font-size: 13px; line-height: 1.45; }
+.table tr.where div { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
   .table thead { display: none; }
   .table, .table tbody, .table tr, .table td { display: block; width: 100%; }
-  .table tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  .table tbody { border-bottom: 1px solid var(--line); padding: 8px 0; }
+  .table tbody:last-child { border-bottom: 0; }
   .table td { border: 0; padding: 3px 12px; }
+  .table tr.where td { padding-top: 6px; }
   .table td[data-label]::before { content: attr(data-label) " "; color: var(--ink-3); font-size: 12px; }
   .top { gap: 12px; }
 }
