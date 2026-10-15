@@ -222,6 +222,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         BudgetWarning { fraction_spent: 0.8, budget: crate::state::test_run_state("x").budget },
         WakeComplete { status: s() },
         WakeIncomplete { reason: s(), consecutive: 1 },
+        UsageLimited { limit: some(), resets_at: Some(at) },
         BudgetExhausted { reason: s() },
         LockAcquired { repo: s() },
         LockReleased { repo: s() },
@@ -247,7 +248,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | GateOpened { .. } | GateClosed { .. } | GateExpired { .. } | TimerArmed { .. }
             | Tick { .. } | NoopTick { .. } | WakeStarted { .. } | WakeSpent { .. }
             | UsageUnavailable { .. } | WakeReportedError { .. } | BudgetWarning { .. }
-            | WakeComplete { .. } | WakeIncomplete { .. } | BudgetExhausted { .. }
+            | WakeComplete { .. } | WakeIncomplete { .. } | UsageLimited { .. } | BudgetExhausted { .. }
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
             | NoteAdded { .. } | NotesDelivered { .. } | NoteDropped { .. } | CheckSet { .. }

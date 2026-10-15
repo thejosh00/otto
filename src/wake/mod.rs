@@ -74,6 +74,8 @@ pub struct WakeArgs {
 #[derive(Debug, Default, Clone)]
 pub struct WakeResult {
     pub usage: Option<transcript::Usage>,
+    /// Set when the wake ended on the account's usage limit — see `record_usage_limited`.
+    pub limit: Option<transcript::UsageLimit>,
 }
 
 impl WakeResult {
@@ -240,6 +242,8 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     // The child has exited, so its transcript is finished being written.
     let result = WakeResult {
         usage: transcript::usage_for(&session),
+        // A limit ends claude with a non-zero exit, so a clean one never needs the second read.
+        limit: if output.code != 0 { transcript::limit_for(&session) } else { None },
     };
 
     finish_wake(&id, &run_path, started_at, &output, &result)
@@ -399,11 +403,47 @@ fn finish_wake(
                 output.stderr.trim(),
             );
             let _ = crate::state::write_atomic(&dump, &body);
-            record_incomplete(id, why)?;
-            println!("wake incomplete — {why}\n  what it said: {}", dump.display());
+            match &result.limit {
+                Some(limit) => {
+                    let next = record_usage_limited(id, limit)?;
+                    println!("wake stopped by the usage limit — sleeping until {next}\n  what it said: {}", dump.display());
+                }
+                None => {
+                    record_incomplete(id, why)?;
+                    println!("wake incomplete — {why}\n  what it said: {}", dump.display());
+                }
+            }
             Ok(())
         }
     }
+}
+
+/// Record a wake the account's usage limit stopped, and sleep the run until the limit resets.
+///
+/// Not `record_incomplete`. Every wake until the reset fails the same way, a few seconds in, so
+/// the backoff's retries were five quick failures that blocked a run which only had to wait —
+/// observed on a live `dev-flow` run, blocked at 22:23 by a limit that lifted at 23:40. So the wake
+/// is not counted toward `maxIncompleteWakes`, and the run sleeps to a minute past the reset (for
+/// clock skew). With no reset time in the transcript, or one already gone, it sleeps an hour or five
+/// minutes and the next wake finds out. `limitedUntil` marks the sleep, so a check script does not
+/// stand in front of the resume — the wake was likely stopped mid-work — and the list says why.
+pub fn record_usage_limited(id: &str, limit: &transcript::UsageLimit) -> Result<Timestamp, OttoError> {
+    let next = match limit.resets_at {
+        Some(at) if !at.is_past() => Timestamp::at(at.dt() + time::Duration::minutes(1)),
+        Some(_) => Timestamp::in_minutes(5),
+        None => Timestamp::in_minutes(60),
+    };
+    transaction(id, |path, state| {
+        if let Some(wake) = state.wake.as_mut() {
+            wake.outcome = Some(WakeOutcome::Incomplete);
+        }
+        state.status = Status::Sleeping;
+        state.next_wake_at = Some(next);
+        state.limited_until = Some(next);
+        crate::event::record(path, &Event::UsageLimited { limit: limit.kind.clone(), resets_at: limit.resets_at })?;
+        crate::event::record(path, &Event::TimerArmed { next_wake_at: next, note: Some("usage limit".to_string()) })
+    })?;
+    Ok(next)
 }
 
 /// Record a wake that did not finish, and arrange for another attempt.
@@ -654,6 +694,103 @@ mod tests {
         assert_eq!(state.budget.spent_wakes, 1);
         let journal = std::fs::read_to_string(crate::paths::run_dir("w-strand").unwrap().join("journal.jsonl")).unwrap();
         assert!(journal.contains("\"inputTokens\":150"), "usage is accounted even when the contract fails");
+    }
+
+    /// What claude leaves when the account's usage limit stops a wake: one assistant turn of real
+    /// work, then the refusal, with the reset as epoch seconds.
+    fn leave_limit_transcript(id: &str, resets_at: Timestamp) {
+        let state = read_run(id).unwrap();
+        let session = state.wake.as_ref().and_then(|w| w.session.clone()).expect("session recorded before the spawn");
+        let dir = crate::paths::claude_projects_dir().join("-w-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            json!({"type": "assistant", "message": {"usage": {"input_tokens": 10, "output_tokens": 500}}}).to_string(),
+            json!({
+                "type": "assistant", "isApiErrorMessage": true, "error": "rate_limit", "apiError": "usage_limit_reached",
+                "apiErrorParams": {"rate_limit_info": {"resetsAt": resets_at.dt().unix_timestamp(), "rateLimitType": "five_hour"}},
+                "message": {"content": [{"type": "text", "text": "You've hit your session limit · resets 6:40pm"}]},
+            })
+            .to_string(),
+        ];
+        std::fs::write(dir.join(format!("{session}.jsonl")), lines.join("\n")).unwrap();
+    }
+
+    fn limited_exit() -> Output {
+        Output { code: 1, stdout: "You've hit your session limit · resets 6:40pm".into(), stderr: String::new(), timed_out: false }
+    }
+
+    /// The live `dev-flow` run that hit the five-hour limit spent its five retries in an hour and was
+    /// blocked eighty minutes before the limit lifted. A limit is waited out, not retried.
+    #[test]
+    fn a_wake_stopped_by_the_usage_limit_sleeps_until_it_resets_and_is_not_counted() {
+        let _h = TempHome::new();
+        test_init("w-limit", "a goal").unwrap();
+        age_handoff("w-limit");
+        let resets_at = Timestamp::in_minutes(90);
+        let mut exec = FakeExec::new();
+        exec.queue(limited_exit());
+        exec.on_exec(move || leave_limit_transcript("w-limit", resets_at));
+        run_wake(&args("w-limit"), &mut exec).unwrap();
+
+        let state = read_run("w-limit").unwrap();
+        assert_eq!(state.incomplete_wakes, 0, "the limit is not the run's failure");
+        assert_eq!(state.wake.as_ref().unwrap().outcome, Some(WakeOutcome::Incomplete), "but the wake did not finish");
+        assert_eq!(state.status, Status::Sleeping);
+        assert_eq!(state.next_wake_at.unwrap().dt(), resets_at.dt() + time::Duration::minutes(1), "a minute past the reset");
+        assert!(state.usage_limited());
+        assert_eq!(crate::core::blocking(&state, false), "usage limit");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-limit").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""event":"usage-limited","limit":"five_hour""#), "got: {journal}");
+        assert!(!journal.contains("wake-incomplete"));
+        assert!(journal.contains(r#""outputTokens":500"#), "the work it did before the limit is still accounted");
+    }
+
+    #[test]
+    fn hitting_the_limit_over_and_over_never_blocks_the_run() {
+        let _h = TempHome::new();
+        test_init("w-limits", "a goal").unwrap();
+        age_handoff("w-limits");
+        for _ in 0..6 {
+            let mut exec = FakeExec::new();
+            exec.queue(limited_exit());
+            exec.on_exec(|| leave_limit_transcript("w-limits", Timestamp::in_minutes(30)));
+            run_wake(&args("w-limits"), &mut exec).unwrap();
+        }
+        let state = read_run("w-limits").unwrap();
+        assert_eq!(state.status, Status::Sleeping, "six limited wakes, still waiting rather than blocked");
+        assert_eq!(state.incomplete_wakes, 0);
+        assert!(state.gate.is_none());
+    }
+
+    /// A reset already behind it means the limit has lifted, or is about to: look again soon.
+    #[test]
+    fn a_reset_already_past_is_retried_in_minutes() {
+        let _h = TempHome::new();
+        test_init("w-lifted", "a goal").unwrap();
+        age_handoff("w-lifted");
+        let mut exec = FakeExec::new();
+        exec.queue(limited_exit());
+        exec.on_exec(|| leave_limit_transcript("w-lifted", Timestamp::in_minutes(-2)));
+        run_wake(&args("w-lifted"), &mut exec).unwrap();
+        let state = read_run("w-lifted").unwrap();
+        assert!((4..=5).contains(&minutes_until(state.next_wake_at.unwrap())));
+        assert_eq!(state.incomplete_wakes, 0);
+    }
+
+    /// An ordinary failure is still an ordinary failure: a non-zero exit with no limit in the
+    /// transcript takes the backoff and counts.
+    #[test]
+    fn a_failed_wake_without_a_limit_still_counts() {
+        let _h = TempHome::new();
+        test_init("w-plain", "a goal").unwrap();
+        age_handoff("w-plain");
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 1, stdout: "boom".into(), stderr: String::new(), timed_out: false });
+        exec.on_exec(|| leave_transcript("w-plain", 1, 10, 5, 0));
+        run_wake(&args("w-plain"), &mut exec).unwrap();
+        let state = read_run("w-plain").unwrap();
+        assert_eq!(state.incomplete_wakes, 1);
+        assert!(!state.usage_limited());
     }
 
     /// `init` writes a handoff moments before a test's wake starts, which the freshness

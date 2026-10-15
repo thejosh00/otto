@@ -458,7 +458,9 @@ function runView(id) {
     if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
     const over = ["done", "failed", "stopped"].includes(s.status);
     if (!over) {
-      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})`
+      // `limitedUntil` matching the wake time is `RunState::usage_limited`.
+      const limited = s.limitedUntil && s.limitedUntil === s.nextWakeAt ? " — when the usage limit resets" : "";
+      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})${limited}`
         : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
       rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
     }

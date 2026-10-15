@@ -267,6 +267,57 @@ pub fn usage_for(session_id: &str) -> Option<Usage> {
     read_usage(&path).ok()
 }
 
+/// The account's usage limit, as a wake ran into it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageLimit {
+    /// When it lifts, or `None` when the transcript did not say.
+    pub resets_at: Option<crate::clock::Timestamp>,
+    /// Which of the account's limits, as claude names it: `five_hour`, `seven_day`, ….
+    pub kind: Option<String>,
+}
+
+/// Whether a session ended on the account's usage limit. claude writes the refusal into the
+/// transcript as an assistant entry flagged `isApiErrorMessage`, with `apiError:
+/// "usage_limit_reached"` and the limit's own `resetsAt` (epoch seconds) — structured, unlike the
+/// "You've hit your session limit · resets 6:40pm (America/Chicago)" it prints, whose time is in a
+/// zone otto has no database for. Only that `apiError` counts: a plain rate limit is the API
+/// asking for a moment, which the ordinary backoff already gives it.
+pub fn read_limit(path: &Path) -> Option<UsageLimit> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut found = None;
+    for line in std::io::BufReader::new(file).lines() {
+        let Ok(line) = line else { break };
+        // Cheap test first: a transcript is mostly tool output, and this is one entry in it.
+        if !line.contains("usage_limit_reached") {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        if value.get("isApiErrorMessage").and_then(serde_json::Value::as_bool) != Some(true)
+            || value.get("apiError").and_then(serde_json::Value::as_str) != Some("usage_limit_reached")
+        {
+            continue;
+        }
+        let info = value
+            .pointer("/apiErrorParams/rate_limit_info")
+            .or_else(|| value.get("quotaLimits"))
+            .cloned()
+            .unwrap_or_default();
+        let resets_at = info
+            .get("resetsAt")
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|secs| time::OffsetDateTime::from_unix_timestamp(secs).ok())
+            .map(crate::clock::Timestamp::at);
+        let kind = info.get("rateLimitType").and_then(serde_json::Value::as_str).map(str::to_string);
+        found = Some(UsageLimit { resets_at, kind });
+    }
+    found
+}
+
+/// The usage limit a session ended on, or `None` — including when there is no transcript to read.
+pub fn limit_for(session_id: &str) -> Option<UsageLimit> {
+    read_limit(&find_transcript(session_id)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +340,46 @@ mod tests {
             }},
         })
         .to_string()
+    }
+
+    /// The entry claude 2.1.301 wrote when a wake hit the five-hour limit, trimmed to the fields
+    /// that matter.
+    fn limit_entry(resets_at: i64) -> String {
+        serde_json::json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "error": "rate_limit",
+            "apiError": "usage_limit_reached",
+            "apiErrorStatus": 429,
+            "apiErrorParams": {"rate_limit_info": {"status": "rejected", "resetsAt": resets_at, "rateLimitType": "five_hour"}},
+            "message": {"content": [{"type": "text", "text": "You've hit your session limit · resets 6:40pm (America/Chicago)"}]},
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_session_that_hit_the_usage_limit_says_when_it_resets() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let id = "33333333-3333-4333-8333-333333333333";
+        write_transcript(id, "-Users-me-w", &[&assistant(10, 5, 0, 0), &limit_entry(1_792_107_600)]);
+        let limit = limit_for(id).expect("the limit is in the transcript");
+        assert_eq!(limit.resets_at.unwrap().to_string(), "2026-10-15T23:40:00Z");
+        assert_eq!(limit.kind.as_deref(), Some("five_hour"));
+        // The entry is still an assistant turn, and still counted as one.
+        assert_eq!(usage_for(id).unwrap().turns, 2);
+    }
+
+    #[test]
+    fn a_session_that_did_not_hit_the_limit_has_none() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let id = "44444444-4444-4444-8444-444444444444";
+        let rate_limited = serde_json::json!({
+            "type": "assistant", "isApiErrorMessage": true, "error": "rate_limit", "apiError": "rate_limited",
+        })
+        .to_string();
+        write_transcript(id, "-Users-me-w", &[&assistant(10, 5, 0, 0), &rate_limited]);
+        assert_eq!(limit_for(id), None, "a plain rate limit is the backoff's to handle");
+        assert_eq!(limit_for("55555555-5555-4555-8555-555555555555"), None, "no transcript, no limit");
     }
 
     #[test]

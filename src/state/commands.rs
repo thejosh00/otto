@@ -335,6 +335,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         gate: None,
         next_wake_at: None,
         armed_wake_at: None,
+        limited_until: None,
         wake: None,
         check: None,
         incomplete_wakes: 0,

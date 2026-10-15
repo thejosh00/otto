@@ -170,6 +170,7 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
     match state.status {
         // When is its own column (`next_wake`); this one only says what the run waits on.
         Status::Sleeping => match state.next_wake_at {
+            Some(_) if state.usage_limited() => "usage limit".to_string(),
             Some(_) => "timer".to_string(),
             None => "nothing — sleeping with no wake time".to_string(),
         },
@@ -1327,6 +1328,7 @@ pub const DECISION_EVENTS: &[&str] = &[
     "budget-warning",
     "budget-exhausted",
     "wake-incomplete",
+    "usage-limited",
     "wake-killed",
     "spawn-abandoned",
     "authorized",

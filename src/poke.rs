@@ -923,6 +923,14 @@ mod tests {
         assert_eq!(decide_with(&state, &idle()).action, Action::Spawn);
     }
 
+    /// Nor in front of the wake after a usage limit: that wake was most likely stopped mid-work.
+    #[test]
+    fn a_check_never_stands_in_front_of_the_wake_after_a_usage_limit() {
+        let mut state = due_with_check("r", a_check(24));
+        state.limited_until = state.next_wake_at;
+        assert_eq!(decide_with(&state, &idle()).action, Action::Spawn);
+    }
+
     /// A wake's own check was armed for exactly that sleep, so it does stand in front of it.
     #[test]
     fn a_wake_s_own_check_stands_in_front_of_the_timer_it_came_with() {

@@ -183,10 +183,11 @@ A crash mid-wake is the normal case, and recovery needs nobody:
 | The wake crashes, or is killed | Marked incomplete; retried after a backoff (5m, 10m, 20m… up to an hour) |
 | A wake hangs | Poke kills it at its deadline (`maxWakeMinutes`, 45 by default); incomplete path |
 | The machine reboots | launchd starts poke at login; any run that's due wakes |
+| A wake hits your usage limit | Not counted as a failure: the run sleeps until the limit resets (claude records when, in the session transcript), and `otto ls` says `usage limit` |
 | Five wakes in a row don't finish | `blocked`, with a gate saying what the wakes were doing |
 
-A retry is never held back by a check script — the work is half done whatever the world outside
-has been doing.
+A retry is never held back by a check script, and nor is the wake after a usage limit — the work is
+half done whatever the world outside has been doing.
 
 ## Budgets and policy
 

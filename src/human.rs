@@ -377,9 +377,12 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     }
     if !state.status.is_terminal() {
         match state.next_wake_at {
-            Some(at) if !detail.running => {
-                println!("  next wake {} ({})", crate::clock::due(at), crate::clock::local_clock(at))
-            }
+            Some(at) if !detail.running => println!(
+                "  next wake {} ({}){}",
+                crate::clock::due(at),
+                crate::clock::local_clock(at),
+                if state.usage_limited() { " — when the usage limit resets" } else { "" }
+            ),
             _ if detail.running => println!("  next wake set when this wake finishes"),
             _ if state.gate.is_some() => println!("  next wake after the gate is answered"),
             _ => println!("  next wake nothing scheduled"),

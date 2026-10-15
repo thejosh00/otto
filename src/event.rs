@@ -143,6 +143,14 @@ pub enum Event {
         reason: String,
         consecutive: u32,
     },
+    /// A wake ran into the account's usage limit. Not counted as incomplete: the run sleeps until
+    /// the limit resets instead (`wake::record_usage_limited`).
+    UsageLimited {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        limit: Option<String>,
+        #[serde(rename = "resetsAt", skip_serializing_if = "Option::is_none")]
+        resets_at: Option<Timestamp>,
+    },
     BudgetExhausted {
         reason: String,
     },

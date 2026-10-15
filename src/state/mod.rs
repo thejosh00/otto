@@ -499,6 +499,11 @@ pub struct RunState {
     /// that sets `nextWakeAt` leaves this behind, which is what makes it stop matching.
     #[serde(rename = "armedWakeAt", default, skip_serializing_if = "Option::is_none")]
     pub armed_wake_at: Option<crate::clock::Timestamp>,
+    /// The wake time otto set when a wake ran into the account's usage limit: the reset, plus a
+    /// minute. While it still equals `nextWakeAt` the run is waiting out the limit (`usage_limited`),
+    /// and as with `armedWakeAt`, anything else that sets `nextWakeAt` leaves it behind.
+    #[serde(rename = "limitedUntil", default, skip_serializing_if = "Option::is_none")]
+    pub limited_until: Option<crate::clock::Timestamp>,
     /// The current or most recent wake. Liveness is the wake lock, never this — the `pid` here
     /// is for reporting only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -743,6 +748,11 @@ impl RunState {
         self.armed_wake_at.is_some() && self.armed_wake_at == self.next_wake_at
     }
 
+    /// Whether the run is asleep until the account's usage limit resets (`limitedUntil`).
+    pub fn usage_limited(&self) -> bool {
+        self.limited_until.is_some() && self.limited_until == self.next_wake_at
+    }
+
     /// Whether poke runs the check script instead of waking the run when its wake comes due. A
     /// person's check stands in front of the period's wakes but not in front of a timer a wake
     /// armed for its own reason ("CI in ten minutes"), which that check knows nothing about; a
@@ -751,11 +761,13 @@ impl RunState {
     pub fn check_gates_wake(&self) -> bool {
         match &self.check {
             Some(check) => {
-                // Never in front of the retry of a wake that did not finish: that work is half
-                // done whatever the world outside has been doing.
+                // Never in front of the retry of a wake that did not finish — one that failed, or
+                // one the usage limit stopped: that work is half done whatever the world outside
+                // has been doing.
                 self.status == Status::Sleeping
                     && self.gate.is_none()
                     && self.incomplete_wakes == 0
+                    && !self.usage_limited()
                     && !(check.pinned && self.wake_armed_timer())
             }
             None => false,
@@ -913,6 +925,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         gate: None,
         next_wake_at: None,
         armed_wake_at: None,
+        limited_until: None,
         wake: None,
         check: None,
         incomplete_wakes: 0,

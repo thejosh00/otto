@@ -11,7 +11,7 @@ may contain names not listed here.
 
 `otto logs --decisions` keeps the turning points: `run-created`, `phase-changed`,
 `status-changed`, the gate events, the note events, `check-set`, `check-cleared`, `period-set`,
-the budget events, and the wake failures.
+the budget events, the wake failures, and `usage-limited`.
 
 ## The run
 
@@ -34,6 +34,7 @@ the budget events, and the wake failures.
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
 | `wake-complete` | `status` | The wake passed the [contract](../concepts.md#the-contract) |
 | `wake-incomplete` | `reason`, `consecutive` | It didn't; it will be retried after a backoff |
+| `usage-limited` | `limit`, `resetsAt` | It ran into the account's usage limit (`limit` is claude's name for which, e.g. `five_hour`). Not counted as incomplete: the run sleeps until `resetsAt` |
 | `wake-killed` | `reason` | Poke killed a wake past its deadline |
 | `spawn-abandoned` | `reason` | Poke gave up trying to start a wake that never started (said once) |
 
