@@ -320,6 +320,7 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 .left-open .todo-item.open, .left-open .todo-item.doing { font-weight: 600; }
 
 /* a run's page: what a person wants first, the rest a click away */
+.run-id { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
 .goal { color: var(--ink-2); margin: 6px 0 0; line-height: 1.45; }
 .summary { margin-top: 16px; }
 .summary .headline { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 0; }

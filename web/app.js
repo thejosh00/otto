@@ -417,10 +417,12 @@ function runView(id) {
     if (head.dataset.editing) return; // a rename is being typed; a refresh must not eat it
     head.replaceChildren(h("div.row.spread",
       h("div",
+        // As in the list: the name leads, and the id — what to type — sits under it, dimmed.
         h("div.row.title",
-          h("h1", runLabel(d.state.id, d.name)),
+          h("h1", d.name || d.state.id),
           h("button.ghost.small", { title: "Rename this run", onclick: () => renameInPlace(d) }, "Rename")),
-        d.state.formerId ? h("div.faint.mono", `was ${d.state.formerId}`) : ""),
+        h("div.run-id", /^\d+$/.test(d.state.id) ? `#${d.state.id}` : d.state.id,
+          d.state.formerId ? ` · was ${d.state.formerId}` : "")),
       pill(d.statusLabel, d.running)),
       h("p.goal", d.state.goal));
   }
