@@ -479,7 +479,7 @@ const MARK_WORDS = {
 };
 
 /** A run's last six days, today and tomorrow (`story::Timeline`), as one strip. */
-function weekStrip(t) {
+function weekStrip(t, onMade) {
   const now = new Date(t.now);
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
@@ -521,6 +521,18 @@ function weekStrip(t) {
     strip.append(h(`div.mark.${g.mark}`, { style: `left:${pct(g.x)}`, title },
       bad ? "✕" : g.mark === "limited" ? "◷" : null, g.n > 1 ? h("small", String(g.n)) : null));
   }
+  for (const m of t.made || []) {
+    const x = at(m.at);
+    if (x <= 0) continue;
+    present.add("made");
+    strip.append(h("button.mark.made", {
+      type: "button",
+      style: `left:${pct(x)}`,
+      title: `${clockTime(m.at)}: made ${m.title}${m.version > 1 ? ` (v${m.version})` : ""}`,
+      "aria-label": `Open ${m.title}`,
+      onclick: () => onMade && onMade(m.key, m.version),
+    }));
+  }
   strip.append(h("div.now", { style: `left:${pct(at(t.now))}`, title: "now" }));
   if (t.next && at(t.next) < 1) {
     strip.append(h("div.mark.next", { style: `left:${pct(at(t.next))}`, title: `next run ${clockTime(t.next)}` }));
@@ -534,7 +546,7 @@ function weekStrip(t) {
     days.append(h(i === 6 ? "span.today" : "span", label));
   }
   const legendItems = [
-    ["look", h("i.look"), "looking, free"], ["did", h("i.did"), "did something"], ["ran", h("i.ran"), "looked, nothing to do"],
+    ["look", h("i.look"), "looking, free"], ["made", h("i.made"), "made something"], ["did", h("i.did"), "did something"], ["ran", h("i.ran"), "looked, nothing to do"],
     ["failed", h("span.x", "✕"), "stopped part-way"], ["couldnt-start", h("span.x", "✕"), "couldn't start"],
     ["limited", h("span.x.lim", "◷"), "usage limit"], ["wait", h("i.wait"), "waiting on you"], ["paused", h("i.paused"), "paused"],
     ["next", h("i.next"), "next run"],
@@ -725,6 +737,35 @@ function inboxView(selected) {
           }, "Copy")),
         h("div.draft-text", m.draft)));
     }
+    const out = m.outputRef;
+    if (out) {
+      // The message is the news; the output is the work. A card opens it on the agent's page.
+      parts.push(h("a.output-card", { href: `#/run/${enc(run)}/work/${enc(out.key)}${out.version < out.versions ? `/v${out.version}` : ""}` },
+        h("span.oc-icon", { "aria-hidden": "true" }, h("i"), h("i"), h("i")),
+        h("span.oc-text",
+          h("span.oc-meta", [dayText(out.at), out.versions > 1 ? `version ${out.version}` : null, out.words ? `${out.words} words` : null, out.link ? "a link" : null].filter(Boolean).join(" · ")),
+          h("span.oc-title", out.title)),
+        h("span.oc-go", "Open it →")));
+      if (!m.draft && out.draft) {
+        const waiting = out.state === "waiting";
+        parts.push(h("div.draft-box",
+          h("div.row.spread", h("span.label", "Draft to send — otto never sends it for you"),
+            h("button.small", { onclick: () => copyText(out.draft, "Copied — paste it where it goes") }, "Copy")),
+          h("div.draft-text", out.draft),
+          waiting && m.open ? h("div.row", h("button.small.primary", {
+            title: "Mark the draft sent, and this message done",
+            onclick: async (e) => {
+              const r = await busy(e.currentTarget, async () => {
+                await api(`/runs/${enc(run)}/outputs/${enc(out.key)}/state`, { state: "done" });
+                return api(`/runs/${enc(run)}/messages/${enc(id)}/done`, {});
+              });
+              if (!r) return;
+              toast("Marked sent");
+              after();
+            },
+          }, "I sent it")) : null));
+      }
+    }
     for (const a of m.attached) {
       parts.push(h("details.attachment", h("summary", `Attached: ${a.path}`),
         a.text != null ? (a.path.endsWith(".md") ? md(a.text) : h("pre.code", a.text)) : h("p.faint", "Too big to show here, or not text.")));
@@ -762,11 +803,414 @@ const runNameCache = {};
 const LATELY_FIRST = 8;
 
 // ---------------------------------------------------------------------------
+// Its work — what an agent made, kept (`outputs`)
+// ---------------------------------------------------------------------------
+//
+// There is no agent "type". What is on screen follows from the outputs themselves: a new key each
+// time is a dated list; a key published again has versions, and what changed between them; stages
+// make a track; outputs with a draft or a state are cards to deal with, one each.
+
+const latestOf = (o) => o.versions[o.versions.length - 1];
+const hasDraft = (o) => o.versions.some((v) => v.draft);
+
+/** An output's state in words, or null. */
+function outputStateLabel(o) {
+  if (!o.state) return null;
+  const draft = latestOf(o).draft;
+  if (o.state === "waiting") return draft ? "Draft waiting" : "Waiting on you";
+  if (o.state === "done") return draft ? "You sent it" : "Done";
+  return o.stateNote || "Not needed";
+}
+
+function outputStateChip(o) {
+  const label = outputStateLabel(o);
+  return label ? h(`span.kind.${o.state === "waiting" ? "question" : o.state === "done" ? "done" : "update"}`, label) : null;
+}
+
+/** "Fri Oct 16", or "Today". */
+function dayText(iso) {
+  const d = new Date(iso);
+  if (d.toDateString() === new Date().toDateString()) return "Today";
+  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+/** "This week", "Last week", or the month — the heading a dated list groups under. */
+function weekGroup(iso) {
+  const age = (Date.now() - new Date(iso)) / 86400000;
+  if (age < 7) return "This week";
+  if (age < 14) return "Last week";
+  return new Date(iso).toLocaleDateString([], { month: "long", year: "numeric" });
+}
+
+/** Lines of `a` and `b`, as ["same"|"del"|"add", text] — a longest-common-subsequence diff. */
+function lineDiff(a, b) {
+  const x = a.replace(/\s+$/, "").split("\n");
+  const y = b.replace(/\s+$/, "").split("\n");
+  const n = x.length;
+  const m = y.length;
+  if (n * m > 4000000) return null; // too big to diff in a page; say so rather than hang
+  const L = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  }
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (x[i] === y[j]) { out.push(["same", x[i]]); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push(["del", x[i++]]);
+    else out.push(["add", y[j++]]);
+  }
+  while (i < n) out.push(["del", x[i++]]);
+  while (j < m) out.push(["add", y[j++]]);
+  return out;
+}
+
+/** A diff as lines a person reads: headings bold, long unchanged stretches folded. */
+function diffView(lines) {
+  const box = h("div.diff");
+  const line = ([kind, text]) => {
+    const heading = /^#{1,6}\s/.test(text);
+    if (!text.trim() && kind === "same") return h("div.dl.blank"); // a paragraph break, not a row
+    return h(`div.dl.${kind}${heading ? ".h" : ""}`,
+      h("span.dm", { "aria-hidden": "true" }, kind === "add" ? "+" : kind === "del" ? "−" : ""),
+      h("span.dt", heading ? text.replace(/^#+\s*/, "") : text.trim() ? inline(text.replace(/^(\s*)[-*]\s+/, "$1• ")) : "\u00a0"));
+  };
+  for (let i = 0; i < lines.length;) {
+    let j = i;
+    while (j < lines.length && lines[j][0] === "same") j++;
+    const run = lines.slice(i, j);
+    if (run.length > 11) { // fold only what's worth a click: at least five lines hidden
+      const hidden = run.slice(3, -3);
+      box.append(...run.slice(0, 3).map(line));
+      const fold = h("button.fold", {
+        type: "button",
+        onclick: () => fold.replaceWith(...hidden.map(line)),
+      }, `${hidden.length} unchanged lines`);
+      box.append(fold, ...run.slice(-3).map(line));
+    } else {
+      box.append(...run.map(line));
+    }
+    if (j >= lines.length) break;
+    let k = j;
+    while (k < lines.length && lines[k][0] !== "same") k++;
+    box.append(...lines.slice(j, k).map(line));
+    i = k;
+  }
+  return box;
+}
+
+/**
+ * The "Its work" panel of an agent's page. `render(d)` redraws from a run detail when what it
+ * shows has changed; `select(key, v)` opens one output (from the week strip, Lately, a link).
+ */
+function workPanel(runId, initial, onChanged) {
+  const path = `/runs/${enc(runId)}`;
+  const el = h("section.panel.work", { id: "work" });
+  el.hidden = true;
+  const cache = new Map(); // "key@n" → a version, with its text
+  let sel = initial ? { key: initial.key, v: initial.v || null } : null;
+  let showDiff = true;
+  let stageFilter = null;
+  let stateFilter = store("otto.work.state") || "all";
+  let query = "";
+  let opened = !!initial; // whether a card has been opened yet, by the person or a link
+  let last = null;
+  let shown = null;
+  const typed = {}; // what's been typed in "tell it about this", per output
+
+  const load = async (key, n) => {
+    const k = `${key}@${n}`;
+    if (!cache.has(k)) cache.set(k, await api(`${path}/outputs/${enc(key)}?v=${n}`));
+    return cache.get(k);
+  };
+
+  function select(key, v = null, scroll = true) {
+    sel = { key, v };
+    showDiff = true;
+    history.replaceState(null, "", `#/run/${enc(runId)}/work/${enc(key)}${v ? `/v${v}` : ""}`);
+    shown = null;
+    if (el.contains(document.activeElement)) document.activeElement.blur(); // they chose to move on
+    if (last) render(last);
+    if (scroll) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function render(d) {
+    last = d;
+    const { outputs, stages } = d.outputs;
+    el.hidden = !outputs.length;
+    if (!outputs.length) return;
+    const messages = d.messages.filter((m) => m.output);
+    const key = JSON.stringify([outputs.map((o) => [o.key, latestOf(o).n, o.title, o.state, o.asking, o.stage,
+      o.versions.map((v) => (v.reviews || []).length)]), stages, sel, showDiff, stageFilter, stateFilter, query,
+    messages.map((m) => [m.id, m.open, m.reply])]);
+    if (key === shown) return;
+    if (el.contains(document.activeElement) && document.activeElement.matches("textarea, input[type=search]")) return;
+    shown = key;
+
+    const items = outputs.filter((o) => o.state || hasDraft(o)).length * 2 >= outputs.length;
+    const current = outputs.find((o) => sel && o.key === sel.key);
+    if (!current) sel = null;
+
+    const head = h("div.work-head",
+      h("p.label", "Its work"),
+      h("span.faint", outputs.length === 1 ? "1 thing" : `${outputs.length} things`, ` since ${dayText(outputs[outputs.length - 1].firstAt)}`));
+    if (items) {
+      const counts = { waiting: outputs.filter((o) => o.state === "waiting").length };
+      counts.done = outputs.length - counts.waiting;
+      head.append(h("div.seg-pills", { role: "group", "aria-label": "Show" },
+        [["waiting", `Waiting · ${counts.waiting}`], ["done", `Done · ${counts.done}`], ["all", `All · ${outputs.length}`]].map(([k, label]) =>
+          h("button", { type: "button", "aria-pressed": String(stateFilter === k), onclick: () => { stateFilter = k; store("otto.work.state", k); shown = null; render(last); } }, label))));
+    }
+    if (outputs.length > 6) {
+      head.append(h("input.work-search", {
+        type: "search", placeholder: "Search its work", "aria-label": "Search its work", value: query,
+        oninput: (e) => { query = e.target.value; },
+        onkeydown: (e) => { if (e.key === "Enter" || e.key === "Escape") { if (e.key === "Escape") query = ""; e.target.blur(); shown = null; render(last); } },
+        onblur: () => { shown = null; render(last); },
+      }));
+    }
+
+    let list = outputs;
+    if (stageFilter) list = list.filter((o) => o.stage === stageFilter);
+    if (items && stateFilter !== "all") list = list.filter((o) => (stateFilter === "waiting") === (o.state === "waiting"));
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      list = list.filter((o) => o.title.toLowerCase().includes(q) || o.key.includes(q));
+    }
+
+    const parts = [head];
+    if (stages.length) parts.push(stageTrack(stages, outputs));
+    if (items) {
+      // Open the first one waiting on the person, once; after that, what they open stays open.
+      if (!opened) {
+        opened = true;
+        const waiting = list.find((o) => o.state === "waiting");
+        if (waiting) sel = { key: waiting.key, v: null };
+      }
+      parts.push(list.length ? h("div.cards", list.map((o) => itemCard(o, d))) : h("p.faint", "Nothing here."));
+    } else {
+      if (!sel) {
+        const pick = outputs.find((o) => o.asking) || list[0] || outputs[0];
+        sel = { key: pick.key, v: null };
+      }
+      const reader = h("article.reader");
+      parts.push(h("div.work-cols", workList(list, stages.length > 0), reader));
+      drawReader(reader, outputs.find((o) => o.key === sel.key), d);
+    }
+    el.replaceChildren(...parts);
+  }
+
+  function stageTrack(stages, outputs) {
+    return h("ol.stages", stages.map((s, i) => h("li",
+      h("button.stage." + s.status, {
+        type: "button",
+        "aria-pressed": String(stageFilter === s.name),
+        title: stageFilter === s.name ? "Show every stage" : `Show only ${s.name}`,
+        onclick: () => {
+          stageFilter = stageFilter === s.name ? null : s.name;
+          const first = outputs.find((o) => o.stage === s.name);
+          if (stageFilter && first) sel = { key: first.key, v: null };
+          shown = null;
+          render(last);
+        },
+      },
+      h("span.sn", `${i + 1} · ${s.status === "done" ? "done" : s.status === "current"
+        ? (outputs.some((o) => o.asking && o.stage === s.name) ? "waiting on you" : "now") : "not yet"}`),
+      h("span.st", s.name)))));
+  }
+
+  function workList(list, byStage) {
+    const box = h("div.work-list");
+    let group = null;
+    for (const o of list) {
+      const g = byStage ? (o.stage || "Other") : weekGroup(o.latestAt);
+      if (g !== group) { group = g; box.append(h("div.work-group", g)); }
+      const n = latestOf(o).n;
+      const on = sel && sel.key === o.key;
+      box.append(h("button.work-row", {
+        type: "button", "aria-current": String(on),
+        onclick: () => select(o.key, null, false),
+      },
+      h("span.wr-top", h("span", dayText(o.latestAt)),
+        h("span.wr-chips", n > 1 ? h("span.vchip", `v${n}`) : null, latestOf(o).link ? h("span.vchip", "link") : null)),
+      h("span.wr-title", o.title),
+      o.asking ? h("span.kind.question", "Asking you") : outputStateChip(o)));
+    }
+    if (!list.length) box.append(h("p.faint.pad", "Nothing matches."));
+    return box;
+  }
+
+  async function drawReader(reader, o, d) {
+    if (!o) { reader.replaceChildren(h("p.faint", "Choose something on the left.")); return; }
+    const latest = latestOf(o);
+    const n = sel.v && o.versions.some((v) => v.n === sel.v) ? sel.v : latest.n;
+    const version = o.versions.find((v) => v.n === n);
+    reader.replaceChildren(h("p.faint", "Loading…"));
+    let doc;
+    let prev = null;
+    try {
+      doc = await load(o.key, n);
+      const before = o.versions.filter((v) => v.n < n).pop();
+      if (showDiff && before && before.file && version.file) prev = await load(o.key, before.n);
+    } catch (err) {
+      reader.replaceChildren(h("div.banner.bad", err.message));
+      return;
+    }
+    const parts = [];
+    parts.push(h("div.reader-head",
+      o.stage ? h("span.kind.report", o.stage) : null,
+      h("span", dayText(version.at), " · ", clockTime(version.at)),
+      version.words ? h("span", `· ${version.words} words`) : null,
+      h("span.grow"),
+      readerSteps(o)));
+    parts.push(h("h3.reader-title", o.title));
+    if (o.versions.length > 1) {
+      const before = o.versions.filter((v) => v.n < n).pop();
+      parts.push(h("div.versions",
+        h("div.seg-pills", { role: "group", "aria-label": "Version" }, o.versions.map((v) =>
+          h("button", { type: "button", "aria-pressed": String(v.n === n), onclick: () => select(o.key, v.n === latest.n ? null : v.n, false) },
+            `v${v.n} · ${dayText(v.at)}${v.n === latest.n ? " · latest" : ""}`))),
+        before && before.file && version.file
+          ? h("label.check", h("input", { type: "checkbox", checked: showDiff, onchange: (e) => { showDiff = e.target.checked; shown = null; render(last); } }),
+            `Show what changed since v${before.n}`)
+          : null));
+    }
+    for (const r of version.reviews || []) {
+      parts.push(h("div.review", h("strong", `Your review of v${n} · ${dayText(r.at)}`), md(r.answer)));
+    }
+    if (o.asking && n === latest.n) {
+      parts.push(h("div.review.asking", h("strong", "It's asking you about this version"),
+        h("a", { href: "#", onclick: (e) => { e.preventDefault(); window.scrollTo({ top: 0, behavior: "smooth" }); } }, "Answer it at the top of the page")));
+    }
+    if (version.link) {
+      parts.push(h("a.link-card", { href: version.link, target: "_blank", rel: "noopener noreferrer" },
+        h("span.lc-title", o.title), h("span.lc-url", version.link)));
+    } else if (doc.text == null) {
+      parts.push(h("p.faint", `Its file ${version.file} is missing.`));
+    } else if (prev && prev.text != null) {
+      const lines = lineDiff(prev.text, doc.text);
+      parts.push(lines ? diffView(lines) : h("p.faint", "Too long to compare here."));
+    } else {
+      parts.push(/\.md$/.test(version.file) ? md(doc.text) : h("pre.code", doc.text));
+    }
+    if (o.about) parts.push(h("p.about", "About: ", /^https?:\/\//.test(o.about) ? h("a", { href: o.about, target: "_blank", rel: "noopener noreferrer" }, o.about) : o.about));
+    if (version.draft) parts.push(draftBox(o, version));
+    if (doc.text != null) {
+      parts.push(h("div.row",
+        h("button.small", { type: "button", onclick: () => copyText(doc.text, "Copied") }, "Copy"),
+        h("button.small", { type: "button", onclick: () => download(doc.text, `${o.key}-v${n}${(version.file.match(/\.\w+$/) || [".md"])[0]}`) }, "Download")));
+    }
+    parts.push(...inboxLines(o, d));
+    parts.push(tellAbout(o, n, d));
+    reader.replaceChildren(...parts);
+  }
+
+  // Older and newer, for a dated list: the next thing along, not the next version.
+  function readerSteps(o) {
+    const list = last.outputs.outputs;
+    const i = list.findIndex((x) => x.key === o.key);
+    const step = (j, label) => h("button.small", { type: "button", disabled: j < 0 || j >= list.length, onclick: () => select(list[j].key, null, false) }, label);
+    return h("span.steps", step(i - 1, "← Newer"), step(i + 1, "Older →"));
+  }
+
+  function draftBox(o, version) {
+    const waiting = o.state === "waiting";
+    const mark = (state, said) => async (e) => {
+      const r = await busy(e.currentTarget, () => api(`${path}/outputs/${enc(o.key)}/state`, { state }));
+      if (!r) return;
+      toast(said);
+      shown = null;
+      onChanged();
+    };
+    return h("div.draft-box",
+      h("div.row.spread", h("span.label", "Draft to send — otto never sends it for you"),
+        h("div.row",
+          h("button.small", { type: "button", onclick: () => copyText(version.draft, "Copied — paste it where it goes") }, "Copy"),
+          o.about && /^https?:\/\//.test(o.about) ? h("a.btn.small", { href: o.about, target: "_blank", rel: "noopener noreferrer" }, "Open the thread") : null)),
+      h("div.draft-text", version.draft),
+      waiting ? h("div.row",
+        h("button.small.primary", { type: "button", onclick: mark("done", "Marked sent") }, "I sent it"),
+        h("button.small.ghost", { type: "button", onclick: mark("dropped", "Marked not needed") }, "Not needed")) : null);
+  }
+
+  function inboxLines(o, d) {
+    return d.messages.filter((m) => m.output && m.output.split("@")[0] === o.key).slice(0, 3).map((m) =>
+      h("a.inbox-line", { href: `#/inbox/${enc(runId)}/m${m.id}` },
+        m.open ? `In your inbox since ${clockTime(m.sentAt)} — “${m.title}”`
+          : `Sent to your inbox ${relative(m.sentAt)} · ${m.reply ? `you replied: ${m.reply}` : "you marked it done"}`));
+  }
+
+  function tellAbout(o, n, d) {
+    const k = `${o.key}@${n}`;
+    const text = h("textarea", { rows: 2, placeholder: "What it got right, what it missed, what to do next…", value: typed[k] || "", oninput: (e) => { typed[k] = e.target.value; } });
+    return h("div.tell-about",
+      h("label", { for: `about-${o.key}` }, "Tell it about this"),
+      Object.assign(text, { id: `about-${o.key}` }),
+      h("div.row.spread",
+        h("span.hint", `Goes to ${d.name} as a note about v${n} of “${o.title}”.`),
+        h("button.small", {
+          type: "button",
+          onclick: async (e) => {
+            if (!text.value.trim()) { toast("Write something first", true); return; }
+            const r = await busy(e.currentTarget, () => api(`${path}/notes`, { text: text.value, standing: false, now: false, about: k }));
+            if (!r) return;
+            typed[k] = "";
+            toast(`Sent — ${heard(r)}`);
+            shown = null;
+            onChanged();
+          },
+        }, "Send")));
+  }
+
+  function itemCard(o, d) {
+    const open = sel && sel.key === o.key;
+    const latest = latestOf(o);
+    const card = h(`div.item-card${open ? ".open" : ""}`);
+    const top = h("button.item-top", {
+      type: "button", "aria-expanded": String(open),
+      onclick: () => { sel = open ? null : { key: o.key, v: null }; shown = null; render(last); },
+    },
+    h("span.it-when", dayText(latest.at), " · ", clockTime(latest.at)),
+    outputStateChip(o) || h("span"),
+    h("span.it-title", o.title));
+    card.append(top);
+    if (open) {
+      const body = h("div.item-body", h("p.faint", "Loading…"));
+      card.append(body);
+      load(o.key, latest.n).then((doc) => {
+        body.replaceChildren(
+          doc.text != null ? (/\.md$/.test(latest.file || "") ? md(doc.text) : h("pre.code", doc.text)) : latest.link ? h("a", { href: latest.link, target: "_blank", rel: "noopener noreferrer" }, latest.link) : null,
+          latest.draft ? draftBox(o, latest) : null,
+          ...inboxLines(o, d),
+          tellAbout(o, latest.n, d));
+      }).catch((err) => body.replaceChildren(h("div.banner.bad", err.message)));
+    }
+    return card;
+  }
+
+  return { el, render, select };
+}
+
+async function copyText(text, said) {
+  try { await navigator.clipboard.writeText(text); toast(said); }
+  catch { toast("Couldn't reach the clipboard; select the text and copy it", true); }
+}
+
+function download(text, name) {
+  const a = h("a", { href: URL.createObjectURL(new Blob([text], { type: "text/plain" })), download: name });
+  document.body.append(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+// ---------------------------------------------------------------------------
 // #/run/:id — one agent
 // ---------------------------------------------------------------------------
 
-function runView(id) {
+function runView(id, opened) {
   const path = `/runs/${enc(id)}`;
+  const work = workPanel(id, opened, () => refresh());
   const head = h("div");
   const ask = h("div");
   const alerts = h("div");
@@ -778,7 +1222,7 @@ function runView(id) {
 
   view.replaceChildren(
     h("a.back", { href: "#/" }, "← Agents"),
-    head, ask, alerts,
+    head, ask, alerts, work.el,
     h("div.agent-grid",
       h("div.col", picture, lately, tell),
       h("aside.col", hood)));
@@ -796,6 +1240,7 @@ function runView(id) {
     renderHead(d);
     renderAsk(d);
     renderAlerts(d);
+    work.render(d);
     renderPicture(d);
     renderLately(d);
     renderTell(d);
@@ -951,13 +1396,14 @@ function runView(id) {
             h("div", line.text, line.detail.length ? h("div.detail", line.detail.join("\n")) : null));
         })));
     }
-    parts.push(h("p.label", "This week"), weekStrip(d.timeline));
+    parts.push(h("p.label", "This week"), weekStrip(d.timeline, (key, v) => work.select(key, v)));
     const foot = [];
     if (d.check) foot.push(`${count(d.check.noChangeTotal, "free look")} found nothing, each a run it didn't have to spend`);
     const sent = d.messages.length;
     if (sent) foot.push(`${sent}${sent >= 20 ? "+" : ""} ${sent === 1 ? "message" : "messages"} sent`);
     if (foot.length) parts.push(h("p.foot-line", foot.join(" · ")));
-    if (d.messages.length) {
+    // An agent that keeps its work shows it under "Its work"; one that only sends messages, here.
+    if (d.messages.length && !d.outputs.outputs.length) {
       parts.push(h("p.label", "What it has sent you"),
         h("div.tiles", d.messages.slice(0, 12).map((m) => h(`a.tile${m.open ? ".open" : ""}`, { href: `#/inbox/${enc(d.state.id)}/m${m.id}` },
           h("span.d", clockTime(m.sentAt)), h("span.t", m.title), kindChip(m.kind, m.open)))));
@@ -975,7 +1421,9 @@ function runView(id) {
         ? h("ul.lately", shown.map((x) => h(`li.${x.kind}`, { title: localTime(x.at) },
           h("span.t", relative(x.at)),
           h("span",
-            x.message ? h("a", { href: `#/inbox/${enc(d.state.id)}/m${x.message}` }, x.text) : x.text,
+            x.message ? h("a", { href: `#/inbox/${enc(d.state.id)}/m${x.message}` }, x.text)
+              : x.output ? h("a", { href: `#/run/${enc(d.state.id)}/work/${enc(x.output)}`, onclick: (e) => { e.preventDefault(); work.select(x.output); } }, x.text)
+                : x.text,
             x.times > 1 ? h("span.times", ` ×${x.times}`) : null))))
         : h("p.faint", "Nothing yet."),
       ...(more > 0 || latelyAll
@@ -1558,11 +2006,11 @@ function route() {
   for (const fn of cleanups) fn();
   cleanups = [];
   const hash = location.hash || "#/";
-  const run = hash.match(/^#\/run\/(.+)$/);
+  const run = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
   const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
   const section = run ? "agents" : inbox ? "inbox" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
-  if (run) runView(decodeURIComponent(run[1]));
+  if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
   else if (hash === "#/new") newRunView();
   else if (hash === "#/system" || hash === "#/agent") systemView();
