@@ -35,6 +35,13 @@ pub fn read_question(dir: &Path, gate: &Gate) -> Result<String, OttoError> {
 /// sentence, without markup, cut to about `max` characters at a word.
 pub fn title(question: &str, max: usize) -> String {
     let first = question.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    // Otto's own questions open "Run `<id>` has stopped…", and a title is always shown beside the
+    // run's name: the id says nothing there but takes the whole line.
+    let unnamed = first
+        .strip_prefix("Run `")
+        .and_then(|rest| rest.split_once("` "))
+        .map(|(_, rest)| format!("It {rest}"));
+    let first = unnamed.as_deref().unwrap_or(first);
     let line = match heading(first) {
         Some(h) => h.to_string(),
         None => {
@@ -58,9 +65,11 @@ mod title_tests {
     fn a_question_s_title_is_its_heading_or_its_first_sentence_cut_short() {
         assert_eq!(super::title("# Approve the plan?\n\nIt touches 3 files.", 100), "Approve the plan?");
         assert_eq!(super::title("Ship it? The tests are green.", 100), "Ship it?");
-        let long = format!("Run `{}` has failed to finish five times", "x".repeat(120));
+        let long = format!("Retry `{}` after the failure five times", "x".repeat(120));
         let title = super::title(&long, 60);
         assert!(title.chars().count() > 30 && title.ends_with('…'), "a long id is cut, not the whole line: {title}");
+        let own = "Run `2026-10-04-once-a-day-find-new-things` has failed to finish a wake 5 times in a row and has stopped retrying.\n\nMore.";
+        assert_eq!(super::title(own, 100), "It has failed to finish a wake 5 times in a row and has stopped retrying.");
     }
 }
 

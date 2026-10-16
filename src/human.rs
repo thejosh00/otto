@@ -301,7 +301,8 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     }
     let waiting_messages: usize = rows.iter().map(|r| r.messages).sum();
     if waiting_messages > 0 {
-        println!("\n{waiting_messages} message(s) waiting for you — `otto inbox`");
+        let noun = if waiting_messages == 1 { "message" } else { "messages" };
+        println!("\n{waiting_messages} {noun} waiting for you — `otto inbox`");
     }
     if let Some(sleeping_count) = view.stranded_sleepers {
         println!(

@@ -877,7 +877,7 @@ pub fn answer_in_background(id: &str, choice: Option<&str>, text: Option<&str>, 
     }
     if !wait_for_wake_to_finish(&pending.id) {
         outcome.note = Some(format!(
-            "a wake is still running after {}s — your answer is recorded, and the run will act on it",
+            "it's still busy after {}s — your answer is recorded, and it will act on it",
             crate::spawner::CONFIRM_SECONDS
         ));
         return Ok(outcome);
@@ -1275,6 +1275,8 @@ pub struct NoteOutcome {
     pub note: NoteView,
     /// When a wake will read it, in words.
     pub delivery: String,
+    /// The same for the web page, in its words (`note_delivery_plain`).
+    pub delivery_plain: String,
     pub wake: Option<WakeStart>,
     /// Why `now` did not start a wake, when it was asked to and didn't.
     pub not_woken: Option<String>,
@@ -1312,6 +1314,27 @@ pub fn note_delivery(state: &RunState, running: bool, standing: bool) -> String 
     }
 }
 
+/// `note_delivery` for the web page, where a wake is "a run" and a gate "its question" — the
+/// terminal keeps otto's words, which its other commands use.
+pub fn note_delivery_plain(state: &RunState, running: bool, standing: bool) -> String {
+    let next = if running {
+        "it's busy now, so the next run reads it".to_string()
+    } else if state.gate.is_some() {
+        "it reads it after you answer its question — a note isn't an answer".to_string()
+    } else {
+        match state.next_wake_at {
+            Some(at) if at.is_past() => "it reads it the next time it runs, within a few minutes".to_string(),
+            Some(at) => format!("it reads it the next time it runs, {}", relative(at)),
+            None => "it reads it the next time it runs".to_string(),
+        }
+    };
+    if standing {
+        format!("pinned until you unpin it; {next}")
+    } else {
+        next
+    }
+}
+
 /// Record a note, and say when it will be read. Waking for it is the caller's business, because
 /// a terminal and the web page start wakes differently.
 pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, OttoError> {
@@ -1323,6 +1346,7 @@ pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, Ott
     Ok(NoteOutcome {
         short: short_id(&id),
         delivery: note_delivery(&state, running, standing),
+        delivery_plain: note_delivery_plain(&state, running, standing),
         note: NoteView {
             text: crate::notes::read_text(&dir, &note),
             id: note.id,
@@ -1502,7 +1526,7 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
     let mut outcome = ResumeOutcome { id: id.clone(), status, reason, wake: None, note: None };
     let state = read_run(&id)?;
     if let Some(gate) = &state.gate {
-        outcome.note = Some(format!("waiting on its open gate {} ({}) — answer it to continue", gate.id, gate.slug));
+        outcome.note = Some(format!("it's still waiting on its question ({}) — answer it to continue", gate.slug));
         return Ok(outcome);
     }
     if no_wake {
@@ -1513,7 +1537,7 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
     match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None) {
         Ok(wake) => outcome.wake = Some(wake),
         // The resume itself stands: the run is due, so the next poke tries again.
-        Err(err) => outcome.note = Some(format!("resumed, but the wake did not start: {} — the next poke will retry it", err.message)),
+        Err(err) => outcome.note = Some(format!("resumed, but it didn't start: {} — it's tried again within a few minutes", err.message)),
     }
     Ok(outcome)
 }
@@ -1567,7 +1591,7 @@ pub fn unpause_run(id: &str) -> Result<ResumeOutcome, OttoError> {
     let state = read_run(&id)?;
     let note = match (&state.gate, state.next_wake_at) {
         (Some(gate), _) => format!("back on its schedule, and still waiting on question {}", gate.id),
-        (None, Some(at)) if at.is_past() => "back on its schedule — the run it missed comes at the next poke".to_string(),
+        (None, Some(at)) if at.is_past() => "back on its schedule — the run it missed comes within a few minutes".to_string(),
         (None, Some(at)) => format!("back on its schedule — next run {}", relative(at)),
         (None, None) => "back on its schedule".to_string(),
     };
@@ -1585,6 +1609,7 @@ pub struct MessageDoneOutcome {
     pub done: crate::messages::Done,
     /// When the run will read the reply, in words — only with a reply.
     pub delivery: Option<String>,
+    pub delivery_plain: Option<String>,
     pub wake: Option<WakeStart>,
     pub not_woken: Option<String>,
 }
@@ -1597,6 +1622,7 @@ pub fn message_done(id: &str, which: Option<&str>, reply: Option<&str>, now: boo
     let running = LockLiveness.probe(&id).is_busy();
     let mut outcome = MessageDoneOutcome {
         delivery: done.note.as_ref().map(|_| note_delivery(&state, running, false)),
+        delivery_plain: done.note.as_ref().map(|_| note_delivery_plain(&state, running, false)),
         done,
         id: id.clone(),
         wake: None,
@@ -1850,6 +1876,9 @@ pub struct UsageRow {
     pub key: String,
     /// What a person reads: the run's short id, or the date.
     pub label: String,
+    /// The run's name, by run — what the web page lists it as, as everywhere else on it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(flatten)]
     pub totals: TokenTotals,
     pub total: u64,
@@ -1895,7 +1924,8 @@ pub fn usage(since: Option<&str>, by: UsageBy, offset: time::UtcOffset) -> Resul
         .into_iter()
         .map(|(key, (label, t))| {
             totals.add(&t);
-            UsageRow { key, label, total: t.total(), totals: t }
+            let name = (by == UsageBy::Run).then(|| crate::state::read_run(&key).ok().map(|s| s.display_name())).flatten();
+            UsageRow { key, label, name, total: t.total(), totals: t }
         })
         .collect();
     if by == UsageBy::Run {

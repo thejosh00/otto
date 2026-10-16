@@ -493,6 +493,7 @@ details.attachment > summary { font-family: var(--mono); font-size: 13px; }
   .mail { grid-template-columns: minmax(0, 1fr); min-height: 0; }
   .mail-list { border-right: 0; border-bottom: 1px solid var(--line); }
   .mail-pane { padding: 18px 16px 20px; }
+  .mail-pane.blank { display: none; } /* stacked under the list, "choose one" is just an empty box */
 }
 
 /* What a wake wrote, as markdown made safe */
@@ -523,7 +524,7 @@ pre.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.5; backgr
 .when-line { font-size: 13px; color: var(--ink-3); }
 .controls { display: flex; flex-wrap: wrap; gap: 6px; }
 .menu-wrap { position: relative; }
-.menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 6; min-width: 230px; padding: 6px; display: grid; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
+.menu { position: absolute; left: 0; top: calc(100% + 4px); z-index: 6; min-width: 230px; padding: 6px; display: grid; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.12); }
 .menu.wide { width: min(320px, 85vw); gap: 8px; padding: 12px; }
 .menu b { font-size: 12px; color: var(--ink-3); font-weight: 600; padding: 4px 8px 6px; }
 .menu.wide b { padding: 0; }

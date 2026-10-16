@@ -112,10 +112,10 @@ fn times(n: u32) -> String {
     }
 }
 
-/// "Paused until Oct 19 09:00", or "Paused" for a pause with no end.
+/// "Paused until Mon 9:00 AM", or "Paused" for a pause with no end.
 pub fn paused_line(state: &RunState) -> String {
     match state.paused.as_ref().and_then(|p| p.until) {
-        Some(until) => format!("Paused until {}", crate::clock::local_clock(until)),
+        Some(until) => format!("Paused until {}", crate::clock::plain_time(until)),
         None => "Paused".to_string(),
     }
 }
@@ -412,7 +412,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "paused" => happening(
                 "you",
                 match str_of(v, "until").and_then(|u| Timestamp::parse(u).ok()) {
-                    Some(until) => format!("You paused it until {}", crate::clock::local_clock(until)),
+                    Some(until) => format!("You paused it until {}", crate::clock::plain_time(until)),
                     None => "You paused it".to_string(),
                 },
             ),

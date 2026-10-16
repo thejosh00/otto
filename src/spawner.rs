@@ -157,8 +157,9 @@ pub fn kill(state: &RunState, run_id: &str, exec: &mut dyn Exec) -> KillOutcome 
     let killed_process = if let Some(pid) = state.wake.as_ref().and_then(|w| w.pid) {
         // Negative pid means "the whole process group", which is how the launcher and the model
         // under it go too. A wake is spawned into its own group for exactly this reason.
-        let _ = exec.exec(&["kill", "-TERM", &format!("-{pid}")], None, Duration::from_secs(10));
-        true
+        // The pid stays on record after its wake ends, so only a signal that landed counts: "and
+        // the wake running now" is otherwise said of one that finished an hour ago.
+        exec.exec(&["kill", "-TERM", &format!("-{pid}")], None, Duration::from_secs(10)).code == 0
     } else {
         false
     };

@@ -78,6 +78,17 @@ async function busy(button, work) {
 
 const enc = encodeURIComponent;
 
+/** After a note or a reply: when it will be read, in the page's words — busy or waiting on a
+ *  question says why it wasn't run now — or the error, when a run asked for didn't start. */
+function heard(r) {
+  if (r.wake) return "it's reading it now";
+  if (r.notWoken && /did not start/.test(r.notWoken)) return "couldn't run it now: " + r.notWoken;
+  return r.deliveryPlain || r.delivery;
+}
+
+/** "1 run" / "3 runs". */
+const count = (n, one) => `${n} ${n === 1 ? one : one + "s"}`;
+
 /** "in 24m" / "12m ago". */
 function relative(iso) {
   if (!iso) return "";
@@ -377,7 +388,18 @@ function progressBar(t, leftOpen) {
 }
 
 /** Answering a question: its text, its options as buttons, and a box for anything else. */
-function questionCard(runId, gate, after) {
+// The question's own text, less its first line when that line is just `title` again — the inbox
+// shows the title above it, and a question usually opens with a heading saying the same.
+function withoutTitle(question, title) {
+  if (!title) return question;
+  const plain = (s) => s.replace(/^#+\s*/, "").replace(/[`*_]/g, "").replace(/…$/, "").trim();
+  const lines = question.split("\n");
+  const first = lines.findIndex((l) => l.trim());
+  if (first < 0 || !plain(title) || !plain(lines[first]).startsWith(plain(title))) return question;
+  return lines.slice(first + 1).join("\n");
+}
+
+function questionCard(runId, gate, after, title) {
   const text = h("textarea", { placeholder: "Or answer in your own words…", rows: 3 });
   const send = async (body, button) => {
     const r = await busy(button, () => api(`/runs/${enc(runId)}/answer`, body));
@@ -386,7 +408,7 @@ function questionCard(runId, gate, after) {
     after();
   };
   return h("div.ask-card",
-    md(gate.question || gate.text || `(the question's file ${gate.file} is missing)`),
+    md(withoutTitle(gate.question || gate.text || `(the question's file ${gate.file} is missing)`, title)),
     gate.options.length
       ? h("div.options", gate.options.map((option) => h("button" + (option === gate.default ? ".primary" : ""),
         { onclick: (e) => send({ choice: option }, e.currentTarget) },
@@ -571,7 +593,7 @@ function agentsView() {
       h("span.name", r.name || r.id),
       h("span.line", { title: r.line }, r.line),
       h("span.meta",
-        r.messages ? h("span.msgs", { title: `${r.messages} message(s) waiting in your inbox` }, `✉ ${r.messages}`) : null,
+        r.messages ? h("span.msgs", { title: `${count(r.messages, "message")} waiting in your inbox` }, `✉ ${r.messages}`) : null,
         rowWhen(r))))));
   }
 
@@ -592,6 +614,7 @@ function inboxView(selected) {
   const pane = h("div.mail-pane");
   let items = [];
   let shownKey = null;
+  let drawn = false; // the pane has been drawn for shownKey — false forces a redraw, even of nothing
   view.replaceChildren(
     h("div.view-title", h("h1", "Inbox"), h("span.faint", { id: "inbox-summary" })),
     h("div.mail", listBox, pane));
@@ -628,12 +651,14 @@ function inboxView(selected) {
       history.replaceState(null, "", `#/inbox/${selected}`);
       for (const a of listBox.querySelectorAll(".mail-item")) a.setAttribute("aria-current", String(a.getAttribute("href") === `#/inbox/${selected}`));
     }
-    if (selected !== shownKey) drawPane();
+    if (!drawn || selected !== shownKey) drawPane();
   }
 
   async function drawPane() {
     shownKey = selected;
-    if (!selected) { pane.replaceChildren(h("p.faint", "Choose something on the left.")); return; }
+    drawn = true;
+    pane.classList.toggle("blank", !selected);
+    if (!selected) { pane.replaceChildren(h("p.faint", items.length ? "Choose something on the left." : "All caught up.")); return; }
     const [run, ref] = selected.split("/");
     const item = items.find((i) => itemKey(i) === selected);
     pane.replaceChildren(h("p.faint", "Loading…"));
@@ -648,7 +673,7 @@ function inboxView(selected) {
   // Done with one: on to whatever is next, as an inbox does.
   const after = () => {
     selected = null;
-    shownKey = null;
+    drawn = false; // whatever comes next is drawn, even nothing — the done one must not linger
     history.replaceState(null, "", "#/inbox");
     refresh();
     refreshChrome();
@@ -661,7 +686,7 @@ function inboxView(selected) {
         item ? h("span.faint", relative(item.at)) : null),
       h("h2", item ? item.title : d.questionTitle || "Question"));
     if (d.gate && d.gate.id === id) {
-      pane.replaceChildren(head, questionCard(run, d.gate, after));
+      pane.replaceChildren(head, questionCard(run, d.gate, after, item ? item.title : d.questionTitle));
     } else {
       pane.replaceChildren(head, h("div.resolved", `✓ You answered: ${item && item.answer ? item.answer : "(see its log)"}`));
     }
@@ -669,12 +694,16 @@ function inboxView(selected) {
 
   async function drawMessage(run, id, item) {
     const m = await api(`/runs/${enc(run)}/messages/${enc(id)}`);
+    // Opened by a link while the list shows something else, the list can't name its sender.
+    if (!(item && item.name) && !runNameCache[run]) {
+      runNameCache[run] = await api(`/runs/${enc(run)}`).then((d) => d.name).catch(() => null);
+    }
     const reply = h("textarea", { rows: 3, placeholder: m.kind === "report" ? "Reply — what to dig into next, what it got wrong…" : m.kind === "draft" ? "Reply — what the draft should say differently…" : "Reply…" });
     const now = h("input", { type: "checkbox" });
     const done = async (body, button, what) => {
       const r = await busy(button, () => api(`/runs/${enc(run)}/messages/${enc(id)}/done`, body));
       if (!r) return;
-      toast(r.done.note ? `${what} — ${r.wake ? "it's reading it now" : r.notWoken ? "not run now: " + r.notWoken : r.delivery}` : what);
+      toast(r.done.note ? `${what} — ${heard(r)}` : what);
       after();
     };
     const parts = [
@@ -704,7 +733,12 @@ function inboxView(selected) {
       parts.push(h("div.resolved", m.reply ? `✓ Done — you replied: ${m.reply}` : `✓ Done ${m.doneAt ? relative(m.doneAt) : ""}`));
     } else {
       parts.push(h("div.row",
-        h("button.primary", { onclick: (e) => done({}, e.currentTarget, "Done") }, "Done"),
+        // A reply already written goes with it: Done must not quietly throw it away.
+        h("button.primary", {
+          onclick: (e) => reply.value.trim()
+            ? done({ reply: reply.value, now: now.checked }, e.currentTarget, "Reply sent")
+            : done({}, e.currentTarget, "Done"),
+        }, "Done"),
         m.kind === "report" ? h("button", { title: "Mark it done and tell the agent it got this one right", onclick: (e) => done({ reply: "Looks right." }, e.currentTarget, "Told it so") }, "Looks right") : null));
     }
     parts.push(h("div.reply-box", reply,
@@ -919,9 +953,9 @@ function runView(id) {
     }
     parts.push(h("p.label", "This week"), weekStrip(d.timeline));
     const foot = [];
-    if (d.check) foot.push(`${d.check.noChangeTotal} free look(s) found nothing, each a run it didn't have to spend`);
+    if (d.check) foot.push(`${count(d.check.noChangeTotal, "free look")} found nothing, each a run it didn't have to spend`);
     const sent = d.messages.length;
-    if (sent) foot.push(`${sent}${sent >= 20 ? "+" : ""} message(s) sent`);
+    if (sent) foot.push(`${sent}${sent >= 20 ? "+" : ""} ${sent === 1 ? "message" : "messages"} sent`);
     if (foot.length) parts.push(h("p.foot-line", foot.join(" · ")));
     if (d.messages.length) {
       parts.push(h("p.label", "What it has sent you"),
@@ -957,7 +991,7 @@ function runView(id) {
     const pinned = pin.getAttribute("aria-pressed") === "true";
     await busy(e.currentTarget, async () => {
       const r = await api(path + "/notes", { text: tellText.value, standing: pinned, now });
-      toast(`${pinned ? "Pinned" : "Sent"} — ${r.wake ? "it's reading it now" : r.notWoken ? "not run now: " + r.notWoken : r.delivery}`);
+      toast(`${pinned ? "Pinned" : "Sent"} — ${heard(r)}`);
       tellText.value = "";
       pin.setAttribute("aria-pressed", "false");
       shownNotes = null;
@@ -970,12 +1004,12 @@ function runView(id) {
   let shownNotes = null;
   function renderTell(d) {
     const over = ["done", "failed", "stopped"].includes(d.state.status);
-    const key = JSON.stringify([over, d.notes.map((n) => [n.id, n.givenToWake])]);
+    const key = JSON.stringify([over, !!d.running, d.notes.map((n) => [n.id, n.givenToWake])]);
     if (key === shownNotes) return;
     shownNotes = key;
     const notes = d.notes.map((n) => h("div.note",
       h("div.row.spread",
-        h("span.faint", n.standing ? "Pinned — every run gets it" : n.givenToWake ? "Being read now" : `Waiting to be read · ${relative(n.addedAt)}`),
+        h("span.faint", n.standing ? "Pinned — every run gets it" : n.givenToWake ? (d.running ? "Being read now" : "Its last run didn't finish — it gets this again next time") : `Waiting to be read · ${relative(n.addedAt)}`),
         h("button.ghost.small", {
           onclick: (e) => busy(e.currentTarget, async () => {
             await api(`${path}/notes/${enc(n.id)}/drop`, {});
@@ -1018,9 +1052,11 @@ function runView(id) {
       handoff.body.replaceChildren(d.handoff ? h("pre.code", d.handoff) : h("p.muted", "No handoff yet."));
     }
     live.note.textContent = d.running ? "it's running — watch it work" : "nothing running";
+    // Open on a run that had ended: a new one has started, so watch that instead.
+    if (d.running && live.el.open && liveEnded) { setStream("live", false); setStream("live", true); }
     const s = d.state;
     const over = ["done", "failed", "stopped"].includes(s.status);
-    cost.note.textContent = d.usage.wakes ? `${d.usage.wakes} run(s) · ${humaniseTokens(tokenTotal(d.usage))} tokens` : "nothing spent yet";
+    cost.note.textContent = d.usage.wakes ? `${count(d.usage.wakes, "run")} · ${humaniseTokens(tokenTotal(d.usage))} tokens` : "nothing spent yet";
     cost.body.replaceChildren(
       h("dl.facts",
         h("dt", "Runs"), h("dd", `${s.budget.spentWakes}${s.budget.wakes ? " of " + s.budget.wakes : ""}${s.budget.hours ? `, ${s.budget.hours}h budget` : ""}`),
@@ -1047,8 +1083,8 @@ function runView(id) {
       ["Runs with", `${s.launcher.kind}, in ${s.launcher.detach === "tmux" ? "tmux" : "the background"}`],
     ];
     if (s.wake) rows.push(["Last run", `run ${s.wake.n}, started ${relative(s.wake.startedAt)}${s.wake.outcome ? ", " + s.wake.outcome : d.running ? ", running" : ""}`]);
-    if (s.incompleteWakes) rows.push(["Stopped part-way", `${s.incompleteWakes} time(s) in a row`]);
-    if (s.startFailures) rows.push(["Couldn't start", `${s.startFailures} time(s) in a row${s.startFailure ? ` — “${s.startFailure}”` : ""}`]);
+    if (s.incompleteWakes) rows.push(["Stopped part-way", `${count(s.incompleteWakes, "time")} in a row`]);
+    if (s.startFailures) rows.push(["Couldn't start", `${count(s.startFailures, "time")} in a row${s.startFailure ? ` — “${s.startFailure}”` : ""}`]);
     if (d.workdir && d.workdir.kind === "own") rows.push(["Works in", `${d.workdir.path} (not the default)`]);
     if (d.workdir && d.workdir.kind === "unset") rows.push(["Works in", "nowhere set — `otto config workdir <dir>`"]);
     return rows;
@@ -1089,12 +1125,13 @@ function runView(id) {
       ? `${c.lastResult === "no-change" ? "nothing new" : c.lastResult === "changed" ? "found something" : "the check failed"}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
       : "not run yet";
     return h("div", { style: "margin-top:12px" },
-      h("p", h("strong", "A free check runs first. "), `${c.pinned ? (c.setByWake ? "It set this up itself" : "You set this up") : "Just for this one wait"}; last: ${last}. It has spared ${c.noChangeTotal} run(s)${c.wakeAfter ? `, and runs anyway after ${c.wakeAfter} quiet looks in a row` : ""}.`),
+      h("p", h("strong", "A free check runs first. "), `${c.pinned ? (c.setByWake ? "It set this up itself" : "You set this up") : "Just for this one wait"}; last: ${last}. It has spared ${count(c.noChangeTotal, "run")}${c.wakeAfter ? `, and runs anyway after ${c.wakeAfter} quiet looks in a row` : ""}.`),
       c.text != null ? h("pre.code", c.text) : h("p.faint", `(${c.script} is missing — the next due run will happen anyway)`));
   }
 
   // ----- the log and the live view stream only while their section is open
   const streams = { log: null, live: null };
+  let liveEnded = false;
   function setStream(which, open) {
     if (open && !streams[which]) streams[which] = which === "log" ? logsPanel(log.body) : livePanel(live.body);
     if (!open && streams[which]) { streams[which](); streams[which] = null; }
@@ -1155,6 +1192,7 @@ function runView(id) {
     const status = h("p.muted", "Connecting…");
     const out = h("pre.term");
     const source = new EventSource(`/api${path}/live`);
+    liveEnded = false;
     const show = (text, label) => {
       const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
       out.replaceChildren(ansiToNodes(text));
@@ -1176,10 +1214,15 @@ function runView(id) {
     });
     source.addEventListener("pane", (e) => show(JSON.parse(e.data), "Its tmux pane (its transcript can't be read)"));
     source.addEventListener("log", (e) => show(JSON.parse(e.data), "wake.log (it isn't in tmux)"));
-    source.addEventListener("ended", (e) => {
+    // The server says so in the terminal's words; here it's said for the page, and an empty screen goes.
+    source.addEventListener("ended", () => {
       source.close();
-      status.replaceChildren(JSON.parse(e.data));
-      if (!out.childNodes.length) out.append("Nothing is running.");
+      liveEnded = true;
+      const had = out.textContent.trim();
+      status.replaceChildren(had
+        ? "That run has finished — this is where it left off. What it did is under Lately."
+        : "Not running right now. Press Run now, or leave this open for its next run.");
+      if (!had) out.remove();
     });
     source.onerror = () => { if (source.readyState === EventSource.CLOSED) status.textContent = "Disconnected."; };
     panel.replaceChildren(status, out);
@@ -1209,7 +1252,7 @@ function tokenTotal(t) {
 // Mirrors TokenTotals::summary.
 function tokenSummary(t) {
   const n = humaniseTokens;
-  return `${n(tokenTotal(t))} over ${t.wakes} run(s) — ${n(t.inputTokens)} in, ${n(t.outputTokens)} out, ` +
+  return `${n(tokenTotal(t))} over ${count(t.wakes, "run")} — ${n(t.inputTokens)} in, ${n(t.outputTokens)} out, ` +
     `${n(t.cacheCreation)} cache write, ${n(t.cacheRead)} cache read` +
     (t.unmeasured ? ` (${t.unmeasured} not measured)` : "");
 }
@@ -1252,10 +1295,10 @@ function usageView() {
       h("table.table",
         h("thead", h("tr", [by === "run" ? "Agent" : "Day", "Runs", "Total", "Input", "Output", "Cache write", "Cache read"].map((c) => h("th", c)))),
         h("tbody",
-          r.rows.map((row) => h("tr", cells(row.label, row, by === "run" ? `#/run/${enc(row.key)}` : null))),
+          r.rows.map((row) => h("tr", cells(row.name || row.label, row, by === "run" ? `#/run/${enc(row.key)}` : null))),
           h("tr", cells("Total", r.totals, null)))),
       r.totals.unmeasured
-        ? h("p.muted", { style: "margin-top:10px" }, `* includes ${r.totals.unmeasured} run(s) whose usage couldn't be read — usually a sandbox that hides ~/.claude. Counted, tokens unknown.`)
+        ? h("p.muted", { style: "margin-top:10px" }, `* includes ${count(r.totals.unmeasured, "run")} whose usage couldn't be read — usually a sandbox that hides ~/.claude. Counted, tokens unknown.`)
         : "");
   }
   load();

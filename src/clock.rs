@@ -193,6 +193,31 @@ pub fn local_clock(at: Timestamp) -> String {
     local.format(fmt).unwrap_or_else(|_| at.to_string())
 }
 
+/// A time as the plain-words lines say it — `7:25 AM`, `tomorrow 9:00 AM`, `Sat 9:00 AM` within the
+/// week, `Oct 19 9:00 AM` past it — the way the web page writes every other time, so a line from
+/// here reads the same as the page around it. `local_clock` stays for the terminal's tables.
+pub fn plain_time(at: Timestamp) -> String {
+    plain_time_from(at.dt().to_offset(local_offset()), now().to_offset(local_offset()))
+}
+
+fn plain_time_from(local: OffsetDateTime, today: OffsetDateTime) -> String {
+    let (hour, minute) = (local.hour(), local.minute());
+    let (h12, half) = match hour {
+        0 => (12, "AM"),
+        1..=11 => (hour, "AM"),
+        12 => (12, "PM"),
+        _ => (hour - 12, "PM"),
+    };
+    let time = format!("{h12}:{minute:02} {half}");
+    let days = (local.date() - today.date()).whole_days();
+    match days {
+        0 => time,
+        1 => format!("tomorrow {time}"),
+        -5..=5 => format!("{} {time}", &local.weekday().to_string()[..3]),
+        _ => format!("{} {} {time}", &local.month().to_string()[..3], local.day()),
+    }
+}
+
 /// Lowercase, collapse runs of non-`[a-z0-9]` to a single hyphen, trim leading/trailing
 /// hyphens. Falls back to `fallback` if the result would be empty.
 pub fn slugify(text: &str, fallback: &str) -> String {
@@ -272,6 +297,16 @@ mod tests {
         assert!(shown.len() == 5 || shown.contains(' '), "got {shown}");
         let later = Timestamp::in_minutes(3 * 1440);
         assert!(local_clock(later).contains(' '), "another day names the day: {}", local_clock(later));
+    }
+
+    #[test]
+    fn plain_time_reads_like_the_page() {
+        let now = datetime!(2026-10-16 06:30:00 UTC);
+        assert_eq!(plain_time_from(datetime!(2026-10-16 07:25:00 UTC), now), "7:25 AM");
+        assert_eq!(plain_time_from(datetime!(2026-10-16 00:05:00 UTC), now), "12:05 AM");
+        assert_eq!(plain_time_from(datetime!(2026-10-17 23:51:00 UTC), now), "tomorrow 11:51 PM");
+        assert_eq!(plain_time_from(datetime!(2026-10-19 09:00:00 UTC), now), "Mon 9:00 AM");
+        assert_eq!(plain_time_from(datetime!(2026-11-02 12:00:00 UTC), now), "Nov 2 12:00 PM");
     }
 
     #[test]
