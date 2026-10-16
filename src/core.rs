@@ -167,6 +167,12 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
         let n = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
         return format!("working (wake {n})");
     }
+    if state.is_paused() && !state.status.is_terminal() {
+        return match state.paused.as_ref().and_then(|p| p.until) {
+            Some(until) => format!("paused until {}", crate::clock::local_clock(until)),
+            None => "paused until resumed".to_string(),
+        };
+    }
     match state.status {
         // When is its own column (`next_wake`); this one only says what the run waits on.
         Status::Sleeping => match state.next_wake_at {
@@ -185,7 +191,7 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
 /// local clock time. A running wake has cleared its timer, so nothing is due until it decides.
 pub fn next_wake(state: &RunState, wake_running: bool) -> String {
     match state.next_wake_at {
-        Some(at) if !wake_running && !state.status.is_terminal() => {
+        Some(at) if !wake_running && !state.status.is_terminal() && !state.is_paused() => {
             format!("{} ({})", crate::clock::due(at), crate::clock::local_clock(at))
         }
         _ => "—".to_string(),

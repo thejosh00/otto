@@ -20,9 +20,13 @@
 pub const PERSON_SECTIONS: &[&str] = &["where this is", "needs"];
 
 /// Words that only ever name otto's own machinery, matched as whole words, case-insensitively.
+///
+/// "tick" is not here, though otto uses it: it is ordinary English too ("ticked off the list"), and a
+/// task about counting ticks was refused for saying so. A line that is all otto-speak names a wake
+/// anyway.
 const ENGINE_WORDS: &[&str] = &[
-    "wake", "wakes", "woken", "tick", "ticks", "ticked", "noop-tick", "poke", "poked", "handoff", "nextwakeat",
-    "gate", "gates", "check.sh", "run.json", "journal.jsonl", "arm-timer", "set-check",
+    "wake", "wakes", "woken", "noop-tick", "poke", "poked", "handoff", "nextwakeat", "gate", "gates", "check.sh",
+    "run.json", "journal.jsonl", "arm-timer", "set-check",
 ];
 
 /// Phrases that only ever name otto's machinery, matched anywhere.
@@ -121,7 +125,7 @@ mod tests {
                     `check.sh` gates each wake (only wakes when `omni next` is non-empty, or after 24 no-change \
                     results as a safety net). Wake 63: queue empty, ticked. No task in flight, no repo lock held.";
         let found = jargon(line);
-        for word in ["\"check.sh\"", "\"gates\"", "\"wake\"", "\"wakes\"", "\"ticked\"", "\"safety net\""] {
+        for word in ["\"check.sh\"", "\"gates\"", "\"wake\"", "\"wakes\"", "\"safety net\""] {
             assert!(found.contains(&word.to_string()), "{word} not found in {found:?}");
         }
         let other = "Steady state: one curation run per wake. Wake 14 was started by hand at 2026-10-15T23:59Z.";
@@ -135,6 +139,7 @@ mod tests {
             "The PR is green and waiting for Sam's review; the release gateway change is next.",
             "Ticket PROJ-123 is half done: the plan is approved and the tests are written.",
             "Woke up to a red build on main, fixed the flaky test, and it is green again.",
+            "Second tick done; ticked off the last item on the list.",
             "nothing",
         ] {
             assert!(jargon(fine).is_empty(), "{fine:?} flagged as {:?}", jargon(fine));
@@ -151,7 +156,7 @@ mod tests {
 
         let jargony = handoff.replace("Watching the queue; nothing new since Monday.", "Wake 12 ticked; gate 002 closed.");
         let why = check_handoff(&jargony).expect("refused");
-        assert!(why.contains("\"Where this is\" says \"wake\", \"ticked\", \"gate\""), "got: {why}");
+        assert!(why.contains("\"Where this is\" says \"wake\", \"gate\""), "got: {why}");
 
         let needs = handoff.replace("## Needs\nnothing", "## Needs\nAnswer gate 003, or see artifacts/plan.md");
         assert!(check_handoff(&needs).unwrap().contains("\"Needs\" says \"gate\", \"artifacts\""));
@@ -161,7 +166,7 @@ mod tests {
     /// is still writing the same section.
     #[test]
     fn a_heading_with_its_gloss_is_the_same_section() {
-        let handoff = "## Where this is — for the person\nWake 3 ticked.\n";
+        let handoff = "## Where this is — for the person\nWake 3 is done.\n";
         assert!(check_handoff(handoff).is_some());
     }
 }

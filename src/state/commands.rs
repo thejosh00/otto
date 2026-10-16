@@ -1282,7 +1282,7 @@ mod tests {
         let err = write("# h · working · wake 3\n## Where this is\nWake 3: queue empty, ticked.\n## Next wake must\nTick.\n")
             .expect_err("refused");
         assert_eq!(err.code, 1);
-        assert!(err.to_string().contains("\"wake\", \"ticked\""), "says which words: {err}");
+        assert!(err.to_string().contains("\"wake\""), "says which words: {err}");
         assert_eq!(std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap(), before, "nothing written");
         write("# h · working · wake 3\n## Where this is\nThe queue is empty; next look in an hour.\n## Next wake must\nTick.\n")
             .unwrap();

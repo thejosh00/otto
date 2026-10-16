@@ -99,6 +99,8 @@ fn live_gate() {
         checks.bail(&run, "never finished");
     }
     checks.ok(format!("reached done after {}min", checks.elapsed().as_secs() / 60));
+    // `done` is set before the wake writes its handoff and exits; count its completion after.
+    checks.check(await_idle(Duration::from_secs(120)), "the second wake has exited", "the second wake is still running");
 
     // The point of the whole exercise: a wake with none of the first wake's context read the
     // answer back off disk and acted on it.

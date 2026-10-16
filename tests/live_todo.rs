@@ -21,10 +21,19 @@ fn timeout() -> Duration {
 }
 
 /// The mark of the first todo item mentioning `word`, as the file has it: `x`, ` `, `-`, `~`, `!`.
+/// The mark on the item for `word`'s note: the one naming its file (`gamma.md`) when one does — a
+/// wake may well add "ask whether to go on to gamma" beside "write gamma.md" — else the first that
+/// mentions the word at all.
 fn mark_of(todo: &str, word: &str) -> Option<char> {
-    todo.lines()
+    let items: Vec<&str> = todo
+        .lines()
         .filter_map(|line| line.strip_prefix("- [").or_else(|| line.strip_prefix("* [")))
-        .find(|rest| rest.to_lowercase().contains(word))
+        .collect();
+    let file = format!("{word}.md");
+    items
+        .iter()
+        .find(|rest| rest.to_lowercase().contains(&file))
+        .or_else(|| items.iter().find(|rest| rest.to_lowercase().contains(word)))
         .and_then(|rest| rest.chars().next())
 }
 

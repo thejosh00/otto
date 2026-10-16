@@ -1,6 +1,10 @@
 // otto's web page. Every action here is one `/api` call to the same core the CLI uses, so the
-// page and `otto ls` never disagree. Everything a wake wrote — gate questions, handoffs, logs,
-// pane contents — is untrusted text and only ever reaches the DOM as textContent.
+// page and `otto ls` never disagree. Everything a wake wrote — questions, messages, handoffs, logs,
+// pane contents — is untrusted text and only ever reaches the DOM as text: `md()` below builds
+// elements from it, never HTML.
+//
+// The page says things the way a person would. A run is an "agent" here, a wake is "a run" of it,
+// and a gate is a question; the engine's own words are under each agent's "Under the hood".
 "use strict";
 
 const view = document.getElementById("view");
@@ -72,18 +76,16 @@ async function busy(button, work) {
   }
 }
 
-// Mirrors paths::label: a run is `#7 legenda`; one from before numbering is its old id.
-function runLabel(id, name) {
-  if (/^\d+$/.test(id)) return name ? `#${id} ${name}` : `#${id}`;
-  return name && !id.endsWith(name) ? `${id} ${name}` : id;
-}
+const enc = encodeURIComponent;
 
+/** "in 24m" / "12m ago". */
 function relative(iso) {
   if (!iso) return "";
   const seconds = Math.round((new Date(iso) - Date.now()) / 1000);
   const abs = Math.abs(seconds);
   const [n, unit] = abs < 60 ? [abs, "s"] : abs < 3600 ? [Math.round(abs / 60), "m"]
     : abs < 86400 * 2 ? [Math.round(abs / 3600), "h"] : [Math.round(abs / 86400), "d"];
+  if (abs < 45) return seconds >= 0 ? "now" : "just now";
   return seconds >= 0 ? `in ${n}${unit}` : `${n}${unit} ago`;
 }
 
@@ -97,54 +99,49 @@ function spelled(iso) {
   return seconds >= 0 ? `in ${text}` : `${text} ago`;
 }
 
-/** When something poke acts on is due — mirrors clock::due: once passed, it waits for the next poke. */
-function due(iso) {
-  if (!iso) return "";
-  return new Date(iso) <= Date.now() ? "next poke" : relative(iso);
-}
-
 function localTime(iso) {
   return iso ? new Date(iso).toLocaleString() : "";
 }
 
-// Mirrors clock::local_clock: just the time today, the day too otherwise.
+// Just the time today, the weekday within the week, the date otherwise.
 function clockTime(iso) {
   const d = new Date(iso);
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return time;
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return time;
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow ${time}`;
+  if (Math.abs(d - today) < 6 * 86400 * 1000) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
   return `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
 
-function statusClass(status) {
-  return (status || "").split(" ")[0];
+/** When something comes next, for a person: "9:03 PM", or "any minute" once it is due. */
+function nextAt(iso) {
+  return new Date(iso) <= Date.now() ? "any minute" : clockTime(iso);
 }
 
-function pill(status, live = false) {
-  return h("span.pill." + statusClass(status) + (live ? ".live" : ""), status.replace("_", " "));
+// Mirrors clock::format_minutes: the largest unit that divides evenly.
+function formatMinutes(m) {
+  if (m % 1440 === 0) return `${m / 1440}d`;
+  if (m % 60 === 0) return `${m / 60}h`;
+  return `${m}m`;
 }
 
-// One line of a run's activity (`core::ActivityLine`): when, the name the wake gave it, and what
-// it said. Untrusted text, like everything a wake wrote — it only ever reaches the DOM as text.
-function activityLine(a, spec = "div.activity-item") {
-  return h(spec + (a.event === "error" ? ".bad" : ""), { title: `${localTime(a.at)} · ${a.event}${a.text ? ": " + a.text : ""}` },
-    h("span.when", relative(a.at)),
-    h("span.event", a.event),
-    h("span.text", a.text));
+// How often, in words: `every hour`, `every 2 days`, `every 30 minutes`.
+function everyText(m) {
+  if (m % 1440 === 0) return m === 1440 ? "every day" : `every ${m / 1440} days`;
+  if (m % 60 === 0) return m === 60 ? "every hour" : `every ${m / 60} hours`;
+  return `every ${m} minutes`;
 }
 
-// A todo's counts (`todo::Counts`) as a bar in the marks' proportions — what's finished leads,
-// what's left trails — over "accounted for / total". `leftOpen` is a done run that wasn't.
-function progressBar(t, leftOpen) {
-  const left = t.open + t.doing;
-  const segments = [["done", t.done], ["failed", t.failed], ["skipped", t.skipped], ["doing", t.doing], ["open", t.open]];
-  const said = [[t.done, "done"], [t.doing, "doing"], [t.open, "to do"], [t.skipped, "skipped"], [t.failed, "failed"]]
-    .filter(([n]) => n).map(([n, what]) => `${n} ${what}`).join(" · ");
-  return h("div.progress", { title: said },
-    h("div.bar", segments.filter(([, n]) => n).map(([mark, n]) => h(`span.${mark}`, { style: `flex-grow:${n}` }))),
-    h("small", `${t.total - left}/${t.total}`,
-      t.failed ? h("span.failed", ` · ${t.failed} failed`) : null,
-      leftOpen ? h("span.left-open", ` · ${left} left open`) : null));
+// Mirrors paths::label: a run is `#7 legenda`; one from before numbering is its old id.
+function runLabel(id, name) {
+  if (/^\d+$/.test(id)) return name ? `#${id} ${name}` : `#${id}`;
+  return name && !id.endsWith(name) ? `${id} ${name}` : id;
 }
+
+const idText = (id) => (/^\d+$/.test(id) ? `#${id}` : id);
 
 // Timers and streams belong to one view; leaving it closes them.
 let cleanups = [];
@@ -153,13 +150,83 @@ function every(ms, fn) {
   const id = setInterval(fn, ms);
   onLeave(() => clearInterval(id));
 }
-function stream(url, handlers) {
-  const source = new EventSource(url);
-  for (const [name, fn] of Object.entries(handlers)) {
-    source.addEventListener(name, (e) => fn(JSON.parse(e.data)));
+
+function store(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem(key);
+    localStorage.setItem(key, value);
+  } catch { /* storage unavailable */ }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// markdown → elements, for the text wakes write
+// ---------------------------------------------------------------------------
+
+/** Inline markdown — `code`, **bold**, links — as text and elements. Links only to http(s). */
+function inline(text) {
+  const out = [];
+  const pattern = /(`[^`]+`)|(\*\*[^*]+\*\*)|\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])|(?<![\w*])\*([^*\s][^*]*?)\*(?![\w*])/g;
+  let last = 0;
+  for (const m of text.matchAll(pattern)) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    if (m[1]) out.push(h("code", m[1].slice(1, -1)));
+    else if (m[2]) out.push(h("strong", m[2].slice(2, -2)));
+    else if (m[3]) out.push(h("a", { href: m[4], target: "_blank", rel: "noopener noreferrer" }, m[3]));
+    else if (m[5]) out.push(h("a", { href: m[5], target: "_blank", rel: "noopener noreferrer" }, m[5]));
+    else if (m[6]) out.push(h("em", m[6]));
+    last = m.index + m[0].length;
   }
-  onLeave(() => source.close());
-  return source;
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+
+/** Block markdown — headings, lists, quotes, fences, paragraphs — as a `div.md`. */
+function md(text) {
+  const root = h("div.md");
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  let para = [];
+  let list = null;
+  const flush = () => {
+    if (para.length) root.append(h("p", inline(para.join(" "))));
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = raw.replace(/^\s*>\s?/, "");
+    if (/^\s*```/.test(line)) {
+      flush(); list = null;
+      const body = [];
+      for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) body.push(lines[i]);
+      root.append(h("pre.code", body.join("\n")));
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.*)$/);
+    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+    const numbered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    if (heading) {
+      flush(); list = null;
+      root.append(h(heading[1].length <= 2 ? "h3" : "h4", inline(heading[2])));
+    } else if (bullet || numbered) {
+      flush();
+      const tag = bullet ? "ul" : "ol";
+      if (!list || list.tagName.toLowerCase() !== tag) {
+        list = h(tag);
+        if (numbered && numbered[1] !== "1") list.start = Number(numbered[1]);
+        root.append(list);
+      }
+      list.append(h("li", inline(bullet ? bullet[1] : numbered[2])));
+    } else if (!line.trim()) {
+      flush(); list = null;
+    } else if (list && /^\s{2,}\S/.test(raw)) {
+      list.lastElementChild.append(" ", ...inline(line.trim()));
+    } else {
+      list = null;
+      para.push(line.trim());
+    }
+  }
+  flush();
+  return root;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,123 +303,276 @@ function ansiToNodes(text) {
 }
 
 // ---------------------------------------------------------------------------
-// answering a gate — shared by the runs list and the run page
+// the bar across the top: the inbox count and whether otto itself is well
 // ---------------------------------------------------------------------------
 
-async function sendAnswer(id, body, button) {
-  const result = await busy(button, () => api(`/runs/${encodeURIComponent(id)}/answer`, body));
-  if (!result) return false;
-  const how = result.wake ? (result.wake.note || "the run is continuing") : result.note;
-  toast(`Recorded “${result.answer.slice(0, 60)}” against gate ${result.gateId}${how ? " — " + how : ""}`);
-  return true;
+async function refreshChrome() {
+  try {
+    const inbox = await api("/inbox");
+    const count = document.getElementById("inbox-count");
+    count.textContent = inbox.open > 99 ? "99+" : String(inbox.open);
+    count.hidden = inbox.open === 0;
+    document.getElementById("inbox-btn").title = inbox.open ? `${inbox.open} waiting for you` : "Nothing waiting for you";
+  } catch { /* the server is down; the next refresh says so */ }
+  try {
+    const health = await api("/health");
+    const el = document.getElementById("health");
+    el.className = "health" + (health.ok ? "" : " bad");
+    el.replaceChildren(h("span", health.ok ? "All good" : health.problems.length === 1 ? "1 problem" : `${health.problems.length} problems`));
+    el.title = health.ok ? "otto is waking your agents on time" : health.problems.join("\n");
+    lastHealth = health;
+  } catch {
+    const el = document.getElementById("health");
+    el.className = "health bad";
+    el.replaceChildren(h("span", "Can't reach otto"));
+  }
+}
+let lastHealth = null;
+refreshChrome();
+setInterval(refreshChrome, 10000);
+
+// The problems with otto itself, as a banner — only when there are any.
+function healthBanner() {
+  const box = h("div");
+  const draw = (health) => {
+    if (!health || health.ok) { box.replaceChildren(); return; }
+    box.replaceChildren(h("div.banner.warn", health.problems.map((p) => h("div", p)), h("a", { href: "#/system" }, "Details")));
+  };
+  draw(lastHealth);
+  api("/health").then(draw).catch(() => {});
+  return box;
 }
 
-function optionButtons(id, options, defaultOption, getNoWake, after) {
-  return h("div.options", options.map((option) => h(
-    "button" + (option === defaultOption ? ".primary" : ""),
-    {
-      onclick: async (e) => {
-        if (await sendAnswer(id, { choice: option, noWake: getNoWake() }, e.currentTarget)) after();
+// ---------------------------------------------------------------------------
+// pieces shared by several views
+// ---------------------------------------------------------------------------
+
+const MOOD_WORDS = {
+  waiting: "waiting on you", working: "working now", watching: "watching", idle: "quiet",
+  paused: "paused", trouble: "needs a look", finished: "finished",
+};
+
+function glyph(mood) {
+  return h(`span.sg.${mood || "idle"}`, { title: MOOD_WORDS[mood] || "", "aria-label": MOOD_WORDS[mood] || "" });
+}
+
+const KIND_LABEL = { question: "Needs your answer", report: "Report", draft: "Draft to send", update: "Update" };
+
+function kindChip(kind, open = true) {
+  return h(`span.kind.${open ? kind : "done"}`, open ? KIND_LABEL[kind] || kind : kind === "question" ? "Answered" : "Done");
+}
+
+// A todo's counts (`todo::Counts`) as a bar in the marks' proportions — what's finished leads,
+// what's left trails — over "accounted for / total". `leftOpen` is a done run that wasn't.
+function progressBar(t, leftOpen) {
+  const left = t.open + t.doing;
+  const segments = [["done", t.done], ["failed", t.failed], ["skipped", t.skipped], ["doing", t.doing], ["open", t.open]];
+  const said = [[t.done, "done"], [t.doing, "doing"], [t.open, "to do"], [t.skipped, "skipped"], [t.failed, "failed"]]
+    .filter(([n]) => n).map(([n, what]) => `${n} ${what}`).join(" · ");
+  return h("div.progress", { title: said },
+    h("div.bar", segments.filter(([, n]) => n).map(([mark, n]) => h(`span.${mark}`, { style: `flex-grow:${n}` }))),
+    h("small", `${t.total - left} of ${t.total} done`,
+      t.failed ? h("span.failed", ` · ${t.failed} failed`) : null,
+      leftOpen ? h("span.left-open", ` · ${left} left open`) : null));
+}
+
+/** Answering a question: its text, its options as buttons, and a box for anything else. */
+function questionCard(runId, gate, after) {
+  const text = h("textarea", { placeholder: "Or answer in your own words…", rows: 3 });
+  const send = async (body, button) => {
+    const r = await busy(button, () => api(`/runs/${enc(runId)}/answer`, body));
+    if (!r) return;
+    toast(`Answered “${r.answer.slice(0, 60)}”${r.wake ? " — it's carrying on" : r.note ? " — " + r.note : ""}`);
+    after();
+  };
+  return h("div.ask-card",
+    md(gate.question || gate.text || `(the question's file ${gate.file} is missing)`),
+    gate.options.length
+      ? h("div.options", gate.options.map((option) => h("button" + (option === gate.default ? ".primary" : ""),
+        { onclick: (e) => send({ choice: option }, e.currentTarget) },
+        option, option === gate.default ? h("span.tag", "suggested") : null)))
+      : null,
+    text,
+    h("div.row.end", h("button", {
+      onclick: (e) => {
+        if (!text.value.trim()) { toast("Write an answer first", true); return; }
+        send({ text: text.value }, e.currentTarget);
       },
+    }, "Send answer")));
+}
+
+// The next 9:00 in the morning from now, `days` days ahead (1: tomorrow) — or the coming
+// Monday's, for `days` = "monday".
+function morning(days) {
+  const d = new Date();
+  if (days === "monday") {
+    const add = ((8 - d.getDay()) % 7) || 7;
+    d.setDate(d.getDate() + add);
+  } else {
+    d.setDate(d.getDate() + days);
+  }
+  d.setHours(9, 0, 0, 0);
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/** The Pause ▾ control and its menu. `after` redraws whatever shows the run's state. */
+function pauseControl(runId, after) {
+  const wrap = h("div.menu-wrap");
+  const pause = async (body, label, button) => {
+    const r = await busy(button, () => api(`/runs/${enc(runId)}/pause`, body));
+    if (!r) return;
+    close();
+    toast(`Paused ${label}${r.running ? " — the run going now will finish first" : ""}. Questions stay open; you can still run it by hand.`);
+    after();
+  };
+  const choices = [
+    ["For an hour", { for: "1h" }, "for an hour"],
+    ["Until tomorrow morning", () => ({ until: morning(1) }), "until tomorrow morning"],
+    ["Until Monday morning", () => ({ until: morning("monday") }), "until Monday morning"],
+    ["Until I resume it", {}, "until you resume it"],
+  ];
+  const menu = h("div.menu", { hidden: true },
+    h("b", "Pause — hold back what's scheduled"),
+    choices.map(([label, body, said]) => h("button", {
+      onclick: (e) => pause(typeof body === "function" ? body() : body, said, e.currentTarget),
+    }, label)));
+  const close = () => { menu.hidden = true; document.removeEventListener("click", outside); };
+  const outside = (e) => { if (!document.body.contains(wrap) || !wrap.contains(e.target)) close(); };
+  wrap.append(h("button.small", {
+    onclick: () => {
+      menu.hidden = !menu.hidden;
+      if (!menu.hidden) setTimeout(() => document.addEventListener("click", outside), 0);
     },
-    option,
-    option === defaultOption ? h("span.tag", "default") : null,
-  )));
+  }, "Pause ▾"), menu);
+  return wrap;
 }
 
 // ---------------------------------------------------------------------------
-// #/ — runs
+// the week, as a strip
 // ---------------------------------------------------------------------------
 
-let showAll = false;
-try { showAll = localStorage.getItem("otto.all") === "1"; } catch { /* storage unavailable */ }
+const MARK_WORDS = {
+  did: "did something", ran: "looked, nothing to do", failed: "stopped part-way",
+  "couldnt-start": "couldn't start", limited: "hit the usage limit",
+};
 
-function runsView() {
-  const needs = h("section");
-  const banner = h("div");
-  const table = h("div");
-  const allToggle = h("input", {
+/** A run's last six days, today and tomorrow (`story::Timeline`), as one strip. */
+function weekStrip(t) {
+  const now = new Date(t.now);
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - 6);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 8);
+  const span = end - start;
+  const at = (iso) => Math.max(0, Math.min(1, (new Date(iso) - start) / span));
+  const pct = (x) => `${(x * 100).toFixed(3)}%`;
+  const strip = h("div.strip", h("div.track"));
+  const seg = (cls, from, to, title) => {
+    const a = at(from), b = at(to);
+    if (b <= a) return;
+    strip.append(h(`div.seg.${cls}`, { style: `left:${pct(a)};width:${pct(b - a)}`, title }));
+  };
+  const present = new Set();
+  for (const s of t.looking) { seg("look", s.from, s.to, "a free check was looking for news"); present.add("look"); }
+  for (const s of t.paused) { seg("paused", s.from, s.to, "paused"); present.add("paused"); }
+  for (const s of t.waiting) {
+    seg("wait", s.from, s.to, `waited on you ${spelled(s.from).replace(" ago", "")}`);
+    present.add("wait");
+  }
+  seg("future", t.now, end.toISOString(), "");
+
+  // Marks close together of the same kind are one mark with a count, or five failed starts in
+  // ninety minutes would be five glyphs on one pixel.
+  const groups = [];
+  for (const w of t.wakes) {
+    const x = at(w.at);
+    if (x <= 0) continue;
+    const g = groups[groups.length - 1];
+    if (g && g.mark === w.mark && x - g.x < 0.012) { g.n += 1; g.titles.push(w); continue; }
+    groups.push({ x, mark: w.mark, n: 1, titles: [w] });
+  }
+  for (const g of groups) {
+    present.add(g.mark);
+    const title = g.titles.map((w) => `${clockTime(w.at)}: ${MARK_WORDS[w.mark]}${w.text ? " — " + w.text : ""}`).join("\n");
+    const bad = g.mark === "failed" || g.mark === "couldnt-start";
+    strip.append(h(`div.mark.${g.mark}`, { style: `left:${pct(g.x)}`, title },
+      bad ? "✕" : g.mark === "limited" ? "◷" : null, g.n > 1 ? h("small", String(g.n)) : null));
+  }
+  strip.append(h("div.now", { style: `left:${pct(at(t.now))}`, title: "now" }));
+  if (t.next && at(t.next) < 1) {
+    strip.append(h("div.mark.next", { style: `left:${pct(at(t.next))}`, title: `next run ${clockTime(t.next)}` }));
+    present.add("next");
+  }
+  const days = h("div.days");
+  for (let i = 0; i < 8; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const label = i === 6 ? "Today" : i === 7 ? "Tomorrow" : `${d.toLocaleDateString([], { weekday: "short" })} ${d.getDate()}`;
+    days.append(h(i === 6 ? "span.today" : "span", label));
+  }
+  const legendItems = [
+    ["look", h("i.look"), "looking, free"], ["did", h("i.did"), "did something"], ["ran", h("i.ran"), "looked, nothing to do"],
+    ["failed", h("span.x", "✕"), "stopped part-way"], ["couldnt-start", h("span.x", "✕"), "couldn't start"],
+    ["limited", h("span.x.lim", "◷"), "usage limit"], ["wait", h("i.wait"), "waiting on you"], ["paused", h("i.paused"), "paused"],
+    ["next", h("i.next"), "next run"],
+  ];
+  const seen = new Set();
+  const legend = h("div.legend", legendItems.filter(([k, , word]) => present.has(k) && !seen.has(word) && seen.add(word))
+    .map(([, icon, word]) => h("span", icon, word)));
+  return h("div.strip-wrap", strip, days, legend);
+}
+
+// ---------------------------------------------------------------------------
+// #/ — agents, one line each
+// ---------------------------------------------------------------------------
+
+let showAll = store("otto.all") === "1";
+
+// When, at the end of a row: what's next for a live run, when it last ran otherwise.
+function rowWhen(r) {
+  if (r.running) return "now";
+  if (!r.terminal && r.mood !== "paused" && r.mood !== "waiting" && r.nextWakeAt) return `next ${nextAt(r.nextWakeAt)}`;
+  return r.lastRunAt ? relative(r.lastRunAt) : "";
+}
+
+function agentsView() {
+  const list = h("div");
+  const toggle = h("input", {
     type: "checkbox",
     checked: showAll,
-    onchange: (e) => {
-      showAll = e.target.checked;
-      try { localStorage.setItem("otto.all", showAll ? "1" : "0"); } catch { /* ignore */ }
-      refresh();
-    },
+    onchange: (e) => { showAll = e.target.checked; store("otto.all", showAll ? "1" : "0"); refresh(); },
   });
   view.replaceChildren(
-    h("div.row.spread",
-      h("h1", "Runs"),
-      h("div.row", h("label.check", allToggle, "Include finished"), h("a.btn", { href: "#/new" }, "New run"))),
-    banner, needs,
-    h("h2", "All runs"),
-    table,
-  );
+    h("div.view-title", h("h1", "Agents"),
+      h("div.row", h("label.check", toggle, "Show finished"), h("a.btn", { href: "#/new" }, "New agent"))),
+    healthBanner(),
+    list);
 
   async function refresh() {
     let data;
     try {
       data = await api("/runs" + (showAll ? "?all=true" : ""));
     } catch (err) {
-      banner.replaceChildren(h("div.banner.bad", err.message));
+      list.replaceChildren(h("div.banner.bad", err.message));
       return;
     }
-    banner.replaceChildren(data.strandedSleepers
-      ? h("div.banner.warn",
-        `${data.strandedSleepers} run(s) are sleeping on a timer, but the reviver is not loaded — they will never wake on their own. `,
-        h("a", { href: "#/agent" }, "Start the reviver"))
-      : "");
-    renderNeeds(data.needsYou);
-    renderTable(data.rows);
-  }
-
-  function renderNeeds(list) {
-    if (!list.length) { needs.replaceChildren(); return; }
-    needs.replaceChildren(
-      h("h2", `Needs you · ${list.length}`),
-      ...list.map((n) => h("div.card.needs",
-        h("div.row.spread",
-          h("div", h("h3", h("a", { href: `#/run/${encodeURIComponent(n.id)}` }, runLabel(n.id, n.name))), h("div.faint.mono", n.label)),
-          h("a.btn", { href: `#/run/${encodeURIComponent(n.id)}` }, "Read the question")),
-        n.options.length
-          ? optionButtons(n.id, n.options, n.options[0], () => false, refresh)
-          : h("p.muted", "Free-form question — open it to answer."))),
-    );
-  }
-
-  function renderTable(rows) {
-    if (!rows.length) {
-      table.replaceChildren(h("div.card.empty",
-        h("p", showAll ? "No runs yet." : "No live runs."),
-        h("a.btn", { href: "#/new" }, "Start one")));
+    if (!data.rows.length) {
+      list.replaceChildren(h("div.card.empty",
+        h("p", showAll ? "No agents yet." : "No agents running."),
+        h("a.btn.primary", { href: "#/new" }, "Start one")));
       return;
     }
-    const columns = ["Run", "Status", "Phase", "Waiting on", "Next wake", "Period", "Wakes"];
-    table.replaceChildren(h("table.table",
-      h("thead", h("tr", columns.map((t) => h("th", t)))),
-      // A tbody per run, so the run's row and its where-this-is line under it are one thing to
-      // hover and click.
-      rows.map((r) => h("tbody", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
-        h(r.whereThisIs || r.lastActivity ? "tr.has-where" : "tr",
-          // The name leads — it's what a person recognises; the number underneath is what to type.
-          h("td.run",
-            h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
-            h("small", /^\d+$/.test(r.id) ? `#${r.id}` : r.id)),
-          h("td", { dataset: { label: "" } }, pill(r.status, r.running)),
-          h("td", { dataset: { label: "phase" } }, r.phase, r.todo ? progressBar(r.todo, r.todoLeftOpen) : null),
-          h("td", { dataset: { label: "waiting on" } }, r.blocking),
-          h("td", { dataset: { label: "next wake" }, title: r.nextWakeAt ? localTime(r.nextWakeAt) : "" },
-            r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
-          h("td.mono", { dataset: { label: "period" } }, r.period),
-          h("td.mono", { dataset: { label: "wakes" } }, r.wakes)),
-        // The last wake's own account of where the run stands, clamped to two lines, and the newest
-        // line of its activity on one; the rest of each is on hover and on the run page.
-        r.whereThisIs || r.lastActivity
-          ? h("tr.where", h("td", { colSpan: columns.length },
-            r.whereThisIs ? h("div", { title: r.whereThisIs }, r.whereThisIs) : null,
-            r.lastActivity ? activityLine(r.lastActivity, "div.last") : null))
-          : null)),
-    ));
+    // What needs a person first, then what's working, then the rest; finished last.
+    const order = { waiting: 0, trouble: 1, working: 2, watching: 3, idle: 3, paused: 4, finished: 5 };
+    const rows = [...data.rows].sort((a, b) => (order[a.mood] ?? 3) - (order[b.mood] ?? 3));
+    list.replaceChildren(h("div.list", rows.map((r) => h(`a.list-row.${r.mood}`, { href: `#/run/${enc(r.id)}` },
+      glyph(r.mood),
+      h("span.name", r.name || r.id),
+      h("span.line", { title: r.line }, r.line),
+      h("span.meta",
+        r.messages ? h("span.msgs", { title: `${r.messages} message(s) waiting in your inbox` }, `✉ ${r.messages}`) : null,
+        rowWhen(r))))));
   }
 
   refresh();
@@ -360,106 +580,293 @@ function runsView() {
 }
 
 // ---------------------------------------------------------------------------
-// #/run/:id
+// #/inbox — everything waiting for you
+// ---------------------------------------------------------------------------
+
+let inboxFilter = store("otto.inbox") || "todo";
+
+const itemKey = (i) => `${i.run}/${i.kind === "question" ? "q" : "m"}${i.id}`;
+
+function inboxView(selected) {
+  const listBox = h("div.mail-list");
+  const pane = h("div.mail-pane");
+  let items = [];
+  let shownKey = null;
+  view.replaceChildren(
+    h("div.view-title", h("h1", "Inbox"), h("span.faint", { id: "inbox-summary" })),
+    h("div.mail", listBox, pane));
+
+  const filters = h("div.mail-filters");
+  const drawFilters = (open) => {
+    filters.replaceChildren(...[["todo", `To do · ${open}`], ["done", "Done"], ["all", "All"]].map(([key, label]) =>
+      h("button", { "aria-pressed": String(inboxFilter === key), onclick: () => { inboxFilter = key; store("otto.inbox", key); refresh(); } }, label)));
+  };
+
+  async function refresh() {
+    let data;
+    try {
+      data = await api("/inbox" + (inboxFilter === "todo" ? "" : "?all=true"));
+    } catch (err) {
+      listBox.replaceChildren(h("div.banner.bad", err.message));
+      return;
+    }
+    items = data.items.filter((i) => inboxFilter === "all" || (inboxFilter === "todo" ? i.open : !i.open));
+    document.getElementById("inbox-summary").textContent = data.open ? `${data.open} waiting for you` : "Nothing waiting for you";
+    drawFilters(data.open);
+    listBox.replaceChildren(filters, items.length
+      ? h("div", items.map((i) => h("a.mail-item" + (i.open ? "" : ".done"), {
+        href: `#/inbox/${itemKey(i)}`,
+        "aria-current": String(itemKey(i) === selected),
+      },
+        h("span.unread" + (i.open ? "" : ".read")),
+        h("span.from", i.name || i.run), h("span.when", relative(i.at)),
+        h("span.title", i.title),
+        h("span.chip-row", kindChip(i.kind, i.open)))))
+      : h("p.mail-empty", inboxFilter === "todo" ? "Nothing is waiting for you. Your agents put questions and results here." : "Nothing here yet."));
+    if (!selected && items.length && window.matchMedia("(min-width: 761px)").matches) {
+      selected = itemKey(items[0]);
+      history.replaceState(null, "", `#/inbox/${selected}`);
+      for (const a of listBox.querySelectorAll(".mail-item")) a.setAttribute("aria-current", String(a.getAttribute("href") === `#/inbox/${selected}`));
+    }
+    if (selected !== shownKey) drawPane();
+  }
+
+  async function drawPane() {
+    shownKey = selected;
+    if (!selected) { pane.replaceChildren(h("p.faint", "Choose something on the left.")); return; }
+    const [run, ref] = selected.split("/");
+    const item = items.find((i) => itemKey(i) === selected);
+    pane.replaceChildren(h("p.faint", "Loading…"));
+    try {
+      if (ref.startsWith("q")) await drawQuestion(run, ref.slice(1), item);
+      else await drawMessage(run, ref.slice(1), item);
+    } catch (err) {
+      pane.replaceChildren(h("div.banner.bad", err.message));
+    }
+  }
+
+  // Done with one: on to whatever is next, as an inbox does.
+  const after = () => {
+    selected = null;
+    shownKey = null;
+    history.replaceState(null, "", "#/inbox");
+    refresh();
+    refreshChrome();
+  };
+
+  async function drawQuestion(run, id, item) {
+    const d = await api(`/runs/${enc(run)}`);
+    const head = h("div.pane-head",
+      h("div.row", h("a", { href: `#/run/${enc(run)}` }, d.name || run), kindChip("question", !!(d.gate && d.gate.id === id)),
+        item ? h("span.faint", relative(item.at)) : null),
+      h("h2", item ? item.title : d.questionTitle || "Question"));
+    if (d.gate && d.gate.id === id) {
+      pane.replaceChildren(head, questionCard(run, d.gate, after));
+    } else {
+      pane.replaceChildren(head, h("div.resolved", `✓ You answered: ${item && item.answer ? item.answer : "(see its log)"}`));
+    }
+  }
+
+  async function drawMessage(run, id, item) {
+    const m = await api(`/runs/${enc(run)}/messages/${enc(id)}`);
+    const reply = h("textarea", { rows: 3, placeholder: m.kind === "report" ? "Reply — what to dig into next, what it got wrong…" : m.kind === "draft" ? "Reply — what the draft should say differently…" : "Reply…" });
+    const now = h("input", { type: "checkbox" });
+    const done = async (body, button, what) => {
+      const r = await busy(button, () => api(`/runs/${enc(run)}/messages/${enc(id)}/done`, body));
+      if (!r) return;
+      toast(r.done.note ? `${what} — ${r.wake ? "it's reading it now" : r.notWoken ? "not run now: " + r.notWoken : r.delivery}` : what);
+      after();
+    };
+    const parts = [
+      h("div.pane-head",
+        h("div.row", h("a", { href: `#/run/${enc(run)}` }, (item && item.name) || runNameCache[run] || idText(run)),
+          kindChip(m.kind, m.open), h("span.faint", relative(m.sentAt))),
+        h("h2", m.title)),
+      md(m.text),
+    ];
+    if (m.draft) {
+      parts.push(h("div.draft-box",
+        h("div.row.spread", h("span.label", "Draft to send — otto never sends it for you"),
+          h("button.small", {
+            onclick: async (e) => {
+              try { await navigator.clipboard.writeText(m.draft); toast("Copied — paste it where it goes"); }
+              catch { toast("Couldn't reach the clipboard; select the text and copy it", true); }
+              e.currentTarget.blur();
+            },
+          }, "Copy")),
+        h("div.draft-text", m.draft)));
+    }
+    for (const a of m.attached) {
+      parts.push(h("details.attachment", h("summary", `Attached: ${a.path}`),
+        a.text != null ? (a.path.endsWith(".md") ? md(a.text) : h("pre.code", a.text)) : h("p.faint", "Too big to show here, or not text.")));
+    }
+    if (!m.open) {
+      parts.push(h("div.resolved", m.reply ? `✓ Done — you replied: ${m.reply}` : `✓ Done ${m.doneAt ? relative(m.doneAt) : ""}`));
+    } else {
+      parts.push(h("div.row",
+        h("button.primary", { onclick: (e) => done({}, e.currentTarget, "Done") }, "Done"),
+        m.kind === "report" ? h("button", { title: "Mark it done and tell the agent it got this one right", onclick: (e) => done({ reply: "Looks right." }, e.currentTarget, "Told it so") }, "Looks right") : null));
+    }
+    parts.push(h("div.reply-box", reply,
+      h("div.row.spread",
+        h("label.check", now, "and run it now"),
+        h("button", {
+          onclick: (e) => {
+            if (!reply.value.trim()) { toast("Write a reply first", true); return; }
+            done({ reply: reply.value, now: now.checked }, e.currentTarget, "Reply sent");
+          },
+        }, m.open ? "Reply and mark done" : "Reply")),
+      h("p.hint", "It reads your reply the next time it runs.")));
+    pane.replaceChildren(...parts);
+  }
+
+  refresh();
+  every(10000, refresh);
+}
+
+const runNameCache = {};
+const LATELY_FIRST = 8;
+
+// ---------------------------------------------------------------------------
+// #/run/:id — one agent
 // ---------------------------------------------------------------------------
 
 function runView(id) {
-  const path = `/runs/${encodeURIComponent(id)}`;
-  // What a person wants first: where the run stands, what it needs, what it has done. Everything
-  // else — the handoff, the journal, a live wake, the settings — is a click away below.
+  const path = `/runs/${enc(id)}`;
   const head = h("div");
-  const summary = h("div");
-  const gateBox = h("div");
-  const todoBox = h("div");
-  const activityBox = h("div");
-  const notesBox = h("div");
-  let shownGate = null;
-
-  // ----- the drill-down. Each section is built once, so a refresh never closes it, and whether
-  // it was left open is remembered per viewer.
-  function drill(key, title, body, onToggle) {
-    const note = h("span.faint");
-    const el = h("details.drill", h("summary", h("span.drill-title", title), note), body);
-    try { el.open = localStorage.getItem(`otto.drill.${key}`) === "1"; } catch { /* storage unavailable */ }
-    el.addEventListener("toggle", () => {
-      try { localStorage.setItem(`otto.drill.${key}`, el.open ? "1" : "0"); } catch { /* ignore */ }
-      if (onToggle) onToggle(el.open);
-    });
-    return { el, note, body };
-  }
-  const handoff = drill("handoff", "Handoff", h("div"));
-  const log = drill("log", "Log", h("div"), (open) => setStream("log", open));
-  const live = drill("live", "Live wake", h("div"), (open) => setStream("live", open));
-  const notesDrill = drill("notes", "Tell the run something", notesBox);
-  const settings = drill("settings", "Run settings", h("div"));
-  log.note.textContent = "every event otto and the wakes wrote — filter it, follow it";
-  const actions = h("div");
-  const factsEl = h("div");
-  const checkEl = h("div");
-  settings.body.append(actions, factsEl, checkEl);
+  const ask = h("div");
+  const alerts = h("div");
+  const picture = h("div.panel");
+  const lately = h("div.panel");
+  const tell = h("div.panel");
+  const hood = h("div.hood");
+  let last = null;
 
   view.replaceChildren(
-    h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, summary, gateBox, todoBox, activityBox,
-    h("h2", "Details"),
-    h("div.drills", handoff.el, log.el, live.el, notesDrill.el, settings.el),
-  );
+    h("a.back", { href: "#/" }, "← Agents"),
+    head, ask, alerts,
+    h("div.agent-grid",
+      h("div.col", picture, lately, tell),
+      h("aside.col", hood)));
 
   async function refresh() {
     let d;
     try {
       d = await api(path);
     } catch (err) {
-      summary.replaceChildren(h("div.banner.bad", err.message));
+      head.replaceChildren(h("div.banner.bad", err.message));
       return;
     }
+    last = d;
+    runNameCache[d.state.id] = d.name;
     renderHead(d);
-    renderSummary(d);
-    renderGate(d);
-    renderTodo(d);
-    renderActivity(d);
-    renderNotes(d);
-    renderHandoff(d);
-    renderSettings(d);
-    live.note.textContent = d.running ? `wake ${d.state.wake ? d.state.wake.n : ""} is running — what it is saying and doing` : "no wake is running now";
+    renderAsk(d);
+    renderAlerts(d);
+    renderPicture(d);
+    renderLately(d);
+    renderTell(d);
+    renderHood(d);
   }
 
+  // ----- the top: who it is, what it's doing, and the controls
+  let shownHead = null;
   function renderHead(d) {
     if (head.dataset.editing) return; // a rename is being typed; a refresh must not eat it
-    head.replaceChildren(h("div.row.spread",
-      h("div",
-        // As in the list: the name leads, and the id — what to type — sits under it, dimmed.
-        h("div.row.title",
-          h("h1", d.name || d.state.id),
-          h("button.ghost.small", { title: "Rename this run", onclick: () => renameInPlace(d) }, "Rename")),
-        h("div.run-id", /^\d+$/.test(d.state.id) ? `#${d.state.id}` : d.state.id,
-          d.state.formerId ? ` · was ${d.state.formerId}` : "")),
-      pill(d.statusLabel, d.running)));
+    if (head.querySelector(".menu:not([hidden])")) return; // nor a menu someone has open
+    const s = d.state;
+    const key = JSON.stringify([d.name, d.glance, d.running, s.status, s.paused, s.gate && s.gate.id, s.nextWakeAt,
+      d.lastRun && d.lastRun.at, s.goal, s.policy.periodMinutes, Math.floor(Date.now() / 60000)]);
+    if (key === shownHead) return;
+    shownHead = key;
+    const over = ["done", "stopped", "failed"].includes(s.status);
+    const paused = !!s.paused && (!s.paused.until || new Date(s.paused.until) > Date.now());
+    const controls = h("div.controls");
+    if (!over) {
+      controls.append(paused
+        ? h("button.small", { onclick: (e) => resume(e.currentTarget, "The pause is lifted") }, "Resume")
+        : pauseControl(s.id, refresh));
+      controls.append(h("button.small", {
+        disabled: d.running || !!s.gate,
+        title: d.running ? "It's running now" : s.gate ? "It's waiting on your answer" : "Start a run now, outside its schedule",
+        onclick: (e) => busy(e.currentTarget, async () => {
+          const r = await api(path + "/wake", {});
+          toast(r.note || "Running now");
+          refresh();
+        }),
+      }, "Run now"));
+      controls.append(stopControl());
+    } else if (s.status !== "done") {
+      controls.append(h("button.small.primary", { onclick: (e) => resume(e.currentTarget, "It's back") }, "Bring it back"));
+    }
+    const when = nextLine(d, paused);
+    head.replaceChildren(h("div.agent-top",
+      h("div.who",
+        h("div.row.title", h("h1", d.name || s.id),
+          h("button.ghost.small", { title: "Rename it", onclick: () => renameInPlace(d) }, "Rename")),
+        h("p.goal", s.goal),
+        h("div.status-line", glyph(d.glance.mood), h("span", d.glance.line)),
+        when ? h("div.when-line", when) : null),
+      controls));
   }
 
-  // The name is edited where it is shown. Any run can be renamed, finished or not: nothing on
-  // disk is keyed by the name, and the page's URL is the run's number, which never changes.
+  function nextLine(d, paused) {
+    const s = d.state;
+    const bits = [];
+    if (d.running && s.wake) bits.push(`running since ${clockTime(s.wake.startedAt)}`);
+    else if (!["done", "stopped", "failed"].includes(s.status) && !s.gate && !paused && s.nextWakeAt) {
+      bits.push(`next run ${nextAt(s.nextWakeAt)}`);
+    }
+    if (!["done", "stopped", "failed"].includes(s.status)) bits.push(s.policy.perpetual ? `${everyText(s.policy.periodMinutes || 60)}, until you stop it` : everyText(s.policy.periodMinutes || 60));
+    if (d.lastRun) bits.push(`last ran ${relative(d.lastRun.at)}`);
+    return bits.join(" · ");
+  }
+
+  async function resume(button, said) {
+    const r = await busy(button, () => api(path + "/resume", {}));
+    if (!r) return;
+    toast(`${said}${r.note ? " — " + r.note : ""}`);
+    shownHead = null;
+    refresh();
+  }
+
+  function stopControl() {
+    const wrap = h("div.menu-wrap");
+    const reason = h("input", { placeholder: "Why (optional)" });
+    const menu = h("div.menu.wide", { hidden: true },
+      h("b", "Stop it for good?"),
+      h("p.faint", "It won't run again; anything running now is stopped and its repo locks released. You can bring it back later."),
+      reason,
+      h("div.row.end",
+        h("button.ghost.small", { onclick: () => { menu.hidden = true; } }, "Cancel"),
+        h("button.danger.small", {
+          onclick: (e) => busy(e.currentTarget, async () => {
+            const r = await api(path + "/stop", { reason: reason.value });
+            toast(`Stopped${r.killedWake ? " — and the run going now" : ""}`);
+            menu.hidden = true;
+            refresh();
+          }),
+        }, "Stop it")));
+    wrap.append(h("button.small.ghost", { onclick: () => { menu.hidden = !menu.hidden; if (!menu.hidden) reason.focus(); } }, "Stop…"), menu);
+    return wrap;
+  }
+
+  // The name is edited where it is shown. Nothing on disk is keyed by the name.
   function renameInPlace(d) {
     head.dataset.editing = "1";
     const input = h("input.rename", { value: d.name, "aria-label": "Name", spellcheck: false });
-    const close = () => { delete head.dataset.editing; refresh(); };
+    const close = () => { delete head.dataset.editing; shownHead = null; refresh(); };
     let saveButton;
     const save = (button) => busy(button, async () => {
       if (input.value.trim() === d.name) { close(); return; }
       const r = await api(path + "/rename", { name: input.value });
-      toast(r.from === r.to ? "Name unchanged" : `Renamed to ${runLabel(r.id, r.to)}`);
+      toast(r.from === r.to ? "Name unchanged" : `Renamed to ${r.to}`);
       close();
     });
-    const number = /^\d+$/.test(d.state.id) ? `#${d.state.id}` : d.state.id;
-    head.replaceChildren(h("div.row.spread",
-      h("div",
-        h("div.row.title",
-          h("h1", number),
-          input,
-          (saveButton = h("button.primary.small", { onclick: (e) => save(e.currentTarget) }, "Save")),
-          h("button.ghost.small", { onclick: close }, "Cancel")),
-        h("div.faint", "Letters, digits and hyphens — not just a number, and not another run's name.")),
-      pill(d.statusLabel, d.running)));
+    head.replaceChildren(h("div.agent-top", h("div.who",
+      h("div.row.title", input,
+        (saveButton = h("button.primary.small", { onclick: (e) => save(e.currentTarget) }, "Save")),
+        h("button.ghost.small", { onclick: close }, "Cancel")),
+      h("p.faint", "Letters, digits and hyphens — not just a number, and not another agent's name."))));
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") saveButton.click();
       if (e.key === "Escape") close();
@@ -468,356 +875,225 @@ function runView(id) {
     input.select();
   }
 
-  // Mirrors clock::format_minutes: the largest unit that divides evenly.
-  function formatMinutes(m) {
-    if (m % 1440 === 0) return `${m / 1440}d`;
-    if (m % 60 === 0) return `${m / 60}h`;
-    return `${m}m`;
-  }
-
-  // How often, in words: `every hour`, `every 2 days`, `every 30 minutes`.
-  function everyText(m) {
-    if (m % 1440 === 0) return m === 1440 ? "every day" : `every ${m / 1440} days`;
-    if (m % 60 === 0) return m === 60 ? "every hour" : `every ${m / 60} hours`;
-    return `every ${m} minutes`;
-  }
-
-  // The next run, as a person would say it: a state, then its particulars.
-  function nextRun(d) {
-    const s = d.state;
-    const at = s.nextWakeAt;
-    const when = at ? `${new Date(at) <= Date.now() ? "any moment now" : spelled(at)} · ${clockTime(at)}` : null;
-    if (d.running) return ["Running now", `started ${s.wake ? spelled(s.wake.startedAt) : ""}`];
-    if (s.gate) return ["Waiting on you", "the question is below"];
-    // `limitedUntil` matching the wake time is `RunState::usage_limited`.
-    if (s.limitedUntil && s.limitedUntil === at) return ["Waiting out the usage limit", `resumes ${clockTime(at)}`];
-    switch (s.status) {
-      case "sleeping": return ["Next run", when ? `${when} · ${everyText(s.policy.periodMinutes || 60)}` : "nothing scheduled"];
-      case "blocked": return ["Blocked", d.blocking];
-      case "done": return ["Done", null];
-      case "stopped": return ["Stopped", "resume it to bring it back"];
-      case "failed": return ["Failed", "resume it to try again"];
-      default: return ["Next run", d.blocking];
-    }
-  }
-
-  // Three lines: what the run does, when it runs next, how it last ended. The artifacts that show
-  // its progress follow; everything else is in Details.
-  function renderSummary(d) {
-    const [state, detail] = nextRun(d);
-    const status = d.state.status;
-    const last = d.lastRun ? `${spelled(d.lastRun.at)} · ${d.lastRun.outcome}` : "not yet";
-    summary.replaceChildren(
-      h("div.card.summary",
-        h("p.what", d.state.goal),
-        h("p.line", h("strong", state), detail ? ` · ${detail}` : "",
-          d.running ? h("button.ghost.small", { style: "margin-left:10px", onclick: () => { live.el.open = true; live.el.scrollIntoView({ behavior: "smooth" }); } }, "Watch") : null),
-        h("p.line", h("strong", "Last run"), ` · ${last}`),
-        d.todo ? progressBar(d.todo.counts, d.todoLeftOpen) : null),
-      // Not a gate: the run carries on without an answer. It is what it would like from you.
-      d.needs ? h("div.banner.info.needs-callout", h("strong", "It could use"), h("div.needs-text", d.needs)) : "",
-      // With a gate open, the gate says what to do; without one, this is the only explanation.
-      d.blockedExplanation && !d.gate ? h("div.banner.bad", { style: "margin-top:12px;white-space:pre-wrap" }, d.blockedExplanation) : "",
-      status === "stopped" || status === "failed"
-        ? h("div.row", { style: "margin-top:12px" }, h("button.primary", {
-          disabled: d.running,
-          title: d.running ? "A wake is still running" : "Bring this run back and wake it",
-          onclick: (e) => busy(e.currentTarget, async () => {
-            const r = await api(path + "/resume", {});
-            toast(`${runLabel(r.id)} is ${r.status}${r.note ? " — " + r.note : ""}`);
-            refresh();
-          }),
-        }, "Resume run"))
-        : "",
-    );
-  }
-
-  function renderGate(d) {
+  // ----- an open question, answered right here
+  let shownGate = null;
+  function renderAsk(d) {
     const key = d.gate ? d.gate.id : "none";
     if (key === shownGate) return; // don't wipe a half-written answer on refresh
     shownGate = key;
-    if (!d.gate) { gateBox.replaceChildren(); return; }
-    const g = d.gate;
-    const noWake = h("input", { type: "checkbox" });
-    const text = h("textarea", { placeholder: "Or answer in your own words…" });
-    const after = () => { shownGate = null; refresh(); };
-    gateBox.replaceChildren(
-      h("h2", `Waiting on you — gate ${g.id}, ${g.slug}`),
-      h("div.card.needs",
-        // The question alone: the file's header and its unanswered `## Answer` are the run's
-        // bookkeeping, and the whole file is in the log a click away.
-        g.question ? h("div.prose", g.question.trim()) : g.text != null ? h("div.prose", g.text) : h("p.muted", `(gate file ${g.file} is missing)`),
-        g.options.length ? optionButtons(d.state.id, g.options, g.default, () => noWake.checked, after) : "",
-        text,
-        h("div.row.spread", { style: "margin-top:10px" },
-          h("label.check", noWake, "Record only — don't wake the run yet"),
-          h("button", {
-            onclick: async (e) => {
-              if (!text.value.trim()) { toast("Write an answer first", true); return; }
-              if (await sendAnswer(d.state.id, { text: text.value, noWake: noWake.checked }, e.currentTarget)) after();
-            },
-          }, "Send answer"))),
-    );
+    if (!d.gate) { ask.replaceChildren(); return; }
+    ask.replaceChildren(h("div.panel.asking",
+      h("p.label", "It's asking you"),
+      questionCard(d.state.id, d.gate, () => { shownGate = null; refresh(); refreshChrome(); })));
   }
 
-  // The run's checklist, as the wake last wrote it (`todo::Todo`). Read-only: a person steers it
-  // with a note, since the wake is its only writer. Its bar is in the summary above.
-  const marks = { open: ["○", "to do"], doing: ["◐", "doing"], done: ["✓", "done"], skipped: ["–", "skipped"], failed: ["✕", "failed"] };
-  let shownTodo = null;
+  // ----- what it would like, what's wrong, what it has sent
+  function renderAlerts(d) {
+    const parts = [];
+    if (d.blockedExplanation && !d.gate) parts.push(h("div.banner.bad", d.blockedExplanation));
+    if (d.todoLeftOpen) parts.push(h("div.banner.warn", "Marked done with items still open on its checklist, and nothing says whether they happened."));
+    if (d.needs) parts.push(h("div.callout", h("strong", "It could use"), md(d.needs)));
+    const open = d.messages.filter((m) => m.open);
+    if (open.length) {
+      parts.push(h("div.waiting-msgs", h("span.label", "Waiting in your inbox"),
+        open.map((m) => h("a.msg-link", { href: `#/inbox/${enc(d.state.id)}/m${m.id}` }, kindChip(m.kind), m.title))));
+    }
+    alerts.replaceChildren(...parts);
+  }
 
-  function renderTodo(d) {
-    const key = JSON.stringify([d.todo, d.todoLeftOpen]);
-    if (key === shownTodo) return;
-    shownTodo = key;
-    const t = d.todo;
-    if (!t) { todoBox.replaceChildren(); return; }
-    const left = t.counts.open + t.counts.doing;
-    todoBox.replaceChildren(
-      h("h2", `Todo · ${t.counts.total - left}/${t.counts.total}`),
-      d.todoLeftOpen
-        ? h("div.banner.warn", `Marked done with ${left} item(s) still open, and nothing says whether they happened. They're highlighted below.`)
-        : "",
-      h(d.todoLeftOpen ? "div.card.left-open" : "div.card", { style: "margin-top:10px" },
-        h("div.todo", { style: "margin-top:0" }, t.lines.map((line) => {
+  // ----- the picture: its checklist when it keeps one, its week, what it has sent
+  const marks = { open: ["○", "to do"], doing: ["◐", "doing"], done: ["✓", "done"], skipped: ["–", "skipped"], failed: ["✕", "failed"] };
+  function renderPicture(d) {
+    const parts = [];
+    if (d.todo) {
+      const t = d.todo;
+      parts.push(h("p.label", "Progress"), progressBar(t.counts, d.todoLeftOpen),
+        h(d.todoLeftOpen ? "div.todo.left-open" : "div.todo", t.lines.map((line) => {
           if (line.kind === "heading") return h(line.level === 1 ? "div.todo-title" : "div.todo-group", line.text);
           if (line.kind === "text") return h("p.muted.todo-text", line.text);
-          const [glyph, name] = marks[line.mark];
+          const [g, name] = marks[line.mark];
           return h(`div.todo-item.${line.mark}`,
-            h("span.mark", { title: name, "aria-label": name }, glyph),
+            h("span.mark", { title: name, "aria-label": name }, g),
             h("div", line.text, line.detail.length ? h("div.detail", line.detail.join("\n")) : null));
-        }))),
-    );
+        })));
+    }
+    parts.push(h("p.label", "This week"), weekStrip(d.timeline));
+    const foot = [];
+    if (d.check) foot.push(`${d.check.noChangeTotal} free look(s) found nothing, each a run it didn't have to spend`);
+    const sent = d.messages.length;
+    if (sent) foot.push(`${sent}${sent >= 20 ? "+" : ""} message(s) sent`);
+    if (foot.length) parts.push(h("p.foot-line", foot.join(" · ")));
+    if (d.messages.length) {
+      parts.push(h("p.label", "What it has sent you"),
+        h("div.tiles", d.messages.slice(0, 12).map((m) => h(`a.tile${m.open ? ".open" : ""}`, { href: `#/inbox/${enc(d.state.id)}/m${m.id}` },
+          h("span.d", clockTime(m.sentAt)), h("span.t", m.title), kindChip(m.kind, m.open)))));
+    }
+    picture.replaceChildren(...parts);
   }
 
-  // What the run's wakes have said they did, newest first — for a run that watches or repeats,
-  // this is its progress, where a run with an end has its todo. The newest few; the rest on asking.
-  // Redrawn every refresh, so the times stay current; there is nothing in it to lose.
-  const ACTIVITY_FIRST = 5;
-  let activityAll = false;
-  function renderActivity(d) {
-    if (!d.activity.length) { activityBox.replaceChildren(); return; }
-    const shown = activityAll ? d.activity : d.activity.slice(0, ACTIVITY_FIRST);
-    const rest = d.activity.length - shown.length;
-    activityBox.replaceChildren(
-      h("h2", "Activity"),
-      h("div.card", { style: "margin-top:10px" },
-        h("div.activity", shown.map((a) => activityLine(a))),
-        rest > 0 || activityAll
-          ? h("button.ghost.small", { style: "margin-top:10px", onclick: () => { activityAll = !activityAll; renderActivity(d); } },
-            activityAll ? "Show fewer" : `Show ${rest} more`)
-          : null),
-    );
+  // ----- what has happened lately, in words
+  let latelyAll = false;
+  function renderLately(d) {
+    const shown = latelyAll ? d.lately : d.lately.slice(0, LATELY_FIRST);
+    const more = d.lately.length - shown.length;
+    lately.replaceChildren(h("p.label", "Lately"),
+      d.lately.length
+        ? h("ul.lately", shown.map((x) => h(`li.${x.kind}`, { title: localTime(x.at) },
+          h("span.t", relative(x.at)),
+          h("span",
+            x.message ? h("a", { href: `#/inbox/${enc(d.state.id)}/m${x.message}` }, x.text) : x.text,
+            x.times > 1 ? h("span.times", ` ×${x.times}`) : null))))
+        : h("p.faint", "Nothing yet."),
+      ...(more > 0 || latelyAll
+        ? [h("button.ghost.small", { onclick: () => { latelyAll = !latelyAll; renderLately(d); } }, latelyAll ? "Show less" : `Show ${more} more`)]
+        : []));
   }
 
-  // The form is built once and kept, so a refresh never wipes a half-written note; only the
-  // list above it is redrawn, and only when it changed.
-  const noteList = h("div");
-  const noteText = h("textarea", { placeholder: "Tell the run something — how to do the work, not an answer to a gate. Its next wake reads it verbatim." });
-  const noteStanding = h("input", { type: "checkbox" });
-  const noteNow = h("input", { type: "checkbox" });
-  const noteForm = h("div.card", { style: "margin-top:10px" },
-    noteText,
-    h("div.row.spread", { style: "margin-top:10px" },
-      h("div.row",
-        h("label.check", { title: "Given to every wake until you drop it" }, noteStanding, "Standing"),
-        h("label.check", { title: "Wake the run now to read it" }, noteNow, "Wake now")),
-      h("button", {
-        onclick: (e) => busy(e.currentTarget, async () => {
-          if (!noteText.value.trim()) { toast("Write the note first", true); return; }
-          const r = await api(path + "/notes", { text: noteText.value, standing: noteStanding.checked, now: noteNow.checked });
-          const woke = r.wake ? " — waking it now" : r.notWoken ? ` — not waking it: ${r.notWoken}` : "";
-          toast(`Note ${r.note.id} recorded — ${r.delivery}${woke}`, false);
-          noteText.value = "";
-          noteStanding.checked = false;
-          noteNow.checked = false;
-          shownNotes = null;
-          refresh();
-        }),
-      }, "Leave note")));
+  // ----- telling it something: the one box, built once so a refresh never wipes a draft
+  const tellText = h("textarea", { rows: 3, placeholder: "Tell it something — how to do the work, what to look at, what to skip…" });
+  const pin = h("button.small.toggle", { "aria-pressed": "false", title: "Pinned: given to every run until you unpin it", onclick: () => pin.setAttribute("aria-pressed", String(pin.getAttribute("aria-pressed") !== "true")) }, "Pin");
+  const sendNote = (now) => async (e) => {
+    if (!tellText.value.trim()) { toast("Write something first", true); return; }
+    const pinned = pin.getAttribute("aria-pressed") === "true";
+    await busy(e.currentTarget, async () => {
+      const r = await api(path + "/notes", { text: tellText.value, standing: pinned, now });
+      toast(`${pinned ? "Pinned" : "Sent"} — ${r.wake ? "it's reading it now" : r.notWoken ? "not run now: " + r.notWoken : r.delivery}`);
+      tellText.value = "";
+      pin.setAttribute("aria-pressed", "false");
+      shownNotes = null;
+      refresh();
+    });
+  };
+  const tellForm = h("div.tell-form", tellText,
+    h("div.row.spread", h("span.hint", "It reads this the next time it runs. Pin it to apply every time."),
+      h("div.row", pin, h("button.small", { onclick: sendNote(true) }, "Send and run now"), h("button.small.primary", { onclick: sendNote(false) }, "Send"))));
   let shownNotes = null;
-
-  function renderNotes(d) {
+  function renderTell(d) {
     const over = ["done", "failed", "stopped"].includes(d.state.status);
     const key = JSON.stringify([over, d.notes.map((n) => [n.id, n.givenToWake])]);
     if (key === shownNotes) return;
     shownNotes = key;
-    // A finished run with no notes has nothing to show here and no wake to tell anything.
-    notesDrill.el.hidden = over && !d.notes.length;
-    if (notesDrill.el.hidden) return;
-    noteList.replaceChildren(...d.notes.map((n) => {
-      const state = n.standing ? "standing — every wake"
-        : n.givenToWake ? `given to wake ${n.givenToWake}, not yet delivered` : "not yet read";
-      return h("div.card", { style: "margin-top:10px" },
-        h("div.row.spread",
-          h("span.faint", `Note ${n.id} · ${state} · added ${relative(n.addedAt)}`),
-          h("button.ghost", {
-            title: n.standing ? "Retire it: no wake is given it again" : "Withdraw it before a wake reads it",
-            onclick: (e) => busy(e.currentTarget, async () => {
-              await api(`${path}/notes/${encodeURIComponent(n.id)}/drop`, {});
-              toast(`Dropped note ${n.id}`);
-              shownNotes = null;
-              refresh();
-            }),
-          }, "Drop")),
-        h("div.prose", n.text));
-    }));
-    notesDrill.note.textContent = d.notes.length
-      ? `${d.notes.length} note(s) waiting or standing`
-      : "how to do the work — its next wake reads it verbatim";
-    notesBox.replaceChildren(
-      noteList,
-      over ? h("p.muted", "The run is over — no wake will read a new note.") : noteForm);
+    const notes = d.notes.map((n) => h("div.note",
+      h("div.row.spread",
+        h("span.faint", n.standing ? "Pinned — every run gets it" : n.givenToWake ? "Being read now" : `Waiting to be read · ${relative(n.addedAt)}`),
+        h("button.ghost.small", {
+          onclick: (e) => busy(e.currentTarget, async () => {
+            await api(`${path}/notes/${enc(n.id)}/drop`, {});
+            toast(n.standing ? "Unpinned" : "Withdrawn");
+            shownNotes = null;
+            refresh();
+          }),
+        }, n.standing ? "Unpin" : "Withdraw")),
+      md(n.text)));
+    tell.replaceChildren(h("p.label", "Tell it something"), ...notes, over ? h("p.faint", "It has finished — nothing will read a new note.") : tellForm);
   }
 
-  // ----- details: the handoff, whole
+  // ----- under the hood: everything the engine keeps, folded away
+  function drill(key, title, body, onToggle) {
+    const note = h("span.faint");
+    const el = h("details.drill", h("summary", h("span.drill-title", title), note), body);
+    el.open = store(`otto.drill.${key}`) === "1";
+    el.addEventListener("toggle", () => {
+      store(`otto.drill.${key}`, el.open ? "1" : "0");
+      if (onToggle) onToggle(el.open);
+    });
+    return { el, note, body };
+  }
+  const handoff = drill("handoff", "Handoff", h("div"));
+  const log = drill("log", "Log", h("div"), (open) => setStream("log", open));
+  const live = drill("live", "Live", h("div"), (open) => setStream("live", open));
+  const cost = drill("cost", "Cost & schedule", h("div"));
+  const settings = drill("settings", "Settings", h("div"));
+  log.note.textContent = "every event, filterable";
+  hood.append(h("p.label", "Under the hood"), handoff.el, log.el, live.el, cost.el, settings.el);
+  const settingsForm = h("div");
+  const factsEl = h("div");
+  settings.body.append(factsEl, settingsForm);
+
   let shownHandoff = null;
-  function renderHandoff(d) {
-    handoff.note.textContent = d.handoff ? "what the last wake left the next one, in full" : "none yet";
-    if (d.handoff === shownHandoff) return;
-    shownHandoff = d.handoff;
-    handoff.body.replaceChildren(d.handoff ? h("div.prose", { style: "margin-top:0" }, d.handoff) : h("p.muted", "No handoff yet."));
-  }
-
-  // ----- details: the settings — what the run is, what it costs, and the controls
-  function renderSettings(d) {
+  function renderHood(d) {
+    handoff.note.textContent = d.handoff ? "what each run leaves the next" : "none yet";
+    if (d.handoff !== shownHandoff) {
+      shownHandoff = d.handoff;
+      handoff.body.replaceChildren(d.handoff ? h("pre.code", d.handoff) : h("p.muted", "No handoff yet."));
+    }
+    live.note.textContent = d.running ? "it's running — watch it work" : "nothing running";
     const s = d.state;
     const over = ["done", "failed", "stopped"].includes(s.status);
-    settings.note.textContent = [
-      `phase ${s.phase}`,
-      over ? null : `every ${formatMinutes(s.policy.periodMinutes || 60)}`,
-      `${s.budget.spentWakes} wake(s)`,
-      d.usage.wakes > 0 ? `${humaniseTokens(tokenTotal(d.usage))} tokens` : null,
-      over ? null : d.check ? "check script" : "no check script",
-    ].filter(Boolean).join(" · ");
+    cost.note.textContent = d.usage.wakes ? `${d.usage.wakes} run(s) · ${humaniseTokens(tokenTotal(d.usage))} tokens` : "nothing spent yet";
+    cost.body.replaceChildren(
+      h("dl.facts",
+        h("dt", "Runs"), h("dd", `${s.budget.spentWakes}${s.budget.wakes ? " of " + s.budget.wakes : ""}${s.budget.hours ? `, ${s.budget.hours}h budget` : ""}`),
+        d.usage.wakes ? [h("dt", "Tokens"), h("dd", tokenSummary(d.usage))] : null,
+        d.wakeCost ? [h("dt", "A run costs"), h("dd", `~${d.wakeCost.avgTurns} turns, ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-write tokens (last ${d.wakeCost.wakes})`)] : null,
+        over ? null : [h("dt", "How often"), h("dd", everyText(s.policy.periodMinutes || 60))]),
+      over ? "" : renderCheck(d));
+    factsEl.replaceChildren(h("dl.facts", settingRows(d).map(([k, v]) => [h("dt", k), h("dd", v)])));
+    if (!settingsForm.dataset.open) {
+      settingsForm.replaceChildren(over ? "" : h("div.row", { style: "margin-top:10px" },
+        h("button.small", { onclick: () => periodForm(d) }, "Change how often…")));
+    }
+  }
+
+  function settingRows(d) {
+    const s = d.state;
     const rows = [
       ["Goal", s.goal],
-      ["Done when", s.doneCondition || (s.policy.perpetual ? "never — perpetual; stop it to retire it" : "not yet decided — the next wake proposes one and asks")],
-      ["Wraps", `${d.wrapsKind}${s.wraps.ref ? " " + s.wraps.ref : ""}`],
+      ["Done when", s.doneCondition || (s.policy.perpetual ? "never — it keeps going until you stop it" : "not decided yet — it proposes one and asks")],
+      ["Follows", s.wraps.ref ? `${d.wrapsKind === "skill" ? "the skill" : "the instructions in"} ${s.wraps.ref}` : "just the goal"],
       ["Phase", s.phase],
+      ["Status", d.statusLabel],
+      ["Number", idText(s.id) + (s.formerId ? ` (was ${s.formerId})` : "")],
+      ["Runs with", `${s.launcher.kind}, in ${s.launcher.detach === "tmux" ? "tmux" : "the background"}`],
     ];
-    if (s.wake) {
-      rows.push(["Wake", `${s.wake.n} — ${d.running ? "running now" : "finished"}${s.wake.outcome ? ", " + s.wake.outcome : ""} · started ${relative(s.wake.startedAt)}`]);
-    }
-    let used = `${s.budget.spentWakes} wake(s)`;
-    if (s.budget.wakes > 0) used += ` of ${s.budget.wakes}`;
-    if (s.budget.hours > 0) used += `, ${s.budget.hours}h budget`;
-    rows.push(["Used", used]);
-    if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
-    if (!over) {
-      const limited = s.limitedUntil && s.limitedUntil === s.nextWakeAt ? " — when the usage limit resets" : "";
-      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})${limited}`
-        : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
-      rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
-    }
-    rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
-    if (d.usage.wakes > 0) rows.push(["Tokens", tokenSummary(d.usage)]);
-    if (d.workdir && d.workdir.kind === "own") rows.push(["Workdir", `${d.workdir.path} (not the default)`]);
-    if (d.workdir && d.workdir.kind === "unset") rows.push(["Workdir", "none — set a default with otto config workdir <dir>"]);
-    factsEl.replaceChildren(h("div.card", { style: "margin-top:12px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))));
-    checkEl.replaceChildren(over ? "" : renderCheck(d));
-    renderActions(d);
-  }
-
-  // The check script is the cheapest wake there is, so the page says plainly whether this run has
-  // one — and, when it doesn't, what each full wake is costing instead.
-  function renderCheck(d) {
-    const c = d.check;
-    const cost = d.wakeCost
-      ? `~${d.wakeCost.avgTurns} turns and ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
-      : null;
-    if (!c) {
-      return h("div", h("h3.sub", "Check script"),
-        h("div.banner.warn", { style: "white-space:pre-wrap" },
-          "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
-          "A script poke runs before each wake, with no model, spends one only when something changed:\n",
-          h("span.mono", `otto check ${d.short} --script <file>`)));
-    }
-    const period = formatMinutes(d.state.policy.periodMinutes || 60);
-    const retry = c.retrySeconds ? formatMinutes(Math.max(1, Math.round(c.retrySeconds / 60))) : period;
-    const last = c.lastResult
-      ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
-      : "not run yet";
-    const rows = [
-      ["Runs", `${c.script} before each wake, every ${retry} · ${!c.pinned ? "set by a wake, for this sleep only" : c.setByWake ? "set by the run itself" : "set by you"}`],
-      ["Last", last],
-      ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
-      ["Safety net", c.wakeAfter ? `wakes anyway after ${c.wakeAfter} in a row (${c.consecutiveNoChange} so far)` : "off"],
-    ];
-    return h("div", h("h3.sub", "Check script"),
-      h("div.card", { style: "margin-top:10px" },
-        h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
-        c.text != null ? h("div.prose", c.text)
-          : h("p.muted", `(${c.script} is missing — poke will treat it as an error and wake the run)`)));
-  }
-
-  // Resume is the summary's, for a stopped or failed run; these are for a live one.
-  function renderActions(d) {
-    const status = d.state.status;
-    if (["done", "stopped", "failed"].includes(status)) { actions.replaceChildren(); return; }
-    if (actions.dataset.open) return; // a form is being filled in
-    actions.replaceChildren(h("div.row", { style: "margin-top:4px" },
-      h("button", {
-        disabled: d.running,
-        title: d.running ? "A wake is already running" : "Start one wake now",
-        onclick: (e) => busy(e.currentTarget, async () => {
-          const r = await api(path + "/wake", {});
-          toast(r.note || "Wake started");
-          refresh();
-        }),
-      }, "Wake now"),
-      h("button", { onclick: () => periodForm(d) }, "Change period…"),
-      h("button.danger", { onclick: () => stopForm() }, "Stop run…")));
+    if (s.wake) rows.push(["Last run", `run ${s.wake.n}, started ${relative(s.wake.startedAt)}${s.wake.outcome ? ", " + s.wake.outcome : d.running ? ", running" : ""}`]);
+    if (s.incompleteWakes) rows.push(["Stopped part-way", `${s.incompleteWakes} time(s) in a row`]);
+    if (s.startFailures) rows.push(["Couldn't start", `${s.startFailures} time(s) in a row${s.startFailure ? ` — “${s.startFailure}”` : ""}`]);
+    if (d.workdir && d.workdir.kind === "own") rows.push(["Works in", `${d.workdir.path} (not the default)`]);
+    if (d.workdir && d.workdir.kind === "unset") rows.push(["Works in", "nowhere set — `otto config workdir <dir>`"]);
+    return rows;
   }
 
   function periodForm(d) {
-    actions.dataset.open = "period";
+    settingsForm.dataset.open = "1";
     const current = formatMinutes(d.state.policy.periodMinutes || 60);
     const input = h("input", { value: current, placeholder: "30m, 4h, 1d" });
-    const close = () => { delete actions.dataset.open; refresh(); };
+    const close = () => { delete settingsForm.dataset.open; refresh(); };
     let saveButton;
-    const save = (button) => busy(button, async () => {
-      const r = await api(path + "/period", { period: input.value });
-      toast(`Wakes every ${formatMinutes(r.periodMinutes)}` + (r.rescheduled ? ` — next wake ${due(r.nextWakeAt)}`
-        : r.nextWakeAt ? ` — the timer a wake armed (${due(r.nextWakeAt)}) is kept` : ""));
-      close();
-    });
-    actions.replaceChildren(h("div.card", { style: "margin-top:4px" },
-      h("h3", "Change the period"),
-      h("p.muted", `How often it wakes when a wake doesn't ask for something else, now every ${current}. ` +
-        "A sleep already scheduled on the old period moves to the new one; a timer a wake armed itself is kept."),
-      h("div.field", h("span", "Wakes every"), input),
-      h("div.row", { style: "margin-top:10px" },
-        h("button.ghost", { onclick: close }, "Cancel"),
-        (saveButton = h("button.primary", { onclick: (e) => save(e.currentTarget) }, "Save")))));
+    settingsForm.replaceChildren(h("div.card", { style: "margin-top:10px" },
+      h("p", `How often it runs when nothing else says otherwise — now ${everyText(d.state.policy.periodMinutes || 60)}.`),
+      h("div.field", h("span", "Every"), input),
+      h("div.row.end", { style: "margin-top:10px" },
+        h("button.ghost.small", { onclick: close }, "Cancel"),
+        (saveButton = h("button.primary.small", {
+          onclick: (e) => busy(e.currentTarget, async () => {
+            const r = await api(path + "/period", { period: input.value });
+            toast(`Runs ${everyText(r.periodMinutes)}` + (r.rescheduled && r.nextWakeAt ? ` — next ${nextAt(r.nextWakeAt)}` : ""));
+            close();
+          }),
+        }, "Save")))));
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") saveButton.click(); });
     input.focus();
     input.select();
   }
 
-  function stopForm() {
-    actions.dataset.open = "stop";
-    const reason = h("input", { placeholder: "Why (optional)" });
-    const failed = h("input", { type: "checkbox" });
-    const close = () => { delete actions.dataset.open; refresh(); };
-    actions.replaceChildren(h("div.card", { style: "margin-top:4px" },
-      h("h3", "Retire this run?"),
-      h("p.muted", "It is marked stopped (or failed), its repo locks are released, and any wake still running is killed. You can resume it later."),
-      h("div.field", h("span", "Reason"), reason),
-      h("div.row.spread", { style: "margin-top:10px" },
-        h("label.check", failed, "It failed — it could not do its job"),
-        h("div.row",
-          h("button.ghost", { onclick: close }, "Cancel"),
-          h("button.danger", {
-            onclick: (e) => busy(e.currentTarget, async () => {
-              const r = await api(path + "/stop", { reason: reason.value, failed: failed.checked });
-              toast(`${runLabel(r.id)} is ${r.status}${r.killedWake ? " — killed the live wake" : ""}`);
-              close();
-            }),
-          }, "Stop run")))));
-    reason.focus();
+  // A free check is the cheapest run there is, so say plainly whether it has one.
+  function renderCheck(d) {
+    const c = d.check;
+    if (!c) {
+      return h("p.faint", { style: "margin-top:10px" },
+        "No free check: every run is a full session. A script can look for news first and only spend a run when there is some — ",
+        h("code", `otto check ${d.short} --script <file>`), ".");
+    }
+    const last = c.lastResult
+      ? `${c.lastResult === "no-change" ? "nothing new" : c.lastResult === "changed" ? "found something" : "the check failed"}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
+      : "not run yet";
+    return h("div", { style: "margin-top:12px" },
+      h("p", h("strong", "A free check runs first. "), `${c.pinned ? (c.setByWake ? "It set this up itself" : "You set this up") : "Just for this one wait"}; last: ${last}. It has spared ${c.noChangeTotal} run(s)${c.wakeAfter ? `, and runs anyway after ${c.wakeAfter} quiet looks in a row` : ""}.`),
+      c.text != null ? h("pre.code", c.text) : h("p.faint", `(${c.script} is missing — the next due run will happen anyway)`));
   }
 
-  // ----- details: the log and the live wake stream only while their section is open
+  // ----- the log and the live view stream only while their section is open
   const streams = { log: null, live: null };
   function setStream(which, open) {
     if (open && !streams[which]) streams[which] = which === "log" ? logsPanel(log.body) : livePanel(live.body);
@@ -839,7 +1115,7 @@ function runView(id) {
           const m = part.match(/^(\S+\s+)(\S+)(.*)$/);
           if (!m) { out.append(part, "\n"); continue; }
           const ev = m[2];
-          const cls = ev.startsWith("gate-") ? ".gate" : /incomplete|killed|abandoned|exhausted|lost/.test(ev) ? ".bad" : "";
+          const cls = ev.startsWith("gate-") ? ".gate" : /incomplete|killed|abandoned|exhausted|lost|failed|refused/.test(ev) ? ".bad" : "";
           out.append(m[1], h("span.ev" + cls, ev), m[3], "\n");
         }
       }
@@ -869,7 +1145,7 @@ function runView(id) {
     for (const input of [decisions, follow]) input.addEventListener("change", load);
     for (const input of [since, events]) input.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
     panel.replaceChildren(
-      h("div.filters", since, events, h("label.check", decisions, "Decisions only"), h("label.check", follow, "Follow")),
+      h("div.filters", since, events, h("label.check", decisions, "Turning points"), h("label.check", follow, "Follow")),
       out);
     load();
     return () => { if (source) source.close(); };
@@ -882,29 +1158,28 @@ function runView(id) {
     const show = (text, label) => {
       const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
       out.replaceChildren(ansiToNodes(text));
-      status.replaceChildren(pill("running", true), " ", label);
+      status.replaceChildren(label);
       if (atBottom) out.scrollTop = out.scrollHeight;
     };
-    // What the wake has said and done, from its transcript: the normal case.
-    const marks = { said: "●", tool: "▸", result: "  ", error: "✗" };
+    const glyphs = { said: "●", tool: "▸", result: "  ", error: "✗" };
     source.addEventListener("activity", (e) => {
       const atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
       const entries = JSON.parse(e.data);
       out.classList.add("wrap");
       out.replaceChildren(...entries.map((a) => h(`div.act.${a.kind}`,
         h("span.at", a.at ? new Date(a.at).toLocaleTimeString() : ""), " ",
-        h("span.mark", marks[a.kind] || " "), " ",
+        h("span.mark", glyphs[a.kind] || " "), " ",
         h("span.text", a.text))));
-      if (!entries.length) out.append("The wake has started; nothing to show yet.");
-      status.replaceChildren(pill("running", true), " ", "what the wake is saying and doing — `otto attach` follows the same feed");
+      if (!entries.length) out.append("It has started; nothing to show yet.");
+      status.replaceChildren("What it is saying and doing — `otto attach` follows the same feed.");
       if (atBottom) out.scrollTop = out.scrollHeight;
     });
-    source.addEventListener("pane", (e) => show(JSON.parse(e.data), "tmux pane (this wake's transcript can't be read)"));
-    source.addEventListener("log", (e) => show(JSON.parse(e.data), "wake.log (this wake is not in tmux)"));
+    source.addEventListener("pane", (e) => show(JSON.parse(e.data), "Its tmux pane (its transcript can't be read)"));
+    source.addEventListener("log", (e) => show(JSON.parse(e.data), "wake.log (it isn't in tmux)"));
     source.addEventListener("ended", (e) => {
       source.close();
       status.replaceChildren(JSON.parse(e.data));
-      if (!out.childNodes.length) out.append("No wake is running.");
+      if (!out.childNodes.length) out.append("Nothing is running.");
     });
     source.onerror = () => { if (source.readyState === EventSource.CLOSED) status.textContent = "Disconnected."; };
     panel.replaceChildren(status, out);
@@ -933,9 +1208,9 @@ function tokenTotal(t) {
 
 // Mirrors TokenTotals::summary.
 function tokenSummary(t) {
-  const h = humaniseTokens;
-  return `${h(tokenTotal(t))} over ${t.wakes} wake(s) — ${h(t.inputTokens)} in, ${h(t.outputTokens)} out, ` +
-    `${h(t.cacheCreation)} cache write, ${h(t.cacheRead)} cache read` +
+  const n = humaniseTokens;
+  return `${n(tokenTotal(t))} over ${t.wakes} run(s) — ${n(t.inputTokens)} in, ${n(t.outputTokens)} out, ` +
+    `${n(t.cacheCreation)} cache write, ${n(t.cacheRead)} cache read` +
     (t.unmeasured ? ` (${t.unmeasured} not measured)` : "");
 }
 
@@ -952,42 +1227,50 @@ function usageView() {
     h("label", h("input", { type: "radio", name, value, checked: value === current,
       onchange: () => { pick(value); load(); } }), label)));
   view.replaceChildren(
+    h("a.back", { href: "#/system" }, "← otto itself"),
     h("h1", "Usage"),
-    h("p.muted", "What wakes have used, in tokens, across every run — finished ones included. Read from each wake's session transcript."),
+    h("p.muted", "What your agents' runs have used, in tokens — finished agents included. Read from each run's session transcript."),
     h("div.row", { style: "margin:14px 0;flex-wrap:wrap;gap:10px" },
       picker("since", windows, since, (v) => { since = v; }),
-      picker("by", [["run", "By run"], ["day", "By day"]], by, (v) => { by = v; })),
+      picker("by", [["run", "By agent"], ["day", "By day"]], by, (v) => { by = v; })),
     out);
 
   async function load() {
     let r;
-    try { r = await api(`/usage?since=${encodeURIComponent(since)}&by=${by}`); } catch (err) { out.replaceChildren(h("p", err.message)); return; }
-    if (!r.rows.length) { out.replaceChildren(h("p.muted", "No wakes in this window.")); return; }
-    const hT = humaniseTokens;
+    try { r = await api(`/usage?since=${enc(since)}&by=${by}`); } catch (err) { out.replaceChildren(h("p", err.message)); return; }
+    if (!r.rows.length) { out.replaceChildren(h("p.muted", "Nothing ran in this window.")); return; }
+    const n = humaniseTokens;
     const cells = (label, t, link) => [
       h("td.id", link ? h("a", { href: link }, label) : label),
-      h("td", { dataset: { label: "wakes" } }, `${t.wakes}${t.unmeasured ? "*" : ""}`),
-      h("td", { dataset: { label: "total" } }, h("strong", hT(tokenTotal(t)))),
-      h("td", { dataset: { label: "input" } }, hT(t.inputTokens)),
-      h("td", { dataset: { label: "output" } }, hT(t.outputTokens)),
-      h("td", { dataset: { label: "cache write" } }, hT(t.cacheCreation)),
-      h("td", { dataset: { label: "cache read" } }, hT(t.cacheRead))];
+      h("td", { dataset: { label: "runs" } }, `${t.wakes}${t.unmeasured ? "*" : ""}`),
+      h("td", { dataset: { label: "total" } }, h("strong", n(tokenTotal(t)))),
+      h("td", { dataset: { label: "input" } }, n(t.inputTokens)),
+      h("td", { dataset: { label: "output" } }, n(t.outputTokens)),
+      h("td", { dataset: { label: "cache write" } }, n(t.cacheCreation)),
+      h("td", { dataset: { label: "cache read" } }, n(t.cacheRead))];
     out.replaceChildren(
       h("table.table",
-        h("thead", h("tr", [by === "run" ? "Run" : "Day", "Wakes", "Total", "Input", "Output", "Cache write", "Cache read"].map((c) => h("th", c)))),
+        h("thead", h("tr", [by === "run" ? "Agent" : "Day", "Runs", "Total", "Input", "Output", "Cache write", "Cache read"].map((c) => h("th", c)))),
         h("tbody",
-          r.rows.map((row) => h("tr", cells(row.label, row, by === "run" ? `#/run/${encodeURIComponent(row.key)}` : null))),
+          r.rows.map((row) => h("tr", cells(row.label, row, by === "run" ? `#/run/${enc(row.key)}` : null))),
           h("tr", cells("Total", r.totals, null)))),
       r.totals.unmeasured
-        ? h("p.muted", { style: "margin-top:10px" }, `* includes ${r.totals.unmeasured} wake(s) whose usage couldn't be read — usually a sandbox that hides ~/.claude. Counted, tokens unknown.`)
+        ? h("p.muted", { style: "margin-top:10px" }, `* includes ${r.totals.unmeasured} run(s) whose usage couldn't be read — usually a sandbox that hides ~/.claude. Counted, tokens unknown.`)
         : "");
   }
   load();
 }
 
 // ---------------------------------------------------------------------------
-// #/new
+// #/new — describe the job
 // ---------------------------------------------------------------------------
+
+const TEMPLATES = [
+  ["Watch for something", "Watch <where> for <what>. When it turns up, <do what>, and let me know.", "1h", true],
+  ["A daily report", "Each day, <find or check what>, and send me a short report on what you found.", "1d", true],
+  ["See a task through", "<The task>, through to <the end state>. Show me the plan before you start, and ask before anything that can't be undone.", "1h", false],
+  ["Work through a list", "<Do what> for each of <the list>, one at a time, keeping a checklist. Tell me when it's done or stuck.", "1h", false],
+];
 
 function newRunView() {
   const f = {};
@@ -998,9 +1281,33 @@ function newRunView() {
   const lines = (el) => el.value.split("\n").map((s) => s.trim()).filter(Boolean);
   const select = (options, value) => h("select", options.map(([v, l]) => h("option", { value: v, selected: v === value }, l)));
 
+  const goal = h("textarea", { rows: 4, required: true, placeholder: "What should it do? Say it the way you'd ask a colleague." });
+  f.goal = goal;
+  const keepsGoing = h("input", { type: "checkbox" });
+  f.perpetual = keepsGoing;
+  const until = h("input", { placeholder: "e.g. the PR is merged — or leave it, and it proposes one and asks" });
+  f.until = until;
+  const untilField = h("label.field", h("span", "It's done when"), until);
+  keepsGoing.addEventListener("change", () => { untilField.hidden = keepsGoing.checked; });
+  const period = h("input", { placeholder: "1h" });
+  f.period = period;
+
+  const templates = h("div.templates", TEMPLATES.map(([label, text, every, perpetual]) => h("button.small", {
+    type: "button",
+    onclick: () => {
+      goal.value = text;
+      period.value = every;
+      keepsGoing.checked = perpetual;
+      untilField.hidden = perpetual;
+      goal.focus();
+      const at = text.indexOf("<");
+      if (at >= 0) goal.setSelectionRange(at, text.indexOf(">", at) + 1);
+    },
+  }, label)));
+
   const wrap = h("div.segmented", ["goal", "skill", "instructions"].map((kind) =>
     h("label", h("input", { type: "radio", name: "wrap", value: kind, checked: kind === "goal", onchange: syncWrap }),
-      { goal: "Just the goal", skill: "A skill", instructions: "An instructions file" }[kind])));
+      { goal: "Just what I wrote", skill: "A skill", instructions: "An instructions file" }[kind])));
   const skillField = field("skill", "Skill name", h("input", { placeholder: "manage-pr" }));
   const instrField = field("instructions", "Instructions file", h("input", { placeholder: "/path/to/runbook.md" }), "A path on this machine.");
   function syncWrap() {
@@ -1012,56 +1319,56 @@ function newRunView() {
   const result = h("div");
   let saveDefault;
   const form = h("form.form", { onsubmit: (e) => e.preventDefault() },
-    h("fieldset", h("legend", "What to run"),
-      field("goal", "Goal", h("textarea", { required: true, placeholder: "What this run is trying to achieve" }),
-        "The only thing that survives every wake unaltered."),
-      field("name", "Name", h("input", { placeholder: "legenda-picks" }),
-        "Short and unique — what you'll call it. Empty: made up from the target, the wrapped skill or the goal."),
-      h("div.field", h("span", "Wraps"), wrap),
-      skillField, instrField,
+    h("div.card.brief",
+      h("h3", "What should it do?"),
+      templates,
+      goal,
       h("div.grid2",
-        field("target", "Target", h("input", { placeholder: "PROJ-123, a PR URL…" }), "Recorded as facts.target."),
-        field("repos", "Repositories", h("textarea", { rows: 2, placeholder: "One directory per line" })))),
-    h("fieldset", h("legend", "When it is done"),
-      field("until", "Done when", h("input", { placeholder: "Otherwise the first wake proposes one and asks" })),
-      h("label.check", { style: "margin-top:10px" }, (f.perpetual = h("input", { type: "checkbox" })), "Perpetual — never done; retired by stopping it"),
-      field("period", "Wakes every", h("input", { placeholder: "1h" }), "30m, 1h, 1d. How often it wakes when a wake doesn't ask for something else."),
-      h("div.grid2",
-        field("budgetWakes", "Wake budget", h("input", { type: "number", min: 0, value: 0 }), "Block with a gate after this many wakes. 0: unlimited."),
-        field("budgetHours", "Hours budget", h("input", { type: "number", min: 0, value: 0 }), "0: unlimited."))),
-    h("fieldset", h("legend", "Where it runs"),
-      h("div.grid2",
-        field("launcher", "Launcher", select([["claude", "claude"]], "claude"),
-          "A sandbox is the right choice for anything unattended. Add launchers in config.json under otto's home."),
-        field("detach", "Wakes run in", select([["tmux", "tmux session"], ["none", "detached process"]], "tmux"),
-          "tmux lets you watch a wake live.")),
-      field("workdir", "Working directory", h("input", { placeholder: "~/work" }),
-        "Where every wake starts. Empty: the default."),
-      (saveDefault = h("label.check", { hidden: true },
-        (f.saveWorkdir = h("input", { type: "checkbox", checked: true })), "Make this the default for new runs"))),
-    h("fieldset", h("legend", "What it may do"),
-      field("permissionMode", "Permission mode", select([
-        ["bypassPermissions", "bypassPermissions (default)"], ["acceptEdits", "acceptEdits"], ["auto", "auto"],
-        ["dontAsk", "dontAsk"], ["manual", "manual"], ["plan", "plan"]], "bypassPermissions"),
-      "A wake is unattended; the real guardrail is the launcher."),
-      h("div.grid2",
-        field("allowedTools", "Allowed tools", h("textarea", { rows: 2, placeholder: "Read\nBash(git *)" })),
-        field("disallowedTools", "Denied tools", h("textarea", { rows: 2, placeholder: "WebFetch" })))),
-    h("details", h("summary", "Advanced"),
-      h("fieldset", { style: "margin-top:10px" },
+        h("label.field", h("span", "How often it looks"), period, h("small", "30m, 1h, 1d. It only spends a full run when there's something to do, if it can check for free.")),
+        h("div.field", h("span", "When it's finished"),
+          h("label.check", keepsGoing, "It keeps going until I stop it"), untilField))),
+    h("details.more",
+      h("summary", "More options — what it follows, where it works, what it may do"),
+      h("fieldset", h("legend", "What it follows"),
+        field("name", "Name", h("input", { placeholder: "made up from what you wrote" }), "Short and unique — what you'll call it."),
+        h("div.field", h("span", "Follows"), wrap),
+        skillField, instrField,
+        h("div.grid2",
+          field("target", "About", h("input", { placeholder: "PROJ-123, a PR URL…" }), "Recorded as facts.target."),
+          field("repos", "Repositories it may work in", h("textarea", { rows: 2, placeholder: "One directory per line" })))),
+      h("fieldset", h("legend", "Limits"),
+        h("div.grid2",
+          field("budgetWakes", "Stop and ask after this many runs", h("input", { type: "number", min: 0, value: 0 }), "0: no limit."),
+          field("budgetHours", "…or this many hours", h("input", { type: "number", min: 0, value: 0 }), "0: no limit."))),
+      h("fieldset", h("legend", "Where it works"),
+        h("div.grid2",
+          field("launcher", "Runs with", select([["claude", "claude"]], "claude"),
+            "A sandbox is the right choice for anything unattended. Add launchers in config.json under otto's home."),
+          field("detach", "Each run happens in", select([["tmux", "a tmux session"], ["none", "the background"]], "tmux"),
+            "tmux lets you watch a run live.")),
+        field("workdir", "Working directory", h("input", { placeholder: "~/work" }), "Where every run starts. Empty: the default."),
+        (saveDefault = h("label.check", { hidden: true },
+          (f.saveWorkdir = h("input", { type: "checkbox", checked: true })), "Make this the default"))),
+      h("fieldset", h("legend", "What it may do"),
+        field("permissionMode", "Permission mode", select([
+          ["bypassPermissions", "bypassPermissions (default)"], ["acceptEdits", "acceptEdits"], ["auto", "auto"],
+          ["dontAsk", "dontAsk"], ["manual", "manual"], ["plan", "plan"]], "bypassPermissions"),
+        "Nobody is there to answer a permission prompt; the real guardrail is the launcher."),
+        h("div.grid2",
+          field("allowedTools", "Allowed tools", h("textarea", { rows: 2, placeholder: "Read\nBash(git *)" })),
+          field("disallowedTools", "Denied tools", h("textarea", { rows: 2, placeholder: "WebFetch" })))),
+      h("fieldset", h("legend", "Advanced"),
         field("id", "Run id", h("input", { placeholder: "the next number" })),
         field("phase", "Starting phase", h("input", { value: "start" })),
         h("div.grid2",
           field("fact", "Facts", h("textarea", { rows: 2, placeholder: "branch=feat/x" }), "K=V, one per line."),
           field("policy", "Policy", h("textarea", { rows: 2, placeholder: "maxWakeMinutes=45" }), "K=V, one per line.")))),
     h("div.row",
-      h("button.primary", { type: "button", onclick: (e) => submit(e.currentTarget, false) }, "Start run"),
-      h("button", { type: "button", onclick: (e) => submit(e.currentTarget, true) }, "Dry run")),
+      h("button.primary", { type: "button", onclick: (e) => submit(e.currentTarget, false) }, "Start it"),
+      h("button", { type: "button", onclick: (e) => submit(e.currentTarget, true) }, "Show me what it would run")),
     result,
   );
   syncWrap();
-  // The launchers and the default working directory are the machine's, from config.json, so
-  // they come from the server. With no default, the field is required and offers to save one.
   let defaultWorkdir = null;
   api("/meta").then((m) => {
     const current = f.launcher.value;
@@ -1071,8 +1378,9 @@ function newRunView() {
       f.workdir.placeholder = m.workdir;
     } else {
       f.workdir.required = true;
-      f.workdir.nextElementSibling.textContent = "Where every wake starts. No default is set yet — give one.";
+      f.workdir.nextElementSibling.textContent = "Where every run starts. No default is set yet — give one.";
       saveDefault.hidden = false;
+      form.querySelector("details.more").open = true;
     }
   }).catch(() => {});
 
@@ -1085,7 +1393,7 @@ function newRunView() {
       instructions: kind === "instructions" ? text("instructions") : null,
       target: text("target"),
       repos: lines(f.repos),
-      until: text("until"),
+      until: f.perpetual.checked ? null : text("until"),
       perpetual: f.perpetual.checked,
       period: text("period"),
       budgetWakes: Number(f.budgetWakes.value) || 0,
@@ -1108,8 +1416,8 @@ function newRunView() {
 
   async function submit(button, dry) {
     const b = body();
-    if (!b.goal) { toast("A run needs a goal", true); f.goal.focus(); return; }
-    if (b.until && b.perpetual) { toast("A run is either perpetual or has a done-condition, not both", true); return; }
+    if (!b.goal) { toast("Say what it should do first", true); f.goal.focus(); return; }
+    if (/<[^>]+>/.test(b.goal)) { toast("Fill in the <…> parts of the template first", true); f.goal.focus(); return; }
     if (b.skill === undefined && wrap.querySelector("input:checked").value === "skill") { toast("Name the skill", true); return; }
     if (!b.workdir && !defaultWorkdir) { toast("Give a working directory — there is no default yet", true); f.workdir.focus(); return; }
     if (b.workdir && !defaultWorkdir && f.saveWorkdir.checked && !dry) {
@@ -1121,40 +1429,52 @@ function newRunView() {
     if (!r) return;
     if (dry) {
       result.replaceChildren(h("div.card",
-        h("h3", "Dry run — nothing was created"),
-        h("dl.facts", { style: "margin-top:10px" }, h("dt", "Run"), h("dd.mono", runLabel(r.planned.id, r.planned.name))),
-        h("div.prose", r.planned.firstWake)));
+        h("h3", `It would be ${runLabel(r.planned.id, r.planned.name)} — nothing was created`),
+        h("pre.code", r.planned.firstWake)));
       return;
     }
-    if (r.wakeError) toast(`Created ${runLabel(r.id)}, but its first wake did not start: ${r.wakeError}`, true);
+    if (r.wakeError) toast(`Created ${runLabel(r.id)}, but its first run did not start: ${r.wakeError}`, true);
     else toast(`Started ${runLabel(r.id)}`);
-    location.hash = `#/run/${encodeURIComponent(r.id)}`;
+    location.hash = `#/run/${enc(r.id)}`;
   }
 
-  view.replaceChildren(h("h1", "New run"), h("p.muted", "The same run `otto run` would start — every field is one of its flags."), form);
+  view.replaceChildren(h("h1", "New agent"),
+    h("p.muted", "Describe the job. Its first run reads what you wrote, looks around, and asks you anything it needs to settle — like when it's finished — before it gets going."),
+    form);
 }
 
 // ---------------------------------------------------------------------------
-// #/agent
+// #/system — otto itself
 // ---------------------------------------------------------------------------
 
-function agentView() {
+function systemView() {
+  const healthBox = h("div");
   const card = h("div.card");
   const output = h("div");
   view.replaceChildren(
-    h("h1", "Reviver"),
-    h("p.muted", "The launchd agent that runs `otto poke` every five minutes. Without it, a sleeping run never wakes on its own."),
-    card, output);
+    h("h1", "otto itself"),
+    h("p.muted", "The machinery that keeps your agents going. When it's working there's nothing to do here."),
+    healthBox,
+    h("h2", "The reviver"),
+    h("p.muted", "The background job that wakes your agents on schedule, every five minutes. Without it, a sleeping agent never wakes on its own."),
+    card, output,
+    h("p", { style: "margin-top:24px" }, h("a", { href: "#/usage" }, "What your agents have used →")));
 
   async function refresh() {
+    try {
+      const health = await api("/health");
+      healthBox.replaceChildren(health.ok
+        ? h("div.banner.ok", "All good — agents are being woken on time.")
+        : h("div.banner.warn", health.problems.map((p) => h("div", p))));
+    } catch (err) { healthBox.replaceChildren(h("div.banner.bad", err.message)); }
     let s;
     try { s = await api("/agent"); } catch (err) { card.replaceChildren(h("p", err.message)); return; }
-    const badge = s.loaded === true ? h("span.pill.done", "loaded")
-      : s.loaded === false ? h("span.pill.failed", "not loaded") : h("span.pill", "unknown");
+    const badge = s.loaded === true ? h("span.pill.done", "running")
+      : s.loaded === false ? h("span.pill.failed", "not running") : h("span.pill", "unknown");
     card.replaceChildren(
       h("div.row.spread", h("h3", "Status"), badge),
       h("dl.facts", { style: "margin-top:12px" },
-        h("dt", "Last poke"), h("dd", s.lastPoke ? `${s.lastPokeRelative} (${localTime(s.lastPoke)})` : "never (no log yet)"),
+        h("dt", "Last ran"), h("dd", s.lastPoke ? `${s.lastPokeRelative} (${localTime(s.lastPoke)})` : "never (no log yet)"),
         h("dt", "Plist"), h("dd.mono", s.plist),
         h("dt", "Log"), h("dd.mono", s.log)),
       h("div.row", { style: "margin-top:14px" },
@@ -1174,13 +1494,13 @@ function agentView() {
           }),
         }, "Stop"),
         h("button", {
-          title: "Start the wakes that are due now, as launchd would",
+          title: "Start the runs that are due now, as the reviver would",
           onclick: (e) => busy(e.currentTarget, async () => {
             const r = await api("/poke", {});
-            output.replaceChildren(h("h2", "Poke"), h("pre.term.wrap", [...r.lines, ...r.errors].join("\n")));
+            output.replaceChildren(h("pre.term.wrap", [...r.lines, ...r.errors].join("\n")));
             refresh();
           }),
-        }, "Poke now")),
+        }, "Run it now")),
     );
   }
   refresh();
@@ -1196,13 +1516,15 @@ function route() {
   cleanups = [];
   const hash = location.hash || "#/";
   const run = hash.match(/^#\/run\/(.+)$/);
-  const section = run ? "runs" : hash === "#/new" ? "new" : hash === "#/agent" ? "agent" : hash === "#/usage" ? "usage" : "runs";
-  for (const a of document.querySelectorAll("nav a")) a.classList.toggle("active", a.dataset.nav === section);
+  const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
+  const section = run ? "agents" : inbox ? "inbox" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
+  for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]));
+  else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
   else if (hash === "#/new") newRunView();
-  else if (hash === "#/agent") agentView();
+  else if (hash === "#/system" || hash === "#/agent") systemView();
   else if (hash === "#/usage") usageView();
-  else runsView();
+  else agentsView();
   window.scrollTo(0, 0);
 }
 

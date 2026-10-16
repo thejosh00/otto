@@ -307,6 +307,8 @@ pub struct Happening {
     /// The message this is about, when it is about one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// How many times in a row it happened — five failed attempts are one line, not five.
+    pub times: u32,
 }
 
 fn first_line(text: &str, max: usize) -> String {
@@ -338,14 +340,15 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
     let all = entries(dir);
     let titles: std::collections::HashMap<String, String> =
         crate::messages::history(dir).into_iter().map(|m| (m.id, m.title)).collect();
-    let mut out = Vec::new();
+    let mut out: Vec<Happening> = Vec::new();
     for entry in all.iter().rev() {
-        if out.len() >= limit {
+        if out.len() > limit {
+            out.pop();
             break;
         }
         let v = &entry.value;
         let at = entry.at;
-        let happening = |kind: &'static str, text: String| Some(Happening { at, kind, text, message: None });
+        let happening = |kind: &'static str, text: String| Some(Happening { at, kind, text, message: None, times: 1 });
         let item = match entry.event.as_str() {
             e if !crate::event::OTTO_EVENTS.contains(&e) => {
                 let text = str_of(v, "message").map(|m| first_line(m, 240)).unwrap_or_else(|| e.to_string());
@@ -364,6 +367,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                     str_of(v, "title").unwrap_or("")
                 ),
                 message: str_of(v, "message").map(str::to_string),
+                times: 1,
             }),
             "message-done" => {
                 let id = str_of(v, "message").unwrap_or("");
@@ -372,7 +376,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                     Some(reply) => format!("You replied to “{title}”: {}", first_line(reply, 200)),
                     None => format!("You marked “{title}” done"),
                 };
-                Some(Happening { at, kind: "you", text, message: Some(id.to_string()) })
+                Some(Happening { at, kind: "you", text, message: Some(id.to_string()), times: 1 })
             }
             "gate-opened" => happening(
                 "asked",
@@ -426,7 +430,12 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "budget-exhausted" => happening("trouble", format!("Reached its budget: {}", str_of(v, "reason").unwrap_or(""))),
             _ => None,
         };
-        out.extend(item);
+        match (item, out.last_mut()) {
+            // Newest first, so the earlier repeat folds into the line already there.
+            (Some(item), Some(last)) if last.text == item.text && last.kind == item.kind && last.message.is_none() => last.times += 1,
+            (Some(item), _) => out.push(item),
+            (None, _) => {}
+        }
     }
     out
 }

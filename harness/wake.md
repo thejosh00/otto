@@ -118,7 +118,7 @@ that would help, a decision coming up) and nothing else. It never replaces a gat
 answered before you go on is still asked at one.
 
 **Those two sections are checked.** `otto state handoff` refuses a handoff whose `Where this is`
-or `Needs` uses otto's own words for its machinery — wake, tick, gate, poke, handoff, check.sh,
+or `Needs` uses otto's own words for its machinery — wake, gate, poke, handoff, check.sh,
 `otto state`, `artifacts/` paths, timestamps — and says which it found. That is not an error to
 work around: rewrite those sections in the work's own terms ("Watching the queue; nothing tagged
 since Monday", "The plan is waiting on your review") and write the handoff again. The sections

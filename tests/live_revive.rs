@@ -123,6 +123,9 @@ fn live_revive() {
         }
         std::thread::sleep(Duration::from_secs(2));
     }
+    // The wake arms its timer before it finishes its handoff; wait for it to exit, or the kill
+    // below can land on this wake instead of the one it starts.
+    checks.check(await_idle(Duration::from_secs(300)), "the first wake has exited", "the first wake is still running");
     let wake_at = run.field_str("nextWakeAt");
     let done_at_kill = run.field_str("facts.ticksDone");
     checks.check(!wake_at.is_empty() && wake_at != "null", format!("nextWakeAt={wake_at}"), "the timer was never armed");

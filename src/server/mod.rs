@@ -351,6 +351,64 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
+    /// The inbox, a message read in full, and marking it done with a reply — the page's whole loop.
+    #[test]
+    fn a_message_is_read_and_answered_from_the_page() {
+        let _h = TempHome::new();
+        test_init("2026-09-21-msg", "a goal").unwrap();
+        crate::messages::send(
+            "2026-09-21-msg",
+            &crate::messages::Outgoing {
+                kind: crate::messages::MessageKind::Draft,
+                title: "Sam asked about rate limits",
+                body: "Their key is on the default tier.",
+                draft: Some("Hi Sam!"),
+                attachments: &[],
+            },
+        )
+        .unwrap();
+        let (status, inbox) = rt().block_on(send(get_req("/api/inbox")));
+        assert_eq!(status, StatusCode::OK, "{inbox}");
+        assert_eq!(inbox["open"], 1);
+        assert_eq!(inbox["items"][0]["kind"], "draft");
+
+        let (status, message) = rt().block_on(send(get_req("/api/runs/msg/messages/1")));
+        assert_eq!(status, StatusCode::OK, "{message}");
+        assert_eq!(message["draft"], "Hi Sam!");
+        assert_eq!(message["open"], true);
+
+        let (status, done) = rt().block_on(send(post_req("/api/runs/msg/messages/1/done", serde_json::json!({"reply": "shorter, please"}))));
+        assert_eq!(status, StatusCode::OK, "{done}");
+        assert!(done["done"]["note"]["id"].is_string(), "the reply is a note: {done}");
+        let (_, inbox) = rt().block_on(send(get_req("/api/inbox")));
+        assert_eq!(inbox["open"], 0);
+
+        let (status, _) = rt().block_on(send(get_req("/api/runs/msg/messages/9")));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn a_run_is_paused_and_resumed_from_the_page() {
+        let _h = TempHome::new();
+        test_init("2026-09-21-hold", "a goal").unwrap();
+        let (status, body) = rt().block_on(send(post_req("/api/runs/hold/pause", serde_json::json!({"for": "2h"}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["until"].is_string());
+        assert!(crate::state::read_run("2026-09-21-hold").unwrap().is_paused());
+        let (_, detail) = rt().block_on(send(get_req("/api/runs/hold")));
+        assert_eq!(detail["glance"]["mood"], "paused");
+
+        let (status, body) = rt().block_on(send(post_req("/api/runs/hold/resume", serde_json::json!({}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(!crate::state::read_run("2026-09-21-hold").unwrap().is_paused());
+
+        let (status, _) = rt().block_on(send(post_req("/api/runs/hold/pause", serde_json::json!({"for": "soon"}))));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, health) = rt().block_on(send(get_req("/api/health")));
+        assert_eq!(status, StatusCode::OK, "{health}");
+        assert!(health["problems"].is_array());
+    }
+
     #[test]
     fn a_path_in_place_of_an_id_names_no_run() {
         let _h = TempHome::new();
