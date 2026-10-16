@@ -38,7 +38,7 @@ pub fn title(question: &str, max: usize) -> String {
     let line = match heading(first) {
         Some(h) => h.to_string(),
         None => {
-            let end = first.find(". ").map(|i| i + 1).unwrap_or(first.len());
+            let end = [". ", "? ", "! "].iter().filter_map(|sep| first.find(sep)).min().map(|i| i + 1).unwrap_or(first.len());
             first[..end].to_string()
         }
     };
@@ -47,8 +47,21 @@ pub fn title(question: &str, max: usize) -> String {
         return line;
     }
     let cut: String = line.chars().take(max).collect();
-    let cut = cut.rsplit_once(' ').map(|(head, _)| head).unwrap_or(&cut);
-    format!("{}…", cut.trim_end_matches([',', ';', ':']))
+    // At a word, unless that leaves little of it: a long path or id early on is one huge "word".
+    let at_word = cut.rsplit_once(' ').map(|(head, _)| head).filter(|head| head.chars().count() * 2 >= max);
+    format!("{}…", at_word.unwrap_or(&cut).trim_end_matches([',', ';', ':']))
+}
+
+#[cfg(test)]
+mod title_tests {
+    #[test]
+    fn a_question_s_title_is_its_heading_or_its_first_sentence_cut_short() {
+        assert_eq!(super::title("# Approve the plan?\n\nIt touches 3 files.", 100), "Approve the plan?");
+        assert_eq!(super::title("Ship it? The tests are green.", 100), "Ship it?");
+        let long = format!("Run `{}` has failed to finish five times", "x".repeat(120));
+        let title = super::title(&long, 60);
+        assert!(title.chars().count() > 30 && title.ends_with('…'), "a long id is cut, not the whole line: {title}");
+    }
 }
 
 /// A name with the inline markdown a wake wrapped it in — code, bold, italics — taken off both
