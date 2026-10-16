@@ -33,6 +33,8 @@ what the ideas mean.
 | `limitedUntil` | The wake time otto set when a wake ran into the account's usage limit: a minute past the reset. While it equals `nextWakeAt` the run is waiting out the limit, which no check script stands in front of |
 | `wake` | The current or last wake: `{n, startedAt, deadlineAt, launcher, pid, session, outcome}`. `session` is the claude session id its usage is read from |
 | `incompleteWakes` | Wakes in a row that didn't finish; reset by one that does |
+| `startFailures`, `startFailure` | Wakes in a row that never got going — claude exited at once, having done nothing — and the first line it printed the last time. Retried for as long as it takes, never counted toward blocking the run; reset by a wake that gets going |
+| `paused` | While a person has paused it (`otto pause`): `{at, until, reason}`, `until` absent for "until resumed". Poke starts no scheduled wake meanwhile |
 | `ticksWithoutProgress` | Polling ticks in a row that changed nothing |
 
 ## How it runs
@@ -45,6 +47,7 @@ what the ideas mean.
 | `policy` | `periodMinutes`, `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
 | `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |
+| `messages` | Messages the run has sent that the person has not marked done: `{id, kind, title, file, sentAt}`, `file` the message's `messages/NNN-<slug>.json` |
 
 ### `check`
 

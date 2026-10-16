@@ -22,12 +22,27 @@ wake in flight. The old id still works afterwards — it is kept as `formerId`.
 ## What needs me?
 
 ```bash
-otto ls          # every live run: status, what it waits on, next wake, period, wakes spent
+otto inbox       # every question waiting on you, and every message a run has sent, newest first
+otto ls          # every live run: status, what it waits on, next wake, and a line on what it's doing
 otto ls --all    # include finished runs
 ```
 
-Below the table, a `needs you:` summary gives a ready-to-paste answer command for each run
-waiting on a person.
+`otto inbox` is the short answer: questions to answer and [messages](../concepts.md#messages-and-the-inbox)
+to read, from every run. Below `otto ls`'s table, a `needs you:` summary gives a ready-to-paste
+answer command for each run waiting on a person.
+
+## Reading what a run sent you
+
+```bash
+otto inbox read my-run          # its newest open message, in full — with any draft to send on
+otto inbox read my-run 3        # message 3
+otto inbox done my-run 3        # done with it
+otto inbox done my-run 3 --reply "dig into the grader next" --now   # and tell the run, and wake it
+otto inbox --all                # what you've answered and read, too
+```
+
+A draft is text for you to send on — a reply to a question in a channel, a comment on a ticket. The
+run never sends it itself.
 
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run
@@ -104,10 +119,14 @@ there is: `otto check <id>` shows how many wakes it has spared.
 otto wake my-run                # one wake now, backgrounded the way the run asks
 otto wake my-run --watch        # this one in your terminal
 otto wake my-run --dry-run      # print the command it would run
+otto pause my-run --for 2d      # hold back its scheduled wakes; --until 09:00, or neither for "until resumed"
 otto stop my-run                # retire it (stopped); --failed if it couldn't do its job
-otto resume my-run              # bring a stopped or failed run back, and wake it
+otto resume my-run              # lift a pause; or bring a stopped or failed run back, and wake it
 otto resume my-run --no-wake    # back on its schedule, no wake now
 ```
+
+A pause holds back everything scheduled — the period, timers, check scripts — while a wake already
+running finishes and questions stay open. Answering, a note with `--now`, and `otto wake` still work.
 
 Stopping a run kills any wake in progress and releases its repo locks.
 
@@ -133,19 +152,21 @@ otto serve --open          # http://127.0.0.1:7878/
 otto service start         # or keep it running from login — see running-as-a-service.md
 ```
 
-Everything above, in a browser:
+Everything above, in a browser, in plain words — a run is an *agent* there, a wake is *a run* of
+it, and a gate is a *question*:
 
-- The **runs list**: each run with the last wake's *where this is* and its latest
-  [activity](../concepts.md#activity) under it and, when it keeps a [todo](../concepts.md#the-todo),
-  a progress bar; and a *needs you* section whose option buttons answer a gate in one click.
-- A **run page** that opens with three lines (what the run does, when it runs next, and how its
-  last run ended), then what it could use from you, an open question with its answers, and its todo
-  or activity. The rest is folded away: the whole handoff, the journal with filters and live follow,
-  a live view of a running wake, notes to the run, and its settings — tokens, the check script, wake
-  now, change period, stop.
-- A **new run** form that mirrors `otto run`'s flags, with a dry run.
-- **Usage**: tokens by run or by day, over the last day, week, month or all time.
-- The **reviver**: its status, start/stop, and poke-now.
+- **Agents**: one line each — what it's doing, a glyph for whether it is waiting on you, working,
+  watching, paused or needs a look, and when it runs next.
+- **The inbox**, with a count in the top bar: questions to answer and messages to read, from every
+  agent. Answer with a click, copy a draft, reply, mark done.
+- **An agent's page**: its question if it has one, what it would like from you, a strip of its last
+  week (each run, whether it did something, when it waited on you), its checklist when it keeps one,
+  what it has sent you, what happened lately in words, and one box to tell it something (pin it to
+  keep it). Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
+  settings are under the hood.
+- **New agent**: describe the job; everything `otto run` can set is folded under more options.
+- **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —
+  with the reviver's controls and **usage** a click away.
 
 The server is a view over the run directory, not an owner of it — every button calls the same
 code as the matching command, and runs carry on waking under poke whether it is running or not.

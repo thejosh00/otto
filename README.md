@@ -51,7 +51,8 @@ otto run --instructions test/fixtures/hello-flow.md \
          --goal "Smoke-test otto's machinery" \
          --until "artifacts/farewell.md exists and the run is done"
 
-otto ls                       # which runs need you
+otto inbox                    # questions waiting on you, and what runs have sent you
+otto ls                       # every run, and a line on what each is doing
 otto show                     # the one that needs you, and its question in full
 otto answer --choice Approve  # answer it
 otto logs <id> -f             # the journal, readably (the run's number, or its name)
@@ -68,8 +69,8 @@ otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
 
 ## Documentation
 
-- **[Concepts](docs/concepts.md)** — runs, wakes, the handoff, the period, gates, notes, check
-  scripts, recovery.
+- **[Concepts](docs/concepts.md)** — runs, wakes, the handoff, the period, gates, notes, messages
+  and the inbox, pausing, check scripts, recovery.
 - **Guides** — [living with a run](docs/guides/everyday.md) ·
   [wrapping work](docs/guides/wrapping.md) · [check scripts](docs/guides/check-scripts.md) ·
   [sandboxing](docs/guides/sandboxing.md) · [running as a service](docs/guides/running-as-a-service.md)

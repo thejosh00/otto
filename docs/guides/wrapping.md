@@ -83,9 +83,15 @@ built for long horizons does. In rough order of value:
 5. **Outward actions behind authorization.** Push, merge and comment only with a recorded
    authorization bound to the commit ([concepts](../concepts.md#outward-actions-and-repo-locks)).
 
-Perpetual runs change a few habits: retire with `stopped` rather than `failed`; set
-`--policy maxTicksWithoutProgress=0`, since ticks are *expected* to find nothing; take repo locks
-per cycle, never for the life of the run; and give each cycle its own artifact directory.
+Perpetual runs change a few habits: retire with `stopped` rather than `failed`; expect ticks to
+find nothing (a perpetual run has no stall guard, so it is never blocked for being quiet); take repo
+locks per cycle, never for the life of the run; and give each cycle its own artifact directory.
+
+**Deliver results as messages.** When what the work produces is for a person — a daily report, a
+reply drafted for someone else, news — say so in the instructions plainly ("let me know what you
+found", "draft a reply for me to send"); the harness turns that into
+[a message](../concepts.md#messages-and-the-inbox) in their inbox. Never instruct a wake to post a
+draft itself.
 
 [DESIGN.md §11](../../DESIGN.md#11-authoring-for-otto) has the reasoning behind each of these.
 

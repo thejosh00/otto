@@ -14,6 +14,8 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Check scripts](#check-scripts)
 - [Gates](#gates)
 - [Notes](#notes)
+- [Messages and the inbox](#messages-and-the-inbox)
+- [Pausing](#pausing)
 - [When things go wrong](#when-things-go-wrong)
 - [Budgets and policy](#budgets-and-policy)
 - [Outward actions and repo locks](#outward-actions-and-repo-locks)
@@ -63,6 +65,11 @@ accumulate goes in an artifact the handoff points to. `otto show` prints it.
 Two of its sections are written for you as well. The runs list shows **Where this is** under each
 run, and the run's page shows **Needs** whenever it says anything but "nothing": what the run would
 like from you without stopping to ask, like a key that would help.
+
+Those two are checked: `otto state handoff` refuses a handoff whose `Where this is` or `Needs`
+talks in otto's own words — wake, gate, poke, handoff, check.sh, `otto state`, `artifacts/` paths,
+timestamps — and says which, so the wake rewrites them in the work's own terms before it stops.
+Each refusal is journaled as `handoff-refused`.
 
 ## The todo
 
@@ -193,6 +200,39 @@ the next one gets it again.
 - A note steers *how* the run works. It never changes the goal or the done-condition, and never
   authorizes a push; a wake opens a gate for anything like that.
 
+## Messages and the inbox
+
+A gate is the run asking; a **message** is the run delivering. When the work produces something
+for you — the report you asked for, a reply drafted for someone else, news you'd want — a wake
+sends it to your inbox:
+
+```bash
+otto state message <id> --kind report --title "Why refund-policy-qa fails" --body-file artifacts/report.md
+```
+
+`report` is something it made for you to read; `draft` is text for you to send on to someone else
+(the run never sends it itself); `update` is news. Each lands in your inbox, beside the questions
+waiting on you, and poke notifies you of it. It stays until you mark it done:
+
+```bash
+otto inbox                              # everything waiting for you, across every run
+otto inbox read <id> 2                  # one message in full, with any draft and what it attached
+otto inbox done <id> 2 --reply "dig into the grader next"
+```
+
+A reply becomes a note to the run, delivered like any other. The message's body is
+`messages/NNN-<slug>.md`, verbatim, and the rest of it — kind, title, draft, attachments, when you
+marked it done and what you replied — `messages/NNN-<slug>.json`. The web UI has the same inbox,
+with a count in the top bar.
+
+## Pausing
+
+`otto pause <id> --for 2d` (or `--until 09:00`, `--until 2026-10-19`, or neither for "until I say")
+holds back everything scheduled: the period's wakes, timers, check scripts, expiring gates. A wake
+already running finishes, questions stay open, and you can still answer, note or `otto wake` it by
+hand. `otto resume <id>` lifts the pause; a wake it missed meanwhile comes at the next poke — one,
+not a backlog.
+
 ## When things go wrong
 
 A crash mid-wake is the normal case, and recovery needs nobody:
@@ -203,7 +243,8 @@ A crash mid-wake is the normal case, and recovery needs nobody:
 | A wake hangs | Poke kills it at its deadline (`maxWakeMinutes`, 45 by default); incomplete path |
 | The machine reboots | launchd starts poke at login; any run that's due wakes |
 | A wake hits your usage limit | Not counted as a failure: the run sleeps until the limit resets (claude records when, in the session transcript), and `otto ls` says `usage limit` |
-| Five wakes in a row don't finish | `blocked`, with a gate saying what the wakes were doing |
+| A wake never gets going — claude exits at once, having done nothing (an expired login, say) | Not counted as a failure either: it is the machine, not the run. Retried on the same backoff for as long as it takes; after three in a row you are notified, with what claude printed, and the list and the health line say so |
+| Five wakes in a row don't finish | `blocked`, with a question saying what kept happening |
 
 A retry is never held back by a check script, and nor is the wake after a usage limit — the work is
 half done whatever the world outside has been doing.
@@ -222,7 +263,7 @@ gate. There is no dollar budget — nothing can price a wake on a subscription (
 | `periodMinutes` | 60 | The period (prefer `--period` / `otto period`) |
 | `maxWakeMinutes` | 45 | A wake's deadline; poke kills it after |
 | `maxIncompleteWakes` | 5 | Failed wakes in a row before `blocked` |
-| `maxTicksWithoutProgress` | 24 | Polling ticks that change nothing before `blocked`; 0 disables |
+| `maxTicksWithoutProgress` | 24 | Polling ticks that change nothing before `blocked`; 0 disables. A perpetual run ignores it: watching and finding nothing is its job |
 | `gateStaleAfterHours` | 48 | When an unanswered gate is notified again; 0 disables |
 | `handoffMaxBytes` | 8192 | The handoff's cap |
 | `autoMergeWhenGreen` | false | A policy flag a workflow may cite as authorization to merge |
@@ -247,8 +288,9 @@ are due, run their check scripts, kill wakes past their deadline, and record cra
 **Without it, a sleeping run never wakes.** See [running as a
 service](guides/running-as-a-service.md).
 
-Poke also sends a macOS notification, once each, when a run opens a gate, becomes blocked, leaves
-a gate unanswered past `gateStaleAfterHours`, or passes 80% of a budget.
+Poke also sends a macOS notification, once each, when a run opens a gate, sends a message,
+becomes blocked, leaves a gate unanswered past `gateStaleAfterHours`, can't start three times in a
+row, or passes 80% of a budget.
 
 ## What a wake costs
 
@@ -276,6 +318,7 @@ available for a polling run.
     journal.jsonl                every event, append-only — see reference/journal.md
     gates/NNN-<slug>.md          questions, and their answers verbatim
     notes/NNN.md                 notes, verbatim
+    messages/NNN-<slug>.md|.json messages it sent you: the body verbatim, and the rest
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   logs/poke.log, serve.log       the launchd jobs' output
