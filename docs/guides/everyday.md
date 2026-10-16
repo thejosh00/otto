@@ -44,6 +44,19 @@ otto inbox --all                # what you've answered and read, too
 A draft is text for you to send on — a reply to a question in a channel, a comment on a ticket. The
 run never sends it itself.
 
+## Looking at what a run made
+
+```bash
+otto outputs my-run                    # its reports, documents and drafts, newest first; its stages
+otto outputs my-run design             # one in full — the latest version, its draft, your reviews
+otto outputs my-run design --version 1 # an earlier version
+otto outputs my-run thread-17290 --mark done   # you sent its draft
+otto note my-run "check case 12 too" --about 2026-10-16-refund-policy-qa   # about that one
+```
+
+A message tells you something is ready; the [output](../concepts.md#outputs-what-it-made-kept) is
+the thing itself, and stays after you're done with the message.
+
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run
 otto show my-run # where it stands, its handoff, and any open question in full
@@ -159,10 +172,11 @@ it, and a gate is a *question*:
   watching, paused or needs a look, and when it runs next.
 - **The inbox**, with a count in the top bar: questions to answer and messages to read, from every
   agent. Answer with a click, copy a draft, reply, mark done.
-- **An agent's page**: its question if it has one, what it would like from you, a strip of its last
-  week (each run, whether it did something, when it waited on you), its checklist when it keeps one,
-  what it has sent you, what happened lately in words, and one box to tell it something (pin it to
-  keep it). Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
+- **An agent's page**: its question if it has one, what it would like from you, **its work** —
+  shaped by what it makes: a dated list of reports, a document's versions and what changed between
+  them, its stages as a track, or one card per question with the reply to copy — a strip of its last
+  week (each run, what it made, when it waited on you), its checklist when it keeps one, what
+  happened lately in words, and one box to tell it something (pin it to keep it). Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
 - **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —

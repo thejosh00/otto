@@ -27,7 +27,7 @@ what the ideas mean.
 |---|---|
 | `status` | `running`, `sleeping`, `awaiting_human`, `blocked`, `done`, `failed` or `stopped` |
 | `blocked` | When `status` is `blocked`: `{cause, detail, at}`, cause one of `wake-failures`, `budget`, `stall`, `instructions` |
-| `gate` | The open gate: `{id, slug, file, askedAt, answeredAt, expiresAt}`, or `null` |
+| `gate` | The open gate: `{id, slug, file, askedAt, answeredAt, expiresAt, about}`, or `null`. `about` is the output version it asks about (`design@1`), when it asks about one |
 | `nextWakeAt` | When poke next wakes the run, or `null` |
 | `armedWakeAt` | The time a wake last asked for with `arm-timer --in`/`--at`. While it equals `nextWakeAt`, the sleep is the wake's own: a person's check doesn't stand in front of it and `otto period` doesn't move it |
 | `limitedUntil` | The wake time otto set when a wake ran into the account's usage limit: a minute past the reset. While it equals `nextWakeAt` the run is waiting out the limit, which no check script stands in front of |

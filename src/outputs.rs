@@ -536,7 +536,7 @@ pub struct OutputLine {
 #[serde(rename_all = "camelCase")]
 pub struct StageView {
     pub name: String,
-    /// `done`, `current` or `later`.
+    /// `done`, `current`, `stopped` (where a stopped or failed run stopped) or `later`.
     pub status: &'static str,
     pub outputs: usize,
 }
@@ -576,6 +576,8 @@ pub fn view(run_dir: &Path, state: &crate::state::RunState) -> OutputsView {
         .and_then(|o| o.output.stage.clone())
         .or_else(|| outputs.iter().find_map(|o| o.output.stage.clone()));
     let current = current_stage.and_then(|s| index.stages.iter().position(|t| *t == s)).unwrap_or(0);
+    // A finished run's stage is done, not "now"; a stopped or failed one's is where it stopped.
+    let ended = state.status.is_terminal().then_some(if state.status == crate::state::Status::Done { "done" } else { "stopped" });
     let stages = index
         .stages
         .iter()
@@ -584,6 +586,7 @@ pub fn view(run_dir: &Path, state: &crate::state::RunState) -> OutputsView {
             name: name.clone(),
             status: match i.cmp(&current) {
                 std::cmp::Ordering::Less => "done",
+                std::cmp::Ordering::Equal if ended.is_some() => ended.unwrap_or("done"),
                 std::cmp::Ordering::Equal => "current",
                 std::cmp::Ordering::Greater => "later",
             },
@@ -733,6 +736,15 @@ mod tests {
         assert_eq!(statuses, vec![("Research", "done"), ("Design", "current"), ("Plan", "later")]);
         assert_eq!(v.outputs[0].output.stage.as_deref(), Some("Design"), "stored as declared");
         assert!(set_stages("o-stage", &["Design".into()]).is_err(), "research still has an output");
+        for (status, said) in [(crate::state::Status::Stopped, "stopped"), (crate::state::Status::Done, "done")] {
+            crate::state::transaction("o-stage", |_, st| {
+                st.status = status;
+                Ok(())
+            })
+            .unwrap();
+            let v = view(&dir, &crate::state::read_run("o-stage").unwrap());
+            assert_eq!(v.stages[1].status, said, "a {status:?} run's stage is not \"now\"");
+        }
         assert!(journal("o-stage").contains("\"stages-set\""));
     }
 

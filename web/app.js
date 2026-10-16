@@ -869,9 +869,10 @@ function lineDiff(a, b) {
 /** A diff as lines a person reads: headings bold, long unchanged stretches folded. */
 function diffView(lines) {
   const box = h("div.diff");
-  const line = ([kind, text]) => {
-    const heading = /^#{1,6}\s/.test(text);
-    if (!text.trim() && kind === "same") return h("div.dl.blank"); // a paragraph break, not a row
+  const line = ([kind, raw]) => {
+    const heading = /^#{1,6}\s/.test(raw);
+    if (!raw.trim()) return h(`div.dl.blank.${kind}`); // a paragraph break, not a row
+    const text = raw.replace(/^\s*>\s?/, ""); // a quote reads as its words
     return h(`div.dl.${kind}${heading ? ".h" : ""}`,
       h("span.dm", { "aria-hidden": "true" }, kind === "add" ? "+" : kind === "del" ? "−" : ""),
       h("span.dt", heading ? text.replace(/^#+\s*/, "") : text.trim() ? inline(text.replace(/^(\s*)[-*]\s+/, "$1• ")) : "\u00a0"));
@@ -1015,7 +1016,7 @@ function workPanel(runId, initial, onChanged) {
           render(last);
         },
       },
-      h("span.sn", `${i + 1} · ${s.status === "done" ? "done" : s.status === "current"
+      h("span.sn", `${i + 1} · ${s.status === "done" ? "done" : s.status === "stopped" ? "stopped here" : s.status === "current"
         ? (outputs.some((o) => o.asking && o.stage === s.name) ? "waiting on you" : "now") : "not yet"}`),
       h("span.st", s.name)))));
   }

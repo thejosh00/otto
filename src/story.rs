@@ -599,4 +599,38 @@ mod tests {
             "the reply's note is told once, as the reply"
         );
     }
+
+    /// What it made reads as made, updated or linked, a person's mark on one as theirs, and a note
+    /// about one says which.
+    #[test]
+    fn lately_tells_what_it_made() {
+        let _h = TempHome::new();
+        test_init("t-made", "a goal").unwrap();
+        let dir = crate::paths::run_dir("t-made").unwrap();
+        let doc = |text| crate::outputs::Publish { key: "design", title: "Design: tiers", text: Some((text, "md")), ..Default::default() };
+        crate::outputs::publish("t-made", &doc("v1")).unwrap();
+        crate::outputs::publish("t-made", &doc("v2")).unwrap();
+        let link = crate::outputs::Publish { key: "proj-1", title: "Add rate_tier", link: Some("https://x.example/PROJ-1"), ..Default::default() };
+        crate::outputs::publish("t-made", &link).unwrap();
+        crate::outputs::set_stages("t-made", &["Design".into(), "Build".into()]).unwrap();
+        crate::outputs::set_state("t-made", "proj-1", crate::outputs::OutputState::Done, None, "person").unwrap();
+        let text = crate::core::note_about("t-made", Some("design"), "shorter").unwrap();
+        crate::notes::add("t-made", &text, false).unwrap();
+
+        let told: Vec<(String, Option<String>)> = lately(&dir, 20).into_iter().map(|h| (h.text, h.output)).collect();
+        let design = Some("design".to_string());
+        assert_eq!(
+            told,
+            vec![
+                ("You said about “Design: tiers”: shorter".to_string(), design.clone()),
+                ("You marked “Add rate_tier” done".to_string(), Some("proj-1".to_string())),
+                ("Laid out its steps: Design → Build".to_string(), None),
+                ("Linked: Add rate_tier".to_string(), Some("proj-1".to_string())),
+                ("Updated: Design: tiers (v2)".to_string(), design.clone()),
+                ("Made: Design: tiers".to_string(), design),
+                ("You started it: a goal".to_string(), None),
+            ]
+        );
+        assert_eq!(timeline(&dir, &read_run("t-made").unwrap()).made.len(), 3, "each version is a mark on the week");
+    }
 }

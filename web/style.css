@@ -619,6 +619,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .stage.current { border-color: var(--accent); }
 .stage.current .sn { color: var(--warn); }
 .stage.later { border-style: dashed; background: transparent; color: var(--ink-3); }
+.stage.stopped .sn { color: var(--ink-2); }
 .stage[aria-pressed="true"] { background: var(--accent-soft); }
 .work-cols { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; }
 .work-list { flex: 1 1 260px; min-width: 0; max-width: 360px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; max-height: 640px; overflow-y: auto; }

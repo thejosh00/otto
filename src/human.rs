@@ -513,6 +513,7 @@ pub fn outputs(args: OutputsArgs) -> Result<(), OttoError> {
             .map(|s| match s.status {
                 "done" => format!("✓ {}", s.name),
                 "current" => format!("▸ {}", s.name),
+                "stopped" => format!("■ {}", s.name),
                 _ => s.name.clone(),
             })
             .collect();
@@ -773,6 +774,15 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     }
     if state.is_paused() {
         println!("  paused    {} — `otto resume {short}` to lift it", crate::story::paused_line(state).trim_start_matches("Paused").trim());
+    }
+    if let Some(newest) = detail.outputs.outputs.first() {
+        let n = detail.outputs.outputs.len();
+        println!(
+            "  made      {} — newest “{}”, {} · `otto outputs {short}`",
+            if n == 1 { "1 thing".to_string() } else { format!("{n} things") },
+            newest.output.title,
+            crate::clock::relative(newest.latest_at)
+        );
     }
     let open: Vec<&crate::core::MessageLine> = detail.messages.iter().filter(|m| m.open).collect();
     if !open.is_empty() {

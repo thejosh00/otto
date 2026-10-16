@@ -225,6 +225,43 @@ A reply becomes a note to the run, delivered like any other. The message's body 
 marked it done and what you replied — `messages/NNN-<slug>.json`. The web UI has the same inbox,
 with a count in the top bar.
 
+## Outputs: what it made, kept
+
+A message is news; it leaves your inbox when you're done with it. The work itself — the day's
+report, a design as it is revised, an explanation and the reply drafted for it, the tickets it filed
+— is an **output**, kept on the run's page under "Its work", every version:
+
+```bash
+otto state publish <id> --key 2026-10-16-refund-policy-qa --title "refund-policy-qa: a stale index, not the model" --file artifacts/report.md
+otto state publish <id> --key design --title "Design: per-key rate-limit tiers" --file artifacts/design.md --stage Design
+otto state publish <id> --key thread-1729072990 --title "Priya asked why refunds say 14 days" --file artifacts/explain.md --about https://example.slack.com/archives/C1/p1729072990 --draft-file artifacts/reply.md
+otto state publish <id> --key proj-4412 --title "Add rate_tier to key_metadata" --link https://example.atlassian.net/browse/PROJ-4412
+```
+
+There are no agent types to choose; the page reads the shape of the work from the outputs:
+
+- **The key says what it is.** A new key is a new output — a report a day is a dated list. The same
+  key again is its next version — a design revised after review shows v1 and v2 and what changed
+  between them. Publishing what the latest version already says makes no new one.
+- **Stages** (`otto state stages <id> Research Design Plan`) put outputs on a track, for work that
+  moves through steps.
+- **A draft and a state** make an output something to deal with: a card with the reply to copy,
+  waiting until you mark it sent (or the run marks it not needed — someone else answered).
+- **A question `--about` an output** (`otto state open-gate … --about design`) is shown beside that
+  version, and your answer is kept on it as your review.
+- **A message `--output` an output** shows it in your inbox as a card that opens it.
+
+```bash
+otto outputs <id>                  # what it has made, newest first, and where its stages stand
+otto outputs <id> design --version 1   # one in full, with its draft and your review
+otto outputs <id> <key> --mark done    # you sent its draft
+otto note <id> "shorter, please" --about design   # a note the run knows is about that output
+```
+
+On disk, `outputs/index.json` holds everything but the text, and `outputs/<key>/v<n>.md` each
+version's text, verbatim. `artifacts/` stays the run's scratch space: an output is published from
+it on purpose, so the page shows the work and not the workings.
+
 ## Pausing
 
 `otto pause <id> --for 2d` (or `--until 09:00`, `--until 2026-10-19`, or neither for "until I say")
@@ -319,6 +356,8 @@ available for a polling run.
     gates/NNN-<slug>.md          questions, and their answers verbatim
     notes/NNN.md                 notes, verbatim
     messages/NNN-<slug>.md|.json messages it sent you: the body verbatim, and the rest
+    outputs/index.json           what it made, kept: keys, titles, versions, stages, states
+    outputs/<key>/v<n>.md        each version's text, verbatim
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   logs/poke.log, serve.log       the launchd jobs' output

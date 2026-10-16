@@ -392,6 +392,57 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
+    /// What the "Its work" panel does: list outputs with the run, read one version, mark a draft
+    /// sent, and leave a note about one.
+    #[test]
+    fn an_output_is_read_marked_and_noted_from_the_page() {
+        let _h = TempHome::new();
+        test_init("2026-09-21-work", "a goal").unwrap();
+        let publish = |text| {
+            crate::outputs::publish(
+                "2026-09-21-work",
+                &crate::outputs::Publish {
+                    key: "thread-1",
+                    title: "Sam asked about rate limits",
+                    text: Some((text, "md")),
+                    draft: Some("Hi Sam!"),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        publish("Their key is on the default tier.");
+        publish("Their key is on the default tier, which is 100 a minute.");
+
+        let (status, run) = rt().block_on(send(get_req("/api/runs/work")));
+        assert_eq!(status, StatusCode::OK, "{run}");
+        let line = &run["outputs"]["outputs"][0];
+        assert_eq!((line["key"].as_str(), line["state"].as_str()), (Some("thread-1"), Some("waiting")));
+        assert_eq!(line["versions"].as_array().map(Vec::len), Some(2));
+
+        let (status, v1) = rt().block_on(send(get_req("/api/runs/work/outputs/thread-1?v=1")));
+        assert_eq!(status, StatusCode::OK, "{v1}");
+        assert_eq!(v1["text"], "Their key is on the default tier.\n");
+        assert_eq!(v1["version"]["draft"], "Hi Sam!");
+        let (status, latest) = rt().block_on(send(get_req("/api/runs/work/outputs/thread-1")));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(latest["version"]["n"], 2);
+
+        let (status, marked) = rt().block_on(send(post_req("/api/runs/work/outputs/thread-1/state", serde_json::json!({"state": "done"}))));
+        assert_eq!(status, StatusCode::OK, "{marked}");
+        assert_eq!((marked["state"].as_str(), marked["stateBy"].as_str()), (Some("done"), Some("person")));
+
+        let note = serde_json::json!({"text": "shorter, please", "standing": false, "now": false, "about": "thread-1@1"});
+        let (status, noted) = rt().block_on(send(post_req("/api/runs/work/notes", note)));
+        assert_eq!(status, StatusCode::OK, "{noted}");
+        assert!(noted["note"]["text"].as_str().unwrap().starts_with("About output thread-1@1, \"Sam asked about rate limits\""), "{noted}");
+
+        let (status, _) = rt().block_on(send(get_req("/api/runs/work/outputs/nope")));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = rt().block_on(send(get_req("/api/runs/work/outputs/thread-1?v=9")));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
     #[test]
     fn a_run_is_paused_and_resumed_from_the_page() {
         let _h = TempHome::new();

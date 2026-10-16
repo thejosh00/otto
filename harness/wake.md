@@ -188,8 +188,9 @@ you are wrapping assumes something a wake cannot provide, translate it:
 | "ask the user", "confirm with them", or names `AskUserQuestion` | Open a gate and stop. The answer arrives in a later wake |
 | "wait", "poll", "check back in an hour", "keep watching" | Stop; the period brings a wake back. `otto state arm-timer --in` if it needs a different gap |
 | "remember this", "keep track of", "note for later" | Write it — the handoff for one wake, an artifact for longer |
-| "tell me", "let me know", "notify me", "send me a report", "report back" | Send a message (below): it lands in the person's inbox and notifies them |
-| "reply to them", "post a response", "answer the user in the channel" | Draft it and send it to the person as a `draft` message. Posting it is theirs to do |
+| "tell me", "let me know", "notify me", "report back" | Send a message (below): it lands in the person's inbox and notifies them |
+| "write a report", "produce a document", "generate a summary" — anything they'd want to find again | Publish it as an output (below), and send a message pointing at it |
+| "reply to them", "post a response", "answer the user in the channel" | Publish the explanation as an output with the reply as its `--draft`, and send a `draft` message pointing at it. Posting it is theirs to do |
 | Anything assuming earlier steps are still in context | Read the handoff and the artifacts. There is no earlier context |
 | Reading a big diff, a whole test suite, a long file | Delegate to a subagent; keep the conclusion, not the contents |
 
@@ -203,6 +204,10 @@ write the question    → artifacts/gate-<slug>.md
 otto state open-gate <id> --slug <slug> --question-file <that file> [--expires-in <seconds>]
 → then stop
 ```
+
+When the question is "is this document right?", publish the document first and ask `--about` it
+(`otto state open-gate <id> --slug design-review --question-file <file> --about design`): the page
+shows the question beside that version, and keeps the answer on it as the person's review.
 
 **A gate question must be answerable cold.** The person arrives hours later with no memory of
 this and no transcript to consult. So it carries: two sentences of where the run is, the
@@ -222,31 +227,61 @@ every bullet in the question is taken as an option.
 Use `--expires-in` only where silence has a sane meaning. "No answer, so don't do it" is sane.
 "No answer, so push it" is not.
 
+## Outputs
+
+An **output** is something you made that the person would want to find again: the day's report,
+a design document, an explanation and the reply drafted for it, the tickets you filed. Publish it,
+and it is kept — every version — on the run's page under "Its work". `artifacts/` stays your
+scratch space; the page shows only what you publish.
+
+```
+write it                → artifacts/<name>.md — for a person reading it cold
+otto state publish <id> --key <key> --title "refund-policy-qa: a stale index, not the model" --file artifacts/<name>.md
+```
+
+- **The key says what it is.** A new key is a new output; the same key again is the next
+  version of it. A report a day is a new key each day (`<date>-refund-policy-qa`). A design
+  you revise after review is the same key every time (`design`). Publishing exactly what the latest
+  version already says changes nothing, so republishing is safe.
+- **Work that moves through steps** declares them once, first: `otto state stages <id> Research
+  Design Plan`, then `--stage <one of them>` on each output. The page shows them as a track.
+- **One output per thing to deal with**: an answer to a question in a channel is an output with
+  `--about <the thread's link>` and the reply in `--draft` or `--draft-file`. It waits on the person
+  until they send it; if someone else answers first, `otto state output-state <id> <key> dropped
+  --note "Sam answered it in the thread"`.
+- **Work that lives elsewhere** — a ticket you filed, a PR — is `--link <url>` instead of a file.
+- **The title is a line in a list** and says the finding, not the format: "refund-policy-qa: a
+  stale index, not the model", not "Daily report".
+- A note about an output starts "About output <key>@<n>" — it is about that version; act on it
+  there.
+
 ## Messages
 
 A gate is you asking; a **message** is you delivering. When the work produces something for the
 person — the report they asked for, a reply drafted for someone else, news they would want — send
 it to their inbox. It waits there beside their questions until they mark it done, and they are
-notified of it. Without a message, a result sits in an artifact nobody knows to open.
+notified of it. Without a message, a result sits where nobody knows to look.
 
 ```
-write the body   → artifacts/<name>.md — for a person reading it cold
-otto state message <id> --kind report --title "Why refund-policy-qa fails" --body-file artifacts/<name>.md
+publish the work  → otto state publish <id> --key <key> --title … --file artifacts/<name>.md
+then tell them    → otto state message <id> --kind report --title "Today's report: refund-policy-qa" --body "It isn't the model: …" --output <key>
 ```
 
 - **`--kind`**: `report` for something you made for them to read; `draft` for text they will
-  send on to someone else — the text itself in `--draft` or `--draft-file`, and the body saying
-  what it answers and why; `update` for news: a task finished, a PR merged, something worth knowing.
+  send on to someone else — in the output's `--draft`, or the message's own `--draft` when there is
+  no output — with the body saying what it answers and why; `update` for news: a task finished, a
+  PR merged, something worth knowing.
 - **You never send a draft yourself.** Posting a reply to a channel, a ticket or a PR is the
   person's act; your work ends at the draft.
 - **The title is a line in a list**: what it is, in a few words. The body is short, plain and in
-  the work's own words, with the finding first. A long report goes in an artifact you `--attach`
-  (a path in the run directory), with the body saying what it found.
+  the work's own words, with the finding first. The work itself is an output the message points at
+  with `--output <key>` — the inbox shows it as a card that opens it — so the message can be two
+  sentences.
 - **Send one when there is something to send**, not every wake. A wake that found nothing journals
   an activity line, or nothing.
 - **A message is not a question.** If you need a decision before going on, that is a gate. A
-  document you need approved is a gate whose question points at it; a document for their
-  information is a message.
+  document you need approved is an output and a gate `--about` it; a document for their
+  information is an output and a message pointing at it.
 - The person may reply when they mark it done. A reply reaches you as a note that starts "In reply
   to message NNN" — follow it like any other note.
 
@@ -404,7 +439,7 @@ Every wake starts cold, so what you read is what you pay for, every time.
 2. **Never re-read a subagent's work to check it.** Check the durable output instead: `git
    log`, `git status`, the test result, the artifact. Reading the diff you delegated pays twice.
 3. **Phase output is a file, not a message.** Plans, reports and notes go to `artifacts/` and
-   are referred to by path.
+   are referred to by path; the ones the person should read are published as outputs.
 4. **Never re-read what is already summarized.** Once a ticket is distilled into
    `artifacts/spec.md`, read the spec, not the ticket — unless you have reason to think it moved.
 

@@ -87,11 +87,14 @@ Perpetual runs change a few habits: retire with `stopped` rather than `failed`; 
 find nothing (a perpetual run has no stall guard, so it is never blocked for being quiet); take repo
 locks per cycle, never for the life of the run; and give each cycle its own artifact directory.
 
-**Deliver results as messages.** When what the work produces is for a person — a daily report, a
-reply drafted for someone else, news — say so in the instructions plainly ("let me know what you
-found", "draft a reply for me to send"); the harness turns that into
-[a message](../concepts.md#messages-and-the-inbox) in their inbox. Never instruct a wake to post a
-draft itself.
+**Deliver results as outputs and messages.** When what the work produces is for a person — a daily
+report, a document to review, a reply drafted for someone else — say so in the instructions plainly
+("write me a report on what you found", "draft a reply for me to send"); the harness publishes it as
+[an output](../concepts.md#outputs-what-it-made-kept), kept on the run's page, and sends
+[a message](../concepts.md#messages-and-the-inbox) pointing at it. For work that moves through
+steps with your approval between them, name the steps ("research, then a design I approve, then a
+plan I approve"): the run declares them as stages and asks each question about the document it
+wants approved. Never instruct a wake to post a draft itself.
 
 [DESIGN.md §11](../../DESIGN.md#11-authoring-for-otto) has the reasoning behind each of these.
 
