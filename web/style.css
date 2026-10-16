@@ -321,12 +321,10 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 
 /* a run's page: what a person wants first, the rest a click away */
 .run-id { color: var(--ink-3); font-family: var(--mono); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
-.goal { color: var(--ink-2); margin: 6px 0 0; line-height: 1.45; }
 .summary { margin-top: 16px; }
-.summary .headline { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 0; }
-.summary .more { color: var(--ink-2); margin: 6px 0 0; line-height: 1.5; }
-.summary .now { margin: 12px 0 0; color: var(--ink-2); }
-.summary .now strong { color: var(--ink); font-weight: 600; }
+.summary .what { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 0 0 10px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.summary .line { margin: 4px 0 0; color: var(--ink-2); overflow-wrap: anywhere; }
+.summary .line strong { color: var(--ink); font-weight: 600; }
 .card.summary > .progress { margin-top: 12px; }
 .needs-callout { margin-top: 12px; }
 .needs-callout .needs-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }

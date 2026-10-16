@@ -352,13 +352,12 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         let c = &todo.counts;
         println!("  todo      {}/{} — {} ({})", c.total - c.left(), c.total, c.summary(), crate::todo::TODO_FILE);
     }
-    if let Some(last) = detail.activity.first() {
-        let mut text = crate::exec::truncate(&last.text, 100);
-        if text.len() < last.text.len() {
-            text.push('…');
+    if let Some(last) = &detail.last_run {
+        let mut outcome = crate::exec::truncate(&last.outcome, 100);
+        if outcome.len() < last.outcome.len() {
+            outcome.push('…');
         }
-        let text = if text.is_empty() { String::new() } else { format!(": {text}") };
-        println!("  last      {} — {}{text}", crate::clock::relative(last.at), last.event);
+        println!("  last run  {} — {outcome}", crate::clock::relative(last.at));
     }
     if let Some(wake) = &state.wake {
         println!(

@@ -234,22 +234,6 @@ pub fn where_this_is(handoff: &str) -> Option<String> {
     handoff_section(handoff, "where this is").map(|lines| lines.join(" "))
 }
 
-/// `where_this_is` as a headline — its first sentence — and the rest, for the top of a run's
-/// page. A sentence ends at `.`, `!` or `?` and a space before a capital, a digit or a backtick,
-/// so `v2.32.3` and `e.g. this` do not end one.
-pub fn headline(text: &str) -> (String, Option<String>) {
-    let bytes = text.as_bytes();
-    for (i, pair) in bytes.windows(2).enumerate() {
-        if matches!(pair[0], b'.' | b'!' | b'?') && pair[1] == b' ' {
-            let next = text[i + 2..].trim_start();
-            if next.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit() || c == '`') {
-                return (text[..=i].to_string(), Some(next.to_string()));
-            }
-        }
-    }
-    (text.to_string(), None)
-}
-
 /// The handoff's `## Needs`: what the run says it needs from someone — the open question, the
 /// blocker, something that would help — with its lines kept, since it is often a list. `None` when
 /// it says nothing, which is most of the time, and mostly in those words.
@@ -268,6 +252,74 @@ pub struct ActivityLine {
     pub event: String,
     /// Its `message`, then any other fields as `key=value`.
     pub text: String,
+}
+
+/// How the run's last finished wake ended — or its last check, when that came later — in a few
+/// words, for a person glancing at the run. A run with a check script mostly runs the check, and a
+/// check that finds nothing is never journaled, so for "the last time it ran" the check counts too.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastRun {
+    /// When it ended.
+    pub at: crate::clock::Timestamp,
+    /// `wake` or `check`.
+    pub kind: &'static str,
+    pub outcome: String,
+}
+
+pub fn last_run(dir: &std::path::Path, state: &RunState) -> Option<LastRun> {
+    let wake = last_wake(dir);
+    let check = state.check.as_ref().and_then(|c| Some((c.last_at?, c.last_result?, c.last_note.clone())));
+    match (wake, check) {
+        (wake, Some((at, result, note))) if wake.as_ref().is_none_or(|w| at > w.at) => {
+            let what = match result {
+                crate::state::CheckResult::NoChange => "checked, nothing new",
+                crate::state::CheckResult::Changed => "checked, found something",
+                crate::state::CheckResult::Error => "the check failed",
+            };
+            let outcome = match note.filter(|n| !n.trim().is_empty()) {
+                Some(note) => format!("{what} — {}", note.trim()),
+                None => what.to_string(),
+            };
+            Some(LastRun { at, kind: "check", outcome })
+        }
+        (wake, _) => wake,
+    }
+}
+
+/// The last wake that has finished, read from the journal: the events from its `wake-started` to
+/// the line that ended it. What it says it did wins over what otto saw, except when it did not
+/// finish at all.
+fn last_wake(dir: &std::path::Path) -> Option<LastRun> {
+    const ENDS: &[&str] = &["wake-complete", "wake-incomplete", "usage-limited", "wake-killed"];
+    let text = std::fs::read_to_string(dir.join("journal.jsonl")).ok()?;
+    let lines: Vec<Value> = text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+    let event = |v: &Value| v.get("event").and_then(Value::as_str).unwrap_or_default().to_string();
+    let end = lines.iter().rposition(|v| ENDS.contains(&event(v).as_str()))?;
+    let start = lines[..end].iter().rposition(|v| event(v) == "wake-started").map_or(0, |i| i + 1);
+    let wake = &lines[start..=end];
+    let at = crate::clock::Timestamp::parse(lines[end].get("ts")?.as_str()?).ok()?;
+    let has = |name: &str| wake.iter().any(|v| event(v) == name);
+    let said = wake.iter().rev().find(|v| !crate::event::OTTO_EVENTS.contains(&event(v).as_str()));
+    let outcome = if has("usage-limited") {
+        "stopped by the usage limit".to_string()
+    } else if has("wake-incomplete") || has("wake-killed") {
+        "didn't finish".to_string()
+    } else if wake.iter().any(|v| event(v) == "status-changed" && v.get("to").and_then(Value::as_str) == Some("done")) {
+        "finished the run".to_string()
+    } else if let Some(said) = said {
+        let message = said.get("message").and_then(Value::as_str).unwrap_or_default();
+        if message.is_empty() { event(said) } else { message.to_string() }
+    } else if let Some(gate) = wake.iter().rev().find(|v| event(v) == "gate-opened") {
+        format!("asked you: {}", gate.get("slug").and_then(Value::as_str).unwrap_or("a question"))
+    } else if has("tick") {
+        "made progress".to_string()
+    } else if has("noop-tick") {
+        "no changes".to_string()
+    } else {
+        "finished".to_string()
+    };
+    Some(LastRun { at, kind: "wake", outcome })
 }
 
 /// How much of a run's activity its page shows. The journal has the rest (`otto logs`).
@@ -508,9 +560,8 @@ pub struct RunDetail {
     pub gate: Option<GateView>,
     /// What the last wake left for the next one, whole. The page keeps it a click away.
     pub handoff: Option<String>,
-    /// The handoff's `Where this is`, split for the top of the page (`headline`).
-    pub headline: Option<String>,
-    pub where_more: Option<String>,
+    /// How the last wake or check ended (`last_run`).
+    pub last_run: Option<LastRun>,
     /// The handoff's `Needs`, when it says something (`needs`).
     pub needs: Option<String>,
     /// What the run is waiting on, in a few words — the list's column (`blocking`).
@@ -583,13 +634,6 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         }
     });
     let handoff = std::fs::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok();
-    let (headline, where_more) = match handoff.as_deref().and_then(where_this_is) {
-        Some(text) => {
-            let (headline, more) = headline(&text);
-            (Some(headline), more)
-        }
-        None => (None, None),
-    };
     let notes = note_views(&dir, &state);
     let check = check_view(&dir, &state);
     let wake_cost = wake_cost(&dir);
@@ -599,8 +643,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         todo,
         activity: activity(&dir, ACTIVITY_SHOWN),
         needs: handoff.as_deref().and_then(needs),
-        headline,
-        where_more,
+        last_run: last_run(&dir, &state),
         blocking: blocking(&state, running),
         workdir: workdir_view(&state),
         usage: run_usage(&dir),
@@ -2187,13 +2230,45 @@ mod tests {
     }
 
     #[test]
-    fn a_headline_is_the_first_sentence() {
-        assert_eq!(
-            headline("Steady state: one curation a day. Wake 14 ran by hand."),
-            ("Steady state: one curation a day.".into(), Some("Wake 14 ran by hand.".into()))
-        );
-        assert_eq!(headline("Bumped to v2.32.3 in 4 repos, e.g. svc. 2 are red."), ("Bumped to v2.32.3 in 4 repos, e.g. svc.".into(), Some("2 are red.".into())));
-        assert_eq!(headline("One sentence, no more"), ("One sentence, no more".into(), None));
+    fn the_last_run_is_the_last_wake_or_a_later_check() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-last", "a goal").unwrap();
+        let dir = crate::paths::run_dir("2026-09-20-last").unwrap();
+        let line = |event: &str, extra: serde_json::Value| crate::state::journal(&dir, event, extra).unwrap();
+        let state = || read_run("2026-09-20-last").unwrap();
+        assert_eq!(last_run(&dir, &state()), None, "nothing has run yet");
+
+        line("wake-started", serde_json::json!({"wake": 1}));
+        line("noop-tick", serde_json::json!({"ticksWithoutProgress": 1}));
+        line("wake-complete", serde_json::json!({"status": "sleeping"}));
+        assert_eq!(last_run(&dir, &state()).unwrap().outcome, "no changes");
+
+        line("wake-started", serde_json::json!({"wake": 2}));
+        line("curated", serde_json::json!({"message": "added 1 talk"}));
+        line("wake-complete", serde_json::json!({"status": "sleeping"}));
+        line("wake-started", serde_json::json!({"wake": 3}));
+        let last = last_run(&dir, &state()).unwrap();
+        assert_eq!((last.kind, last.outcome.as_str()), ("wake", "added 1 talk"), "the running wake is not the last run");
+
+        // A check that ran after the last wake is the last thing that ran.
+        crate::state::transaction("2026-09-20-last", |_p, s| {
+            s.check = Some(crate::state::Check {
+                script: "artifacts/check.sh".into(),
+                retry_seconds: None,
+                wake_after: 24,
+                consecutive_no_change: 1,
+                last_result: Some(crate::state::CheckResult::NoChange),
+                last_at: Some(crate::clock::Timestamp::in_minutes(1)),
+                last_note: Some("nothing tagged agent/ai in next".into()),
+                no_change_total: 1,
+                pinned: true,
+                set_by_wake: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let last = last_run(&dir, &state()).unwrap();
+        assert_eq!((last.kind, last.outcome.as_str()), ("check", "checked, nothing new — nothing tagged agent/ai in next"));
     }
 
     #[test]

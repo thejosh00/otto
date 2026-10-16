@@ -87,6 +87,16 @@ function relative(iso) {
   return seconds >= 0 ? `in ${n}${unit}` : `${n}${unit} ago`;
 }
 
+/** A relative time spelled out — "in 55 minutes", "2 hours ago" — for sentences a person reads. */
+function spelled(iso) {
+  const seconds = Math.round((new Date(iso) - Date.now()) / 1000);
+  const abs = Math.abs(seconds);
+  const [n, unit] = abs < 90 ? [abs, "second"] : abs < 90 * 60 ? [Math.round(abs / 60), "minute"]
+    : abs < 36 * 3600 ? [Math.round(abs / 3600), "hour"] : [Math.round(abs / 86400), "day"];
+  const text = `${n} ${unit}${n === 1 ? "" : "s"}`;
+  return seconds >= 0 ? `in ${text}` : `${text} ago`;
+}
+
 /** When something poke acts on is due — mirrors clock::due: once passed, it waits for the next poke. */
 function due(iso) {
   if (!iso) return "";
@@ -380,6 +390,7 @@ function runView(id) {
   const handoff = drill("handoff", "Handoff", h("div"));
   const log = drill("log", "Log", h("div"), (open) => setStream("log", open));
   const live = drill("live", "Live wake", h("div"), (open) => setStream("live", open));
+  const notesDrill = drill("notes", "Tell the run something", notesBox);
   const settings = drill("settings", "Run settings", h("div"));
   log.note.textContent = "every event otto and the wakes wrote — filter it, follow it";
   const actions = h("div");
@@ -389,9 +400,9 @@ function runView(id) {
 
   view.replaceChildren(
     h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, summary, gateBox, todoBox, activityBox, notesBox,
+    head, summary, gateBox, todoBox, activityBox,
     h("h2", "Details"),
-    h("div.drills", handoff.el, log.el, live.el, settings.el),
+    h("div.drills", handoff.el, log.el, live.el, notesDrill.el, settings.el),
   );
 
   async function refresh() {
@@ -423,8 +434,7 @@ function runView(id) {
           h("button.ghost.small", { title: "Rename this run", onclick: () => renameInPlace(d) }, "Rename")),
         h("div.run-id", /^\d+$/.test(d.state.id) ? `#${d.state.id}` : d.state.id,
           d.state.formerId ? ` · was ${d.state.formerId}` : "")),
-      pill(d.statusLabel, d.running)),
-      h("p.goal", d.state.goal));
+      pill(d.statusLabel, d.running)));
   }
 
   // The name is edited where it is shown. Any run can be renamed, finished or not: nothing on
@@ -465,37 +475,49 @@ function runView(id) {
     return `${m}m`;
   }
 
-  // What the run is doing right now, as a person would say it: a state, then its particulars.
-  function now(d) {
+  // How often, in words: `every hour`, `every 2 days`, `every 30 minutes`.
+  function everyText(m) {
+    if (m % 1440 === 0) return m === 1440 ? "every day" : `every ${m / 1440} days`;
+    if (m % 60 === 0) return m === 60 ? "every hour" : `every ${m / 60} hours`;
+    return `every ${m} minutes`;
+  }
+
+  // The next run, as a person would say it: a state, then its particulars.
+  function nextRun(d) {
     const s = d.state;
-    const next = s.nextWakeAt ? `${due(s.nextWakeAt)} · ${clockTime(s.nextWakeAt)}` : null;
-    if (d.running) return ["Working now", `wake ${s.wake ? s.wake.n : ""}, started ${s.wake ? relative(s.wake.startedAt) : ""}`];
-    if (s.gate) return ["Waiting on you", `gate ${s.gate.id}, ${s.gate.slug} — below`];
+    const at = s.nextWakeAt;
+    const when = at ? `${new Date(at) <= Date.now() ? "any moment now" : spelled(at)} · ${clockTime(at)}` : null;
+    if (d.running) return ["Running now", `started ${s.wake ? spelled(s.wake.startedAt) : ""}`];
+    if (s.gate) return ["Waiting on you", "the question is below"];
     // `limitedUntil` matching the wake time is `RunState::usage_limited`.
-    if (s.limitedUntil && s.limitedUntil === s.nextWakeAt) return ["Waiting out the usage limit", `resumes ${next}`];
+    if (s.limitedUntil && s.limitedUntil === at) return ["Waiting out the usage limit", `resumes ${clockTime(at)}`];
     switch (s.status) {
-      case "sleeping": return ["Asleep", next ? `next wake ${next}` : "nothing scheduled"];
+      case "sleeping": return ["Next run", when ? `${when} · ${everyText(s.policy.periodMinutes || 60)}` : "nothing scheduled"];
       case "blocked": return ["Blocked", d.blocking];
-      case "done": return ["Done", s.updatedAt ? relative(s.updatedAt) : ""];
+      case "done": return ["Done", null];
       case "stopped": return ["Stopped", "resume it to bring it back"];
       case "failed": return ["Failed", "resume it to try again"];
-      default: return ["Running", d.blocking];
+      default: return ["Next run", d.blocking];
     }
   }
 
+  // Three lines: what the run does, when it runs next, how it last ended. The artifacts that show
+  // its progress follow; everything else is in Details.
   function renderSummary(d) {
-    const [state, detail] = now(d);
+    const [state, detail] = nextRun(d);
     const status = d.state.status;
+    const last = d.lastRun ? `${spelled(d.lastRun.at)} · ${d.lastRun.outcome}` : "not yet";
     summary.replaceChildren(
       h("div.card.summary",
-        d.headline ? h("p.headline", d.headline) : h("p.headline.muted", "Nothing from a wake yet."),
-        d.whereMore ? h("p.more", d.whereMore) : null,
-        h("p.now", h("strong", state), detail ? ` · ${detail}` : "",
+        h("p.what", d.state.goal),
+        h("p.line", h("strong", state), detail ? ` · ${detail}` : "",
           d.running ? h("button.ghost.small", { style: "margin-left:10px", onclick: () => { live.el.open = true; live.el.scrollIntoView({ behavior: "smooth" }); } }, "Watch") : null),
+        h("p.line", h("strong", "Last run"), ` · ${last}`),
         d.todo ? progressBar(d.todo.counts, d.todoLeftOpen) : null),
       // Not a gate: the run carries on without an answer. It is what it would like from you.
       d.needs ? h("div.banner.info.needs-callout", h("strong", "It could use"), h("div.needs-text", d.needs)) : "",
-      d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:12px;white-space:pre-wrap" }, d.blockedExplanation) : "",
+      // With a gate open, the gate says what to do; without one, this is the only explanation.
+      d.blockedExplanation && !d.gate ? h("div.banner.bad", { style: "margin-top:12px;white-space:pre-wrap" }, d.blockedExplanation) : "",
       status === "stopped" || status === "failed"
         ? h("div.row", { style: "margin-top:12px" }, h("button.primary", {
           disabled: d.running,
@@ -619,7 +641,9 @@ function runView(id) {
     const key = JSON.stringify([over, d.notes.map((n) => [n.id, n.givenToWake])]);
     if (key === shownNotes) return;
     shownNotes = key;
-    if (over && !d.notes.length) { notesBox.replaceChildren(); return; }
+    // A finished run with no notes has nothing to show here and no wake to tell anything.
+    notesDrill.el.hidden = over && !d.notes.length;
+    if (notesDrill.el.hidden) return;
     noteList.replaceChildren(...d.notes.map((n) => {
       const state = n.standing ? "standing — every wake"
         : n.givenToWake ? `given to wake ${n.givenToWake}, not yet delivered` : "not yet read";
@@ -637,8 +661,10 @@ function runView(id) {
           }, "Drop")),
         h("div.prose", n.text));
     }));
+    notesDrill.note.textContent = d.notes.length
+      ? `${d.notes.length} note(s) waiting or standing`
+      : "how to do the work — its next wake reads it verbatim";
     notesBox.replaceChildren(
-      h("h2", "Tell the run something"),
       noteList,
       over ? h("p.muted", "The run is over — no wake will read a new note.") : noteForm);
   }

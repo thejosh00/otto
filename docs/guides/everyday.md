@@ -138,11 +138,11 @@ Everything above, in a browser:
 - The **runs list**: each run with the last wake's *where this is* and its latest
   [activity](../concepts.md#activity) under it and, when it keeps a [todo](../concepts.md#the-todo),
   a progress bar; and a *needs you* section whose option buttons answer a gate in one click.
-- A **run page** that opens with what you'd want first: where the run stands (its handoff's
-  *where this is*, first sentence as the headline), what it is doing now, what it could use from
-  you, an open question with its answers, its todo or activity, and a box to tell it something. The
-  rest is a click away: the whole handoff, the journal with filters and live follow, a live view of
-  a running wake, and its settings — tokens, the check script, wake now, change period, stop.
+- A **run page** that opens with three lines (what the run does, when it runs next, and how its
+  last run ended), then what it could use from you, an open question with its answers, and its todo
+  or activity. The rest is folded away: the whole handoff, the journal with filters and live follow,
+  a live view of a running wake, notes to the run, and its settings — tokens, the check script, wake
+  now, change period, stop.
 - A **new run** form that mirrors `otto run`'s flags, with a dry run.
 - **Usage**: tokens by run or by day, over the last day, week, month or all time.
 - The **reviver**: its status, start/stop, and poke-now.

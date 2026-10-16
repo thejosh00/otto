@@ -109,9 +109,9 @@ The only thing the next wake gets for free. Rewrite it — never append — with
 ## Don't re-derive — paths to artifacts. Paths, not contents
 ```
 
-**Two sections are read by the person, not just the next wake.** The run's page opens with `Where
-this is`, its first sentence as the headline, so write it for someone glancing at the run between
-other things: what state it is in and what is next, in plain words. No wake numbers, timestamps,
+**Two sections are read by the person, not just the next wake.** The runs list shows `Where this
+is` under each run, cut to about two lines, so write it for someone glancing at the run between
+other things: what state it is in and what is next, in plain words, the most important first. No wake numbers, timestamps,
 paths or commands there; they belong in the sections below it. `Needs` appears on the page whenever
 it says anything but "nothing", so put there what you would like the person to do or know (a key
 that would help, a decision coming up) and nothing else. It never replaces a gate: what must be
