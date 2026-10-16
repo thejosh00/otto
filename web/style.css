@@ -319,6 +319,27 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 .left-open .todo-item.open .mark, .left-open .todo-item.doing .mark { color: var(--warn); }
 .left-open .todo-item.open, .left-open .todo-item.doing { font-weight: 600; }
 
+/* a run's page: what a person wants first, the rest a click away */
+.goal { color: var(--ink-2); margin: 6px 0 0; line-height: 1.45; }
+.summary { margin-top: 16px; }
+.summary .headline { font-size: 18px; font-weight: 600; line-height: 1.4; margin: 0; }
+.summary .more { color: var(--ink-2); margin: 6px 0 0; line-height: 1.5; }
+.summary .now { margin: 12px 0 0; color: var(--ink-2); }
+.summary .now strong { color: var(--ink); font-weight: 600; }
+.card.summary > .progress { margin-top: 12px; }
+.needs-callout { margin-top: 12px; }
+.needs-callout .needs-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 4px; }
+h3.sub { font-size: 13px; color: var(--ink-3); font-weight: 600; margin: 18px 0 0; }
+.drills { display: grid; gap: 8px; }
+details.drill { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+details.drill > summary { list-style: none; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; padding: 12px 14px; color: var(--ink); font-size: 15px; }
+details.drill > summary::-webkit-details-marker { display: none; }
+details.drill > summary::before { content: "▸"; color: var(--ink-3); display: inline-block; transition: transform 0.15s; }
+details.drill[open] > summary::before { transform: rotate(90deg); }
+details.drill > summary .drill-title { font-weight: 600; }
+details.drill > summary .faint { font-size: 13px; }
+details.drill > div { padding: 0 14px 14px; min-width: 0; }
+
 /* run detail */
 .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; }
 .facts dt { color: var(--ink-3); font-size: 13px; }

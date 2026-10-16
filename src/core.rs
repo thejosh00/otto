@@ -211,23 +211,52 @@ pub fn status_label(state: &RunState) -> String {
     }
 }
 
-/// The handoff's `## Where this is` section — the 2–4 lines a wake writes so that someone arriving
-/// cold is not lost — joined onto one line for a list that has room for a sentence or two, not a
-/// layout. The section runs to the next heading. `None` when it is missing or empty.
-pub fn where_this_is(handoff: &str) -> Option<String> {
+/// The lines of one handoff section, `## <name>` up to the next heading, trimmed and with blank
+/// ones dropped. `None` when the section is missing or empty.
+fn handoff_section<'a>(handoff: &'a str, name: &str) -> Option<Vec<&'a str>> {
     // A markdown heading is `#`s then a space; `#123 merged` at the start of a line is not one.
     fn heading(line: &str) -> Option<&str> {
         let line = line.trim_start();
         let rest = line.trim_start_matches('#');
         (rest.len() < line.len() && (rest.is_empty() || rest.starts_with(' '))).then(|| rest.trim())
     }
-    let mut lines = handoff.lines().skip_while(|line| {
-        !heading(line).is_some_and(|text| text.to_lowercase().starts_with("where this is"))
-    });
+    let mut lines = handoff.lines().skip_while(|line| !heading(line).is_some_and(|text| text.to_lowercase().starts_with(name)));
     lines.next()?;
     let body: Vec<&str> =
         lines.take_while(|line| heading(line).is_none()).map(str::trim).filter(|line| !line.is_empty()).collect();
-    (!body.is_empty()).then(|| body.join(" "))
+    (!body.is_empty()).then_some(body)
+}
+
+/// The handoff's `## Where this is` section — written for the person (`harness/wake.md`): one
+/// sentence on where the run stands, then a few lines — joined onto one line for a list and a
+/// summary that have room for a paragraph, not a layout. `None` when it is missing or empty.
+pub fn where_this_is(handoff: &str) -> Option<String> {
+    handoff_section(handoff, "where this is").map(|lines| lines.join(" "))
+}
+
+/// `where_this_is` as a headline — its first sentence — and the rest, for the top of a run's
+/// page. A sentence ends at `.`, `!` or `?` and a space before a capital, a digit or a backtick,
+/// so `v2.32.3` and `e.g. this` do not end one.
+pub fn headline(text: &str) -> (String, Option<String>) {
+    let bytes = text.as_bytes();
+    for (i, pair) in bytes.windows(2).enumerate() {
+        if matches!(pair[0], b'.' | b'!' | b'?') && pair[1] == b' ' {
+            let next = text[i + 2..].trim_start();
+            if next.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit() || c == '`') {
+                return (text[..=i].to_string(), Some(next.to_string()));
+            }
+        }
+    }
+    (text.to_string(), None)
+}
+
+/// The handoff's `## Needs`: what the run says it needs from someone — the open question, the
+/// blocker, something that would help — with its lines kept, since it is often a list. `None` when
+/// it says nothing, which is most of the time, and mostly in those words.
+pub fn needs(handoff: &str) -> Option<String> {
+    let text = handoff_section(handoff, "needs")?.join("\n");
+    let bare = text.trim().trim_end_matches('.').to_lowercase();
+    (!matches!(bare.as_str(), "nothing" | "none" | "n/a" | "-" | "—")).then_some(text)
 }
 
 /// One line of a run's activity feed: something a wake journaled about its own work.
@@ -477,8 +506,15 @@ pub struct RunDetail {
     pub running: bool,
     pub blocked_explanation: Option<String>,
     pub gate: Option<GateView>,
-    /// Shown when no gate is open: what the last wake left for the next one.
+    /// What the last wake left for the next one, whole. The page keeps it a click away.
     pub handoff: Option<String>,
+    /// The handoff's `Where this is`, split for the top of the page (`headline`).
+    pub headline: Option<String>,
+    pub where_more: Option<String>,
+    /// The handoff's `Needs`, when it says something (`needs`).
+    pub needs: Option<String>,
+    /// What the run is waiting on, in a few words — the list's column (`blocking`).
+    pub blocking: String,
     /// The run's checklist, when it keeps one (`crate::todo`).
     pub todo: Option<crate::todo::Todo>,
     /// See `todo_left_open`.
@@ -546,9 +582,13 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
             default,
         }
     });
-    let handoff = match gate {
-        Some(_) => None,
-        None => std::fs::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok(),
+    let handoff = std::fs::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok();
+    let (headline, where_more) = match handoff.as_deref().and_then(where_this_is) {
+        Some(text) => {
+            let (headline, more) = headline(&text);
+            (Some(headline), more)
+        }
+        None => (None, None),
     };
     let notes = note_views(&dir, &state);
     let check = check_view(&dir, &state);
@@ -558,6 +598,10 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
         todo,
         activity: activity(&dir, ACTIVITY_SHOWN),
+        needs: handoff.as_deref().and_then(needs),
+        headline,
+        where_more,
+        blocking: blocking(&state, running),
         workdir: workdir_view(&state),
         usage: run_usage(&dir),
         short,
@@ -2143,6 +2187,27 @@ mod tests {
     }
 
     #[test]
+    fn a_headline_is_the_first_sentence() {
+        assert_eq!(
+            headline("Steady state: one curation a day. Wake 14 ran by hand."),
+            ("Steady state: one curation a day.".into(), Some("Wake 14 ran by hand.".into()))
+        );
+        assert_eq!(headline("Bumped to v2.32.3 in 4 repos, e.g. svc. 2 are red."), ("Bumped to v2.32.3 in 4 repos, e.g. svc.".into(), Some("2 are red.".into())));
+        assert_eq!(headline("One sentence, no more"), ("One sentence, no more".into(), None));
+    }
+
+    #[test]
+    fn needs_is_shown_only_when_it_says_something() {
+        assert_eq!(needs("## Needs\nnothing\n## Don't re-derive\nx\n"), None);
+        assert_eq!(needs("## Needs\nNothing.\n"), None);
+        assert_eq!(needs("## Goal\nx\n"), None);
+        assert_eq!(
+            needs("## Needs\nNothing is blocking. You may want:\n- an API key\n\n## Don't re-derive\n").as_deref(),
+            Some("Nothing is blocking. You may want:\n- an API key")
+        );
+    }
+
+    #[test]
     fn the_list_carries_each_run_s_where_this_is() {
         let _h = TempHome::new();
         test_init("2026-09-20-fresh", "a goal").unwrap();
@@ -2230,7 +2295,7 @@ mod tests {
         assert_eq!(gate.options, vec!["Approve".to_string(), "Revise".to_string()]);
         assert_eq!(gate.default.as_deref(), Some("Revise"));
         assert!(gate.text.unwrap().contains("Approve the plan?"));
-        assert!(detail.handoff.is_none(), "an open gate is shown instead of the handoff");
+        assert!(detail.handoff.is_some(), "the handoff stays a click away with a gate open, too");
         // And it serialises, which is what the web page reads.
         let json = serde_json::to_value(run_detail(Some("detail")).unwrap()).unwrap();
         assert_eq!(json["gate"]["default"], "Revise");

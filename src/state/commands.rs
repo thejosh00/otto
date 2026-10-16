@@ -32,10 +32,12 @@ fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, cr
         Some(reference) => reference.clone(),
         None => "nothing — the goal is the whole instruction".to_string(),
     };
-    let needs = if args.until.is_some() || args.perpetual {
-        "nothing".to_string()
+    // `Needs` is shown to the person, so an instruction for the first wake goes under `Next wake
+    // must`, where the wake looks for one.
+    let first = if args.until.is_some() || args.perpetual {
+        String::new()
     } else {
-        "a done-condition: propose one and gate it before doing any work".to_string()
+        " There is no done-condition yet: propose one and gate it before doing any work.".to_string()
     };
     format!(
         "# {run_id} · {phase} · wake 0\n\n\
@@ -43,8 +45,8 @@ fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, cr
          ## Where this is\nCreated {created}. No wake has run yet.\n\n\
          ## Decided\nNothing yet.\n\n\
          ## This wake did\nNothing — this is the handoff `init` wrote.\n\n\
-         ## Next wake must\nRead the wrapped instructions ({wraps}) and orient.\n\n\
-         ## Needs\n{needs}\n\n\
+         ## Next wake must\nRead the wrapped instructions ({wraps}) and orient.{first}\n\n\
+         ## Needs\nnothing\n\n\
          ## Don't re-derive\nNothing recorded yet.\n",
         phase = args.phase,
         goal = args.goal,

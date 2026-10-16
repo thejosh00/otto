@@ -60,6 +60,10 @@ reason a run survives a reboot, a crash or a week away.
 wake did, what the next wake must do first, what it needs — capped at 8KB. Anything that has to
 accumulate goes in an artifact the handoff points to. `otto show` prints it.
 
+Two of its sections are written for you as well. The run's page opens with **Where this is**, its
+first sentence as the headline, and shows **Needs** whenever it says anything but "nothing": what
+the run would like from you without stopping to ask, like a key that would help.
+
 ## The todo
 
 When a run's work comes in pieces — twenty repos to bump, four things to build, a cleanup that

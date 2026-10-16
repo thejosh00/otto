@@ -101,13 +101,21 @@ The only thing the next wake gets for free. Rewrite it — never append — with
 ```
 # <run id> · <phase> · wake <n>
 ## Goal            — copied verbatim from run.json. Never reworded
-## Where this is   — 2–4 lines. What someone needs to not be lost
+## Where this is   — for the person: one sentence on where the run stands, then up to three lines
 ## Decided         — each decision, and the gate that authorized it
 ## This wake did   — what actually changed on disk
 ## Next wake must  — the first concrete action. Not a direction, an action
-## Needs           — the open question, the blocker, or "nothing"
+## Needs           — what you need from the person: a question, a blocker, what would help. Or "nothing"
 ## Don't re-derive — paths to artifacts. Paths, not contents
 ```
+
+**Two sections are read by the person, not just the next wake.** The run's page opens with `Where
+this is`, its first sentence as the headline, so write it for someone glancing at the run between
+other things: what state it is in and what is next, in plain words. No wake numbers, timestamps,
+paths or commands there; they belong in the sections below it. `Needs` appears on the page whenever
+it says anything but "nothing", so put there what you would like the person to do or know (a key
+that would help, a decision coming up) and nothing else. It never replaces a gate: what must be
+answered before you go on is still asked at one.
 
 `otto state handoff <id> --stdin` writes it, and **refuses it past the cap** (8KB by default).
 That refusal is information: this file is re-read on every single wake, so anything that

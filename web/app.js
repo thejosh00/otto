@@ -355,53 +355,62 @@ function runsView() {
 
 function runView(id) {
   const path = `/runs/${encodeURIComponent(id)}`;
+  // What a person wants first: where the run stands, what it needs, what it has done. Everything
+  // else — the handoff, the journal, a live wake, the settings — is a click away below.
   const head = h("div");
-  const facts = h("div");
+  const summary = h("div");
   const gateBox = h("div");
   const todoBox = h("div");
   const activityBox = h("div");
   const notesBox = h("div");
-  const actions = h("div");
-  const panel = h("div");
   let shownGate = null;
-  let tab = "logs";
+
+  // ----- the drill-down. Each section is built once, so a refresh never closes it, and whether
+  // it was left open is remembered per viewer.
+  function drill(key, title, body, onToggle) {
+    const note = h("span.faint");
+    const el = h("details.drill", h("summary", h("span.drill-title", title), note), body);
+    try { el.open = localStorage.getItem(`otto.drill.${key}`) === "1"; } catch { /* storage unavailable */ }
+    el.addEventListener("toggle", () => {
+      try { localStorage.setItem(`otto.drill.${key}`, el.open ? "1" : "0"); } catch { /* ignore */ }
+      if (onToggle) onToggle(el.open);
+    });
+    return { el, note, body };
+  }
+  const handoff = drill("handoff", "Handoff", h("div"));
+  const log = drill("log", "Log", h("div"), (open) => setStream("log", open));
+  const live = drill("live", "Live wake", h("div"), (open) => setStream("live", open));
+  const settings = drill("settings", "Run settings", h("div"));
+  log.note.textContent = "every event otto and the wakes wrote — filter it, follow it";
+  const actions = h("div");
+  const factsEl = h("div");
+  const checkEl = h("div");
+  settings.body.append(actions, factsEl, checkEl);
 
   view.replaceChildren(
     h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, facts, todoBox, activityBox, gateBox, notesBox, actions,
-    h("div.tabs", { role: "tablist" },
-      tabButton("logs", "Logs"),
-      tabButton("live", "Live wake")),
-    panel,
+    head, summary, gateBox, todoBox, activityBox, notesBox,
+    h("h2", "Details"),
+    h("div.drills", handoff.el, log.el, live.el, settings.el),
   );
-
-  function tabButton(name, label) {
-    return h("button", {
-      role: "tab",
-      "aria-selected": String(tab === name),
-      onclick: (e) => {
-        tab = name;
-        for (const b of e.currentTarget.parentNode.children) b.setAttribute("aria-selected", String(b === e.currentTarget));
-        showPanel();
-      },
-    }, label);
-  }
 
   async function refresh() {
     let d;
     try {
       d = await api(path);
     } catch (err) {
-      head.replaceChildren(h("div.banner.bad", err.message));
+      summary.replaceChildren(h("div.banner.bad", err.message));
       return;
     }
     renderHead(d);
-    renderFacts(d);
+    renderSummary(d);
     renderGate(d);
     renderTodo(d);
     renderActivity(d);
     renderNotes(d);
-    renderActions(d);
+    renderHandoff(d);
+    renderSettings(d);
+    live.note.textContent = d.running ? `wake ${d.state.wake ? d.state.wake.n : ""} is running — what it is saying and doing` : "no wake is running now";
   }
 
   function renderHead(d) {
@@ -412,7 +421,8 @@ function runView(id) {
           h("h1", runLabel(d.state.id, d.name)),
           h("button.ghost.small", { title: "Rename this run", onclick: () => renameInPlace(d) }, "Rename")),
         d.state.formerId ? h("div.faint.mono", `was ${d.state.formerId}`) : ""),
-      pill(d.statusLabel, d.running)));
+      pill(d.statusLabel, d.running)),
+      h("p.goal", d.state.goal));
   }
 
   // The name is edited where it is shown. Any run can be renamed, finished or not: nothing on
@@ -453,91 +463,66 @@ function runView(id) {
     return `${m}m`;
   }
 
-  function renderFacts(d) {
+  // What the run is doing right now, as a person would say it: a state, then its particulars.
+  function now(d) {
     const s = d.state;
-    const rows = [
-      ["Goal", s.goal],
-      ["Done when", s.doneCondition || (s.policy.perpetual ? "never — perpetual; stop it to retire it" : "not yet decided — the next wake proposes one and asks")],
-      ["Wraps", `${d.wrapsKind}${s.wraps.ref ? " " + s.wraps.ref : ""}`],
-      ["Phase", s.phase],
-    ];
-    if (s.wake) {
-      rows.push(["Wake", `${s.wake.n} — ${d.running ? "running now" : "finished"}${s.wake.outcome ? ", " + s.wake.outcome : ""} · started ${relative(s.wake.startedAt)}`]);
+    const next = s.nextWakeAt ? `${due(s.nextWakeAt)} · ${clockTime(s.nextWakeAt)}` : null;
+    if (d.running) return ["Working now", `wake ${s.wake ? s.wake.n : ""}, started ${s.wake ? relative(s.wake.startedAt) : ""}`];
+    if (s.gate) return ["Waiting on you", `gate ${s.gate.id}, ${s.gate.slug} — below`];
+    // `limitedUntil` matching the wake time is `RunState::usage_limited`.
+    if (s.limitedUntil && s.limitedUntil === s.nextWakeAt) return ["Waiting out the usage limit", `resumes ${next}`];
+    switch (s.status) {
+      case "sleeping": return ["Asleep", next ? `next wake ${next}` : "nothing scheduled"];
+      case "blocked": return ["Blocked", d.blocking];
+      case "done": return ["Done", s.updatedAt ? relative(s.updatedAt) : ""];
+      case "stopped": return ["Stopped", "resume it to bring it back"];
+      case "failed": return ["Failed", "resume it to try again"];
+      default: return ["Running", d.blocking];
     }
-    let used = `${s.budget.spentWakes} wake(s)`;
-    if (s.budget.wakes > 0) used += ` of ${s.budget.wakes}`;
-    if (s.budget.hours > 0) used += `, ${s.budget.hours}h budget`;
-    rows.push(["Used", used]);
-    if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
-    const over = ["done", "failed", "stopped"].includes(s.status);
-    if (!over) {
-      // `limitedUntil` matching the wake time is `RunState::usage_limited`.
-      const limited = s.limitedUntil && s.limitedUntil === s.nextWakeAt ? " — when the usage limit resets" : "";
-      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})${limited}`
-        : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
-      rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
-    }
-    rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
-    if (d.usage.wakes > 0) rows.push(["Tokens", tokenSummary(d.usage)]);
-    if (d.workdir && d.workdir.kind === "own") rows.push(["Workdir", `${d.workdir.path} (not the default)`]);
-    if (d.workdir && d.workdir.kind === "unset") rows.push(["Workdir", "none — set a default with otto config workdir <dir>"]);
-    facts.replaceChildren(
-      d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:16px;white-space:pre-wrap" }, d.blockedExplanation) : "",
-      h("div.card", { style: "margin-top:16px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))),
-      over ? "" : renderCheck(d),
+  }
+
+  function renderSummary(d) {
+    const [state, detail] = now(d);
+    const status = d.state.status;
+    summary.replaceChildren(
+      h("div.card.summary",
+        d.headline ? h("p.headline", d.headline) : h("p.headline.muted", "Nothing from a wake yet."),
+        d.whereMore ? h("p.more", d.whereMore) : null,
+        h("p.now", h("strong", state), detail ? ` · ${detail}` : "",
+          d.running ? h("button.ghost.small", { style: "margin-left:10px", onclick: () => { live.el.open = true; live.el.scrollIntoView({ behavior: "smooth" }); } }, "Watch") : null),
+        d.todo ? progressBar(d.todo.counts, d.todoLeftOpen) : null),
+      // Not a gate: the run carries on without an answer. It is what it would like from you.
+      d.needs ? h("div.banner.info.needs-callout", h("strong", "It could use"), h("div.needs-text", d.needs)) : "",
+      d.blockedExplanation ? h("div.banner.bad", { style: "margin-top:12px;white-space:pre-wrap" }, d.blockedExplanation) : "",
+      status === "stopped" || status === "failed"
+        ? h("div.row", { style: "margin-top:12px" }, h("button.primary", {
+          disabled: d.running,
+          title: d.running ? "A wake is still running" : "Bring this run back and wake it",
+          onclick: (e) => busy(e.currentTarget, async () => {
+            const r = await api(path + "/resume", {});
+            toast(`${runLabel(r.id)} is ${r.status}${r.note ? " — " + r.note : ""}`);
+            refresh();
+          }),
+        }, "Resume run"))
+        : "",
     );
   }
 
-  // The check script is the cheapest wake there is, so the page says plainly whether this run has
-  // one — and, when it doesn't, what each full wake is costing instead.
-  function renderCheck(d) {
-    const c = d.check;
-    const cost = d.wakeCost
-      ? `~${d.wakeCost.avgTurns} turns and ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
-      : null;
-    if (!c) {
-      return h("div", h("h2", "Check script"),
-        h("div.banner.warn", { style: "white-space:pre-wrap" },
-          "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
-          "A script poke runs before each wake, with no model, spends one only when something changed:\n",
-          h("span.mono", `otto check ${d.short} --script <file>`)));
-    }
-    const period = formatMinutes(d.state.policy.periodMinutes || 60);
-    const retry = c.retrySeconds ? formatMinutes(Math.max(1, Math.round(c.retrySeconds / 60))) : period;
-    const last = c.lastResult
-      ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
-      : "not run yet";
-    const rows = [
-      ["Runs", `${c.script} before each wake, every ${retry} · ${!c.pinned ? "set by a wake, for this sleep only" : c.setByWake ? "set by the run itself" : "set by you"}`],
-      ["Last", last],
-      ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
-      ["Safety net", c.wakeAfter ? `wakes anyway after ${c.wakeAfter} in a row (${c.consecutiveNoChange} so far)` : "off"],
-    ];
-    return h("div", h("h2", "Check script"),
-      h("div.card", { style: "margin-top:10px" },
-        h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
-        c.text != null ? h("div.prose", c.text)
-          : h("p.muted", `(${c.script} is missing — poke will treat it as an error and wake the run)`)));
-  }
-
   function renderGate(d) {
-    const key = d.gate ? d.gate.id : d.handoff ? "handoff:" + d.handoff : "none";
+    const key = d.gate ? d.gate.id : "none";
     if (key === shownGate) return; // don't wipe a half-written answer on refresh
     shownGate = key;
-    if (!d.gate) {
-      gateBox.replaceChildren(
-        h("h2", "Handoff"),
-        d.handoff ? h("div.prose", d.handoff) : h("p.muted", "No handoff yet."));
-      return;
-    }
+    if (!d.gate) { gateBox.replaceChildren(); return; }
     const g = d.gate;
     const noWake = h("input", { type: "checkbox" });
     const text = h("textarea", { placeholder: "Or answer in your own words…" });
     const after = () => { shownGate = null; refresh(); };
     gateBox.replaceChildren(
-      h("h2", `Open gate ${g.id} — ${g.slug}`),
+      h("h2", `Waiting on you — gate ${g.id}, ${g.slug}`),
       h("div.card.needs",
-        g.text != null ? h("div.prose", g.text) : h("p.muted", `(gate file ${g.file} is missing)`),
+        // The question alone: the file's header and its unanswered `## Answer` are the run's
+        // bookkeeping, and the whole file is in the log a click away.
+        g.question ? h("div.prose", g.question.trim()) : g.text != null ? h("div.prose", g.text) : h("p.muted", `(gate file ${g.file} is missing)`),
         g.options.length ? optionButtons(d.state.id, g.options, g.default, () => noWake.checked, after) : "",
         text,
         h("div.row.spread", { style: "margin-top:10px" },
@@ -552,7 +537,7 @@ function runView(id) {
   }
 
   // The run's checklist, as the wake last wrote it (`todo::Todo`). Read-only: a person steers it
-  // with a note, since the wake is its only writer.
+  // with a note, since the wake is its only writer. Its bar is in the summary above.
   const marks = { open: ["○", "to do"], doing: ["◐", "doing"], done: ["✓", "done"], skipped: ["–", "skipped"], failed: ["✕", "failed"] };
   let shownTodo = null;
 
@@ -564,13 +549,12 @@ function runView(id) {
     if (!t) { todoBox.replaceChildren(); return; }
     const left = t.counts.open + t.counts.doing;
     todoBox.replaceChildren(
-      h("h2", "Todo"),
+      h("h2", `Todo · ${t.counts.total - left}/${t.counts.total}`),
       d.todoLeftOpen
         ? h("div.banner.warn", `Marked done with ${left} item(s) still open, and nothing says whether they happened. They're highlighted below.`)
         : "",
       h(d.todoLeftOpen ? "div.card.left-open" : "div.card", { style: "margin-top:10px" },
-        progressBar(t.counts, d.todoLeftOpen),
-        h("div.todo", t.lines.map((line) => {
+        h("div.todo", { style: "margin-top:0" }, t.lines.map((line) => {
           if (line.kind === "heading") return h(line.level === 1 ? "div.todo-title" : "div.todo-group", line.text);
           if (line.kind === "text") return h("p.muted.todo-text", line.text);
           const [glyph, name] = marks[line.mark];
@@ -582,13 +566,22 @@ function runView(id) {
   }
 
   // What the run's wakes have said they did, newest first — for a run that watches or repeats,
-  // this is its progress, where a run with an end has its todo. Redrawn every refresh, so the
-  // times stay current; there is nothing in it to lose.
+  // this is its progress, where a run with an end has its todo. The newest few; the rest on asking.
+  // Redrawn every refresh, so the times stay current; there is nothing in it to lose.
+  const ACTIVITY_FIRST = 5;
+  let activityAll = false;
   function renderActivity(d) {
     if (!d.activity.length) { activityBox.replaceChildren(); return; }
+    const shown = activityAll ? d.activity : d.activity.slice(0, ACTIVITY_FIRST);
+    const rest = d.activity.length - shown.length;
     activityBox.replaceChildren(
       h("h2", "Activity"),
-      h("div.card.activity", { style: "margin-top:10px" }, d.activity.map((a) => activityLine(a))),
+      h("div.card", { style: "margin-top:10px" },
+        h("div.activity", shown.map((a) => activityLine(a))),
+        rest > 0 || activityAll
+          ? h("button.ghost.small", { style: "margin-top:10px", onclick: () => { activityAll = !activityAll; renderActivity(d); } },
+            activityAll ? "Show fewer" : `Show ${rest} more`)
+          : null),
     );
   }
 
@@ -643,30 +636,98 @@ function runView(id) {
         h("div.prose", n.text));
     }));
     notesBox.replaceChildren(
-      h("h2", "Notes"),
-      d.notes.length ? "" : h("p.muted", "No standing or undelivered notes."),
+      h("h2", "Tell the run something"),
       noteList,
       over ? h("p.muted", "The run is over — no wake will read a new note.") : noteForm);
   }
 
+  // ----- details: the handoff, whole
+  let shownHandoff = null;
+  function renderHandoff(d) {
+    handoff.note.textContent = d.handoff ? "what the last wake left the next one, in full" : "none yet";
+    if (d.handoff === shownHandoff) return;
+    shownHandoff = d.handoff;
+    handoff.body.replaceChildren(d.handoff ? h("div.prose", { style: "margin-top:0" }, d.handoff) : h("p.muted", "No handoff yet."));
+  }
+
+  // ----- details: the settings — what the run is, what it costs, and the controls
+  function renderSettings(d) {
+    const s = d.state;
+    const over = ["done", "failed", "stopped"].includes(s.status);
+    settings.note.textContent = [
+      `phase ${s.phase}`,
+      over ? null : `every ${formatMinutes(s.policy.periodMinutes || 60)}`,
+      `${s.budget.spentWakes} wake(s)`,
+      d.usage.wakes > 0 ? `${humaniseTokens(tokenTotal(d.usage))} tokens` : null,
+      over ? null : d.check ? "check script" : "no check script",
+    ].filter(Boolean).join(" · ");
+    const rows = [
+      ["Goal", s.goal],
+      ["Done when", s.doneCondition || (s.policy.perpetual ? "never — perpetual; stop it to retire it" : "not yet decided — the next wake proposes one and asks")],
+      ["Wraps", `${d.wrapsKind}${s.wraps.ref ? " " + s.wraps.ref : ""}`],
+      ["Phase", s.phase],
+    ];
+    if (s.wake) {
+      rows.push(["Wake", `${s.wake.n} — ${d.running ? "running now" : "finished"}${s.wake.outcome ? ", " + s.wake.outcome : ""} · started ${relative(s.wake.startedAt)}`]);
+    }
+    let used = `${s.budget.spentWakes} wake(s)`;
+    if (s.budget.wakes > 0) used += ` of ${s.budget.wakes}`;
+    if (s.budget.hours > 0) used += `, ${s.budget.hours}h budget`;
+    rows.push(["Used", used]);
+    if (s.incompleteWakes > 0) rows.push(["Failed", `${s.incompleteWakes} wake(s) in a row did not finish`]);
+    if (!over) {
+      const limited = s.limitedUntil && s.limitedUntil === s.nextWakeAt ? " — when the usage limit resets" : "";
+      rows.push(["Next wake", s.nextWakeAt && !d.running ? `${due(s.nextWakeAt)} (${localTime(s.nextWakeAt)})${limited}`
+        : d.running ? "set when this wake finishes" : s.gate ? "after the gate is answered" : "nothing scheduled"]);
+      rows.push(["Period", `every ${formatMinutes(s.policy.periodMinutes || 60)}`]);
+    }
+    rows.push(["Launcher", `${s.launcher.kind || ""} · wakes in ${s.launcher.detach}`]);
+    if (d.usage.wakes > 0) rows.push(["Tokens", tokenSummary(d.usage)]);
+    if (d.workdir && d.workdir.kind === "own") rows.push(["Workdir", `${d.workdir.path} (not the default)`]);
+    if (d.workdir && d.workdir.kind === "unset") rows.push(["Workdir", "none — set a default with otto config workdir <dir>"]);
+    factsEl.replaceChildren(h("div.card", { style: "margin-top:12px" }, h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)]))));
+    checkEl.replaceChildren(over ? "" : renderCheck(d));
+    renderActions(d);
+  }
+
+  // The check script is the cheapest wake there is, so the page says plainly whether this run has
+  // one — and, when it doesn't, what each full wake is costing instead.
+  function renderCheck(d) {
+    const c = d.check;
+    const cost = d.wakeCost
+      ? `~${d.wakeCost.avgTurns} turns and ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-creation tokens a wake (last ${d.wakeCost.wakes})`
+      : null;
+    if (!c) {
+      return h("div", h("h3.sub", "Check script"),
+        h("div.banner.warn", { style: "white-space:pre-wrap" },
+          "None — every wake is a full model session" + (cost ? `, ${cost}` : "") + ".\n" +
+          "A script poke runs before each wake, with no model, spends one only when something changed:\n",
+          h("span.mono", `otto check ${d.short} --script <file>`)));
+    }
+    const period = formatMinutes(d.state.policy.periodMinutes || 60);
+    const retry = c.retrySeconds ? formatMinutes(Math.max(1, Math.round(c.retrySeconds / 60))) : period;
+    const last = c.lastResult
+      ? `${c.lastResult.replace("-", " ")}${c.lastAt ? " " + relative(c.lastAt) : ""}${c.lastNote ? " — " + c.lastNote : ""}`
+      : "not run yet";
+    const rows = [
+      ["Runs", `${c.script} before each wake, every ${retry} · ${!c.pinned ? "set by a wake, for this sleep only" : c.setByWake ? "set by the run itself" : "set by you"}`],
+      ["Last", last],
+      ["Saved", `${c.noChangeTotal} check(s) found nothing, each a wake not spent${cost ? " — " + cost : ""}`],
+      ["Safety net", c.wakeAfter ? `wakes anyway after ${c.wakeAfter} in a row (${c.consecutiveNoChange} so far)` : "off"],
+    ];
+    return h("div", h("h3.sub", "Check script"),
+      h("div.card", { style: "margin-top:10px" },
+        h("dl.facts", rows.map(([k, v]) => [h("dt", k), h("dd", v)])),
+        c.text != null ? h("div.prose", c.text)
+          : h("p.muted", `(${c.script} is missing — poke will treat it as an error and wake the run)`)));
+  }
+
+  // Resume is the summary's, for a stopped or failed run; these are for a live one.
   function renderActions(d) {
     const status = d.state.status;
-    if (status === "stopped" || status === "failed") {
-      actions.replaceChildren(h("div.row", { style: "margin-top:16px" },
-        h("button", {
-          disabled: d.running,
-          title: d.running ? "A wake is still running" : "Bring this run back and wake it",
-          onclick: (e) => busy(e.currentTarget, async () => {
-            const r = await api(path + "/resume", {});
-            toast(`${runLabel(r.id)} is ${r.status}${r.note ? " — " + r.note : ""}`);
-            refresh();
-          }),
-        }, "Resume run")));
-      return;
-    }
-    if (status === "done") { actions.replaceChildren(); return; }
+    if (["done", "stopped", "failed"].includes(status)) { actions.replaceChildren(); return; }
     if (actions.dataset.open) return; // a form is being filled in
-    actions.replaceChildren(h("div.row", { style: "margin-top:16px" },
+    actions.replaceChildren(h("div.row", { style: "margin-top:4px" },
       h("button", {
         disabled: d.running,
         title: d.running ? "A wake is already running" : "Start one wake now",
@@ -692,7 +753,7 @@ function runView(id) {
         : r.nextWakeAt ? ` — the timer a wake armed (${due(r.nextWakeAt)}) is kept` : ""));
       close();
     });
-    actions.replaceChildren(h("div.card", { style: "margin-top:16px" },
+    actions.replaceChildren(h("div.card", { style: "margin-top:4px" },
       h("h3", "Change the period"),
       h("p.muted", `How often it wakes when a wake doesn't ask for something else, now every ${current}. ` +
         "A sleep already scheduled on the old period moves to the new one; a timer a wake armed itself is kept."),
@@ -710,7 +771,7 @@ function runView(id) {
     const reason = h("input", { placeholder: "Why (optional)" });
     const failed = h("input", { type: "checkbox" });
     const close = () => { delete actions.dataset.open; refresh(); };
-    actions.replaceChildren(h("div.card", { style: "margin-top:16px" },
+    actions.replaceChildren(h("div.card", { style: "margin-top:4px" },
       h("h3", "Retire this run?"),
       h("p.muted", "It is marked stopped (or failed), its repo locks are released, and any wake still running is killed. You can resume it later."),
       h("div.field", h("span", "Reason"), reason),
@@ -728,14 +789,14 @@ function runView(id) {
     reason.focus();
   }
 
-  // ----- panels
-  let panelCleanup = null;
-  function showPanel() {
-    if (panelCleanup) panelCleanup();
-    panelCleanup = tab === "logs" ? logsPanel() : livePanel();
+  // ----- details: the log and the live wake stream only while their section is open
+  const streams = { log: null, live: null };
+  function setStream(which, open) {
+    if (open && !streams[which]) streams[which] = which === "log" ? logsPanel(log.body) : livePanel(live.body);
+    if (!open && streams[which]) { streams[which](); streams[which] = null; }
   }
 
-  function logsPanel() {
+  function logsPanel(panel) {
     const decisions = h("input", { type: "checkbox" });
     const follow = h("input", { type: "checkbox", checked: true });
     const since = h("input", { placeholder: "since: 2h, 3d, 2026-09-15" });
@@ -786,7 +847,7 @@ function runView(id) {
     return () => { if (source) source.close(); };
   }
 
-  function livePanel() {
+  function livePanel(panel) {
     const status = h("p.muted", "Connecting…");
     const out = h("pre.term");
     const source = new EventSource(`/api${path}/live`);
@@ -822,9 +883,10 @@ function runView(id) {
     return () => source.close();
   }
 
-  onLeave(() => { if (panelCleanup) panelCleanup(); });
+  onLeave(() => { setStream("log", false); setStream("live", false); });
   refresh();
-  showPanel();
+  setStream("log", log.el.open);
+  setStream("live", live.el.open);
   every(5000, refresh);
 }
 
