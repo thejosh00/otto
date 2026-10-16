@@ -578,6 +578,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     let short = &detail.short;
 
     println!("{}  ({:?})", crate::paths::label(&state.id, &detail.name), state.status);
+    println!("  now       {}", detail.glance.line);
     println!("  goal      {}", state.goal);
     match &state.done_condition {
         Some(done) => println!("  done when {done}"),
@@ -648,6 +649,16 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     }
     if !state.status.is_terminal() {
         print_check_summary(&detail);
+    }
+    if state.is_paused() {
+        println!("  paused    {} — `otto resume {short}` to lift it", crate::story::paused_line(state).trim_start_matches("Paused").trim());
+    }
+    let open: Vec<&crate::core::MessageLine> = detail.messages.iter().filter(|m| m.open).collect();
+    if !open.is_empty() {
+        println!("\nwaiting in your inbox:");
+        for m in open {
+            println!("  {:<13} {}   otto inbox read {short} {}", m.meta.kind.label(), m.meta.title, m.meta.id.trim_start_matches('0'));
+        }
     }
     if let Some(explanation) = &detail.blocked_explanation {
         println!("\n{explanation}");
