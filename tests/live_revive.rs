@@ -194,7 +194,12 @@ fn live_revive() {
     );
 
     checks.step("5 - inside the grace it defers; past it, it spawns");
-    let _ = otto(&["state", "arm-timer", &run_id, "--at", "2020-01-01T00:00:00Z"]);
+    // A minute late: inside a 999-minute grace, and past a zero one. (It armed 2020 once, which is
+    // past any grace, so this step could never defer.)
+    let a_minute_ago = (time::OffsetDateTime::now_utc() - time::Duration::minutes(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("formats as RFC 3339");
+    let _ = otto(&["state", "arm-timer", &run_id, "--at", &a_minute_ago]);
     let deferred = poke_action(&run_id, &["--dry-run", "--grace", "999"]);
     checks.check(
         deferred.as_deref() == Some("defer"),
