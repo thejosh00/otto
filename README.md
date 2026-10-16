@@ -7,14 +7,16 @@ instruction, or just a goal — and makes it an agent that keeps working for day
 that has to stay alive. It asks you when it needs a decision, puts what it finds in your inbox, and
 keeps everything it makes where you can find it again.
 
-Explain one failing eval a day, forever. Carry a ticket from research through a design you approve
-to filed Jira tickets. Watch a channel and draft a reply to every question for you to send. Babysit
-a PR through a week of review. otto contributes none of the doing. It contributes **durability**:
-state on disk, questions that wait for your answer, an inbox, every version of the work kept,
-timers that survive a reboot, and a mechanically enforced guarantee that every stopping point can be
-resumed cold.
+- Explain one failing eval a day, forever.
+- Carry a ticket from research through a design you approve to filed Jira tickets.
+- Watch a channel and draft a reply to every question for you to send.
+- Babysit a PR through a week of review.
 
-> Sessions end. Agents don't.
+otto contributes none of the doing. It contributes **durability**: state on disk, questions that
+wait for your answer, an inbox, every version of the work kept, timers that survive a reboot, and a
+mechanically enforced guarantee that every stopping point can be resumed cold.
+
+> Sessions end. The work doesn't.
 
 <p align="center"><img src="assets/demo.png" alt="An agent's page in otto's web UI: what it is doing, a report waiting in the inbox, and its work — a week of daily reports with today's open" width="800"></p>
 <p align="center"><sub>The web UI from <code>otto serve</code>: an agent that explains one failing eval a day — what it's doing, today's report waiting in your inbox, and every report it has made.</sub></p>
