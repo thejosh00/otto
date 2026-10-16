@@ -31,6 +31,26 @@ pub fn read_question(dir: &Path, gate: &Gate) -> Result<String, OttoError> {
     Ok(question.trim().to_string())
 }
 
+/// A question in one line, for a list: its first heading when it opens with one, else its first
+/// sentence, without markup, cut to about `max` characters at a word.
+pub fn title(question: &str, max: usize) -> String {
+    let first = question.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let line = match heading(first) {
+        Some(h) => h.to_string(),
+        None => {
+            let end = first.find(". ").map(|i| i + 1).unwrap_or(first.len());
+            first[..end].to_string()
+        }
+    };
+    let line: String = line.replace(['`', '*'], "").trim().to_string();
+    if line.chars().count() <= max {
+        return line;
+    }
+    let cut: String = line.chars().take(max).collect();
+    let cut = cut.rsplit_once(' ').map(|(head, _)| head).unwrap_or(&cut);
+    format!("{}…", cut.trim_end_matches([',', ';', ':']))
+}
+
 /// A name with the inline markdown a wake wrapped it in — code, bold, italics — taken off both
 /// ends. The name is what a person types back, and nobody types the backticks.
 fn plain(text: &str) -> String {

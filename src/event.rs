@@ -30,7 +30,8 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
-    "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified",
+    "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
+    "message-done", "paused", "unpaused", "start-failed",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +263,39 @@ pub enum Event {
         key: String,
         title: String,
         message: String,
+    },
+    /// A wake sent the person a message (`otto state message`): a report, a draft, an update.
+    MessageSent {
+        message: String,
+        kind: crate::messages::MessageKind,
+        title: String,
+        file: String,
+    },
+    /// The person marked a message done (`otto inbox done`), with what they replied, if anything.
+    MessageDone {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reply: Option<String>,
+        /// The note the reply became, when there was one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// A person paused the run (`otto pause`): no scheduled wake until `until`, or until resumed.
+    Paused {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        until: Option<Timestamp>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// The pause ended: `person` (`otto resume`) or `time` (its `until` passed).
+    Unpaused {
+        by: String,
+    },
+    /// A wake never got going — claude exited at once, having done nothing. Retried on a backoff
+    /// for as long as it takes, and never counted toward blocking the run (`wake::couldnt_start`).
+    StartFailed {
+        reason: String,
+        consecutive: u32,
     },
 }
 

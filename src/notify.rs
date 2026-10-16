@@ -23,6 +23,8 @@ const SEND_TIMEOUT_SECONDS: u64 = 10;
 // A notification banner shows a line or two; the rest is in `otto show`.
 const DETAIL_MAX_CHARS: usize = 120;
 const BUDGET_WARN_FRACTION: f64 = 0.8;
+/// Wakes in a row that couldn't start before a person is told (`RunState::start_failures`).
+pub const START_FAILURES_NOTIFIED: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Notice {
@@ -34,8 +36,28 @@ pub struct Notice {
 /// without a run directory; `pass` decides which of these are new.
 pub fn due(state: &RunState, now: OffsetDateTime, elapsed_hours: f64, short: &str) -> Vec<Notice> {
     let mut notices = Vec::new();
+    // Before the terminal check: a run's last act is often a report, sent just before it is done.
+    for message in &state.messages {
+        notices.push(Notice {
+            key: format!("message:{}", message.id),
+            message: format!("{}: {}. otto inbox", message.kind.label(), crate::exec::truncate(&message.title, DETAIL_MAX_CHARS)),
+        });
+    }
     if state.status.is_terminal() {
         return notices;
+    }
+    // One notice per streak, and not for a single flake: a wake that couldn't start twice in a row
+    // is still most likely a blip.
+    if state.start_failures >= START_FAILURES_NOTIFIED {
+        notices.push(Notice {
+            key: "start-failing".to_string(),
+            message: format!(
+                "Couldn't start {} times in a row{}. {} otto show {short}",
+                state.start_failures,
+                crate::story::claude_says(state.start_failure.as_deref().map(|s| crate::exec::truncate(s, 80)).as_deref()),
+                crate::story::start_failure_hint(state.start_failure.as_deref()),
+            ),
+        });
     }
     let gate = state.gate.as_ref().filter(|g| g.answered_at.is_none());
 

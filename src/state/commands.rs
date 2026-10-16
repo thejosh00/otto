@@ -27,7 +27,7 @@ pub fn kind_str(kind: WrapKind) -> &'static str {
 
 /// The first handoff. Written at init so that wake 1 reads the same file wake 40 will,
 /// rather than having to special-case its own first run.
-fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, created: Timestamp) -> String {
+fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, _created: Timestamp) -> String {
     let wraps = match wraps_ref {
         Some(reference) => reference.clone(),
         None => "nothing — the goal is the whole instruction".to_string(),
@@ -42,7 +42,7 @@ fn initial_handoff(run_id: &str, args: &InitArgs, wraps_ref: &Option<String>, cr
     format!(
         "# {run_id} · {phase} · wake 0\n\n\
          ## Goal\n{goal}\n\n\
-         ## Where this is\nCreated {created}. No wake has run yet.\n\n\
+         ## Where this is\nJust started; nothing has been done yet.\n\n\
          ## Decided\nNothing yet.\n\n\
          ## This wake did\nNothing — this is the handoff `init` wrote.\n\n\
          ## Next wake must\nRead the wrapped instructions ({wraps}) and orient.{first}\n\n\
@@ -341,6 +341,8 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         wake: None,
         check: None,
         incomplete_wakes: 0,
+        start_failures: 0,
+        start_failure: None,
         blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
@@ -377,6 +379,8 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         authorizations: Map::new(),
         notified: std::collections::BTreeMap::new(),
         notes: Vec::new(),
+        messages: Vec::new(),
+        paused: None,
     };
     Ok(PlannedRun { state, path })
 }
@@ -926,6 +930,61 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: 
 }
 
 #[derive(clap::Args, Debug)]
+pub struct MessageArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// What it is: a report to read, a draft for the person to send on, or an update worth knowing
+    #[arg(long, value_enum, required = true)]
+    pub kind: crate::messages::MessageKind,
+    /// What it is in a few words, for a list: "Why refund-policy-qa fails"
+    #[arg(long, required = true)]
+    pub title: String,
+    /// The body, inline: written for a person reading it cold
+    #[arg(long)]
+    pub body: Option<String>,
+    /// Read the body from this file
+    #[arg(long = "body-file")]
+    pub body_file: Option<String>,
+    /// Read the body from stdin
+    #[arg(long)]
+    pub stdin: bool,
+    /// Text for the person to send on to someone else, verbatim — kept apart so it can be copied whole
+    #[arg(long, conflicts_with = "draft_file")]
+    pub draft: Option<String>,
+    /// Read the draft from this file
+    #[arg(long = "draft-file")]
+    pub draft_file: Option<String>,
+    /// A file in the run directory the message points at, relative to it (repeatable)
+    #[arg(long = "attach", value_name = "PATH")]
+    pub attach: Vec<String>,
+}
+
+/// A wake sends the person something: the result it was asked for, a draft for them to send, news.
+pub fn message(args: MessageArgs) -> Result<(), OttoError> {
+    let body = read_text_arg(args.body.as_deref(), args.body_file.as_deref(), args.stdin, "body")?;
+    let draft = match (&args.draft, &args.draft_file) {
+        (Some(text), _) => Some(text.clone()),
+        (None, Some(path)) => {
+            Some(std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?)
+        }
+        (None, None) => None,
+    };
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let open = crate::messages::send(
+        &id,
+        &crate::messages::Outgoing {
+            kind: args.kind,
+            title: &args.title,
+            body: &body,
+            draft: draft.as_deref(),
+            attachments: &args.attach,
+        },
+    )?;
+    println!("{}", open.file);
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
 pub struct TickArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
@@ -947,7 +1006,11 @@ pub fn tick(args: TickArgs) -> Result<(), OttoError> {
         // A configured `0` must stay 0, distinct from "absent → default 24" — Python's
         // `or 24` bug conflated the two. `Policy`'s own default supplies the 24; this just
         // reads it back.
-        limit = state.policy.max_ticks_without_progress;
+        //
+        // A perpetual run is never exhausted: watching and finding nothing is its job, not a stall.
+        // The guard once asked a live queue-watcher whether to keep watching an empty queue, and the
+        // question sat unanswered for ten days with the run doing nothing.
+        limit = if state.policy.perpetual { 0 } else { state.policy.max_ticks_without_progress };
         let note = args.note.clone();
         crate::event::record(
             path,
@@ -1014,6 +1077,10 @@ pub fn handoff(args: HandoffArgs) -> Result<(), OttoError> {
              keep the handoff to what the next wake needs to start",
             text.len()
         )));
+    }
+    // Refused like the cap, for the same reason: the wake that wrote it is still there to fix it.
+    if let Some(why) = crate::plain::check_handoff(&text) {
+        return Err(OttoError::usage(format!("handoff refused: {why}")));
     }
     let _lock = RunLock::acquire(&path)?;
     write_atomic(&path.join(HANDOFF_FILE), &text)
@@ -1195,6 +1262,44 @@ mod tests {
 
     use super::*;
     use crate::paths::test_support::TempHome;
+
+    /// The person-facing sections are refused in otto's words, like a handoff past its cap — and
+    /// nothing is written, so the wake still has the chance to say it plainly.
+    #[test]
+    fn a_handoff_that_talks_to_the_person_in_otto_s_words_is_refused() {
+        let _home = TempHome::new();
+        test_init("h-plain", "a goal").unwrap();
+        let dir = crate::paths::run_dir("h-plain").unwrap();
+        let before = std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap();
+        let write = |text: &str| {
+            let file = dir.join("artifacts/next-handoff.md");
+            std::fs::write(&file, text).unwrap();
+            handoff(HandoffArgs { id: "h-plain".into(), file: Some(file.display().to_string()), stdin: false })
+        };
+        let err = write("# h · working · wake 3\n## Where this is\nWake 3: queue empty, ticked.\n## Next wake must\nTick.\n")
+            .expect_err("refused");
+        assert_eq!(err.code, 1);
+        assert!(err.to_string().contains("\"wake\", \"ticked\""), "says which words: {err}");
+        assert_eq!(std::fs::read_to_string(dir.join(HANDOFF_FILE)).unwrap(), before, "nothing written");
+        write("# h · working · wake 3\n## Where this is\nThe queue is empty; next look in an hour.\n## Next wake must\nTick.\n")
+            .unwrap();
+    }
+
+    /// Watching and finding nothing is a perpetual run's job, so its ticks never run out.
+    #[test]
+    fn a_perpetual_run_is_never_exhausted_by_quiet_ticks() {
+        let _home = TempHome::new();
+        init(InitArgs { goal: "watch".into(), id: Some("t-watch".into()), perpetual: true, ..Default::default() }).unwrap();
+        transaction("t-watch", |_p, state| {
+            state.ticks_without_progress = 500;
+            Ok(())
+        })
+        .unwrap();
+        tick(TickArgs { id: "t-watch".into(), progress: false, note: None }).unwrap();
+        let state = read_run("t-watch").unwrap();
+        assert_eq!(state.ticks_without_progress, 501);
+        assert_eq!(state.inferred_block_cause(), BlockedCause::Instructions, "no stall guard to have tripped");
+    }
 
     /// Runs are numbered in order, and a number is never handed out twice — not even after the
     /// run that had it is removed, since old gates and journal lines still name it.

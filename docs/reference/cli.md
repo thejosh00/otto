@@ -137,6 +137,74 @@ Options:
           Print help
 ```
 
+## `otto inbox`
+
+```text
+What every run has put in front of you: questions to answer, and messages to read
+
+Usage: otto inbox [OPTIONS]
+       otto inbox <COMMAND>
+
+Commands:
+  read  Print one message in full: what the run sent, any draft to send on, what it attached
+  done  Mark a message done — with a reply, the run reads your words on its next wake
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --all
+          Include questions already answered and messages already done, newest first
+
+      --json
+          Print the inbox as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto inbox read`
+
+```text
+Print one message in full: what the run sent, any draft to send on, what it attached
+
+Usage: otto inbox read <ID> [MESSAGE]
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [MESSAGE]
+          The message's number. Omitted, the run's newest open one
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto inbox done`
+
+```text
+Mark a message done — with a reply, the run reads your words on its next wake
+
+Usage: otto inbox done [OPTIONS] <ID> [MESSAGE]
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [MESSAGE]
+          The message's number. Omitted, the run's only open one
+
+Options:
+      --reply <REPLY>
+          Your reply, handed to the run as a note: "dig into the grader next", "looks right"
+
+      --now
+          With --reply: wake the run now to read it, rather than at its next wake
+
+  -h, --help
+          Print help
+```
+
 ## `otto answer`
 
 ```text
@@ -350,6 +418,31 @@ Options:
           Print help
 ```
 
+## `otto pause`
+
+```text
+Hold back a run's scheduled wakes — for a while, or until you resume it
+
+Usage: otto pause [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --for <AGE>
+          For this long: `2h`, `3d`
+
+      --until <WHEN>
+          Until then: a time today or tomorrow (`09:00`), a date (`2026-10-19`, that morning at 09:00), or a full timestamp. Omitted with --for too: until you `otto resume` it
+
+      --reason <REASON>
+          Why, recorded in the journal
+
+  -h, --help
+          Print help
+```
+
 ## `otto stop`
 
 ```text
@@ -375,7 +468,7 @@ Options:
 ## `otto resume`
 
 ```text
-Bring a stopped or failed run back, and wake it
+Lift a pause, or bring a stopped or failed run back and wake it
 
 Usage: otto resume [OPTIONS] <ID>
 
@@ -658,6 +751,7 @@ Commands:
   record-fact       Write re-derived facts
   open-gate         Write the gate file and stop the run on it
   close-gate        Record the answer verbatim and clear the gate
+  message           Send the person a message — a report, a draft to send on, an update — to their inbox
   arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
   set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
@@ -955,6 +1049,51 @@ Options:
 
   -h, --help
           Print help
+```
+
+### `otto state message`
+
+```text
+Send the person a message — a report, a draft to send on, an update — to their inbox
+
+Usage: otto state message [OPTIONS] --kind <KIND> --title <TITLE> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --kind <KIND>
+          What it is: a report to read, a draft for the person to send on, or an update worth knowing
+
+          Possible values:
+          - report: Something the run made for the person to read: a report, a finding, a summary
+          - draft:  Text written for the person to send to someone else — a reply, a comment. The run never sends it itself
+          - update: News the person would want: a task finished, a PR merged, something worth knowing
+
+      --title <TITLE>
+          What it is in a few words, for a list: "Why refund-policy-qa fails"
+
+      --body <BODY>
+          The body, inline: written for a person reading it cold
+
+      --body-file <BODY_FILE>
+          Read the body from this file
+
+      --stdin
+          Read the body from stdin
+
+      --draft <DRAFT>
+          Text for the person to send on to someone else, verbatim — kept apart so it can be copied whole
+
+      --draft-file <DRAFT_FILE>
+          Read the draft from this file
+
+      --attach <PATH>
+          A file in the run directory the message points at, relative to it (repeatable)
+
+  -h, --help
+          Print help (see a summary with '-h')
 ```
 
 ### `otto state arm-timer`

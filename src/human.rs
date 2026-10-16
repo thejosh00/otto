@@ -283,17 +283,25 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     let status_width = rows.iter().map(|r| r.status.len()).max().unwrap_or(6).max("awaiting_human".len());
     let waiting = rows.iter().map(|r| r.blocking.len()).max().unwrap_or(10).max("WAITING ON".len());
     let next_width = rows.iter().map(|r| r.next_wake.chars().count()).max().unwrap_or(9).max("NEXT WAKE".len());
-    let period_width = rows.iter().map(|r| r.period.chars().count()).max().unwrap_or(6).max("PERIOD".len());
     println!(
-        "{:<width$}  {:<name_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  WAKES",
-        "ID", "NAME", "STATUS", "PHASE", "WAITING ON", "NEXT WAKE", "PERIOD"
+        "{:<width$}  {:<name_width$}  {:<status_width$}  {:<waiting$}  {:<next_width$}  PERIOD",
+        "ID", "NAME", "STATUS", "WAITING ON", "NEXT WAKE"
     );
+    // The run's own line under its row, cut to the terminal's width — what it is doing, in words.
+    let line_width = terminal_width().saturating_sub(width + 4).max(40);
     for row in rows {
         // `—` is one column wide but three bytes, and `{:<n}` pads by chars, so this lines up.
         println!(
-            "{:<width$}  {:<name_width$}  {:<status_width$}  {:<12}  {:<waiting$}  {:<next_width$}  {:<period_width$}  {}",
-            row.short, row.name, row.status, row.phase, row.blocking, row.next_wake, row.period, row.wakes
+            "{:<width$}  {:<name_width$}  {:<status_width$}  {:<waiting$}  {:<next_width$}  {}",
+            row.short, row.name, row.status, row.blocking, row.next_wake, row.period
         );
+        if !row.line.is_empty() {
+            println!("{:<width$}  {}", "", clip(&row.line, line_width));
+        }
+    }
+    let waiting_messages: usize = rows.iter().map(|r| r.messages).sum();
+    if waiting_messages > 0 {
+        println!("\n{waiting_messages} message(s) waiting for you — `otto inbox`");
     }
     if let Some(sleeping_count) = view.stranded_sleepers {
         println!(
@@ -316,6 +324,238 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
         }
     }
     Ok(())
+}
+
+/// The terminal's width, from `$COLUMNS`, else a conventional 100.
+fn terminal_width() -> usize {
+    std::env::var("COLUMNS").ok().and_then(|c| c.parse().ok()).unwrap_or(100)
+}
+
+/// `text` cut to `max` characters, with an ellipsis when it was cut.
+fn clip(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        format!("{}…", text.chars().take(max.saturating_sub(1)).collect::<String>().trim_end())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// otto inbox
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct InboxArgs {
+    #[command(subcommand)]
+    pub command: Option<InboxCommand>,
+    /// Include questions already answered and messages already done, newest first
+    #[arg(long)]
+    pub all: bool,
+    /// Print the inbox as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum InboxCommand {
+    /// Print one message in full: what the run sent, any draft to send on, what it attached
+    Read(InboxReadArgs),
+    /// Mark a message done — with a reply, the run reads your words on its next wake
+    Done(InboxDoneArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct InboxReadArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The message's number. Omitted, the run's newest open one
+    pub message: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct InboxDoneArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The message's number. Omitted, the run's only open one
+    pub message: Option<String>,
+    /// Your reply, handed to the run as a note: "dig into the grader next", "looks right"
+    #[arg(long)]
+    pub reply: Option<String>,
+    /// With --reply: wake the run now to read it, rather than at its next wake
+    #[arg(long, requires = "reply")]
+    pub now: bool,
+}
+
+/// `otto inbox` — what every run has put in front of you: questions to answer and messages to read.
+pub fn inbox(args: InboxArgs) -> Result<(), OttoError> {
+    match args.command {
+        Some(InboxCommand::Read(read)) => return inbox_read(read),
+        Some(InboxCommand::Done(done)) => return inbox_done(done),
+        None => {}
+    }
+    let inbox = crate::inbox::inbox(args.all)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&inbox)?);
+        return Ok(());
+    }
+    if inbox.items.is_empty() {
+        println!("nothing in your inbox{}", if args.all { "" } else { " (--all shows what you've answered and read)" });
+        return Ok(());
+    }
+    let from_width = inbox.items.iter().map(|i| crate::paths::label(&i.short, &i.name).len()).max().unwrap_or(4);
+    let title_width = terminal_width().saturating_sub(from_width + 30).clamp(30, 80);
+    for (open, heading) in [(true, format!("waiting for you ({})", inbox.open)), (false, "answered and read".to_string())] {
+        let items: Vec<&crate::inbox::Item> = inbox.items.iter().filter(|i| i.open == open).collect();
+        if items.is_empty() {
+            continue;
+        }
+        println!("{heading}\n");
+        for item in items {
+            let from = crate::paths::label(&item.short, &item.name);
+            let how = match (item.kind.as_str(), open) {
+                ("question", true) => format!("otto answer {}", item.short),
+                (_, true) => format!("otto inbox read {} {}", item.short, item.id.trim_start_matches('0')),
+                ("question", false) => format!("answered: {}", clip(item.answer.as_deref().unwrap_or(""), 40)),
+                (_, false) => match &item.answer {
+                    Some(reply) => format!("you replied: {}", clip(reply, 40)),
+                    None => "done".to_string(),
+                },
+            };
+            println!(
+                "  {:<9} {:<from_width$}  {:<title_width$}  {:>8}   {how}",
+                item.kind,
+                from,
+                clip(&item.title, title_width),
+                crate::clock::relative(item.at),
+            );
+        }
+        println!();
+    }
+    Ok(())
+}
+
+fn inbox_read(args: InboxReadArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let state = read_run(&id)?;
+    let short = crate::paths::short_id(&id);
+    let message = crate::messages::read(&id, args.message.as_deref())?;
+    let meta = &message.meta;
+    println!(
+        "{} · {} · {} · message {}",
+        state.label(),
+        meta.kind.label(),
+        crate::clock::relative(meta.sent_at),
+        meta.id
+    );
+    println!("{}\n", meta.title);
+    println!("{}", message.text.trim_end());
+    if let Some(draft) = &meta.draft {
+        println!("\n─── draft to send — otto never sends it for you ───\n{}", draft.trim_end());
+    }
+    if !message.attached.is_empty() {
+        println!("\n─── attached ───");
+        for attachment in &message.attached {
+            println!("  {}", crate::paths::run_dir(&id)?.join(&attachment.path).display());
+        }
+    }
+    let n = meta.id.trim_start_matches('0');
+    if message.open {
+        println!("\nWhen you're done with it:  otto inbox done {short} {n}   (add --reply \"…\" to tell the run something)");
+    } else if let Some(reply) = &meta.reply {
+        println!("\nDone — you replied: {reply}");
+    } else {
+        println!("\nDone.");
+    }
+    Ok(())
+}
+
+fn inbox_done(args: InboxDoneArgs) -> Result<(), OttoError> {
+    let outcome = crate::core::message_done(&args.id, args.message.as_deref(), args.reply.as_deref(), false)?;
+    let meta = &outcome.done.message;
+    let label = crate::paths::label_of(&outcome.id);
+    match (&outcome.done.note, outcome.done.already_done) {
+        (Some(note), _) => println!(
+            "\"{}\" is done; your reply is note {} — {}",
+            meta.title,
+            note.id,
+            outcome.delivery.as_deref().unwrap_or("the next wake reads it")
+        ),
+        (None, true) => println!("\"{}\" was already done", meta.title),
+        (None, false) => println!("\"{}\" is done", meta.title),
+    }
+    if args.now {
+        let state = read_run(&outcome.id)?;
+        match crate::core::why_not_wake_for_note(&state, LockLiveness.probe(&outcome.id).is_busy()) {
+            Some(why) => println!("not waking {label}: {why}"),
+            None => return start_wake(&outcome.id, state.launcher.detach, None),
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// otto pause
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct PauseArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// For this long: `2h`, `3d`
+    #[arg(long = "for", value_name = "AGE", conflicts_with = "until")]
+    pub for_: Option<String>,
+    /// Until then: a time today or tomorrow (`09:00`), a date (`2026-10-19`, that morning at 09:00),
+    /// or a full timestamp. Omitted with --for too: until you `otto resume` it
+    #[arg(long, value_name = "WHEN")]
+    pub until: Option<String>,
+    /// Why, recorded in the journal
+    #[arg(long)]
+    pub reason: Option<String>,
+}
+
+/// `otto pause` — hold back a run's scheduled wakes, for a while or until resumed.
+pub fn pause(args: PauseArgs) -> Result<(), OttoError> {
+    let offset = crate::clock::local_offset();
+    let until = match (&args.for_, &args.until) {
+        (Some(age), _) => Some(crate::clock::Timestamp::at(crate::clock::now() + parse_duration("--for", age)?)),
+        (None, Some(when)) => Some(parse_until(when, offset)?),
+        (None, None) => None,
+    };
+    let outcome = crate::core::pause_run(&args.id, until, args.reason)?;
+    let label = crate::paths::label_of(&outcome.id);
+    let short = crate::paths::short_id(&outcome.id);
+    match outcome.until {
+        Some(until) => println!("{label} is paused until {} — `otto resume {short}` to lift it sooner", crate::clock::local_clock(until)),
+        None => println!("{label} is paused until you `otto resume {short}`"),
+    }
+    if outcome.running {
+        println!("the wake running now will finish; nothing scheduled starts after it");
+    }
+    Ok(())
+}
+
+/// `--until`: `HH:MM` (the next time the clock reads that), a date (that day at 09:00, local), or
+/// a timestamp.
+pub fn parse_until(text: &str, offset: time::UtcOffset) -> Result<crate::clock::Timestamp, OttoError> {
+    let text = text.trim();
+    if let Ok(dt) = crate::clock::parse_iso(text) {
+        return Ok(crate::clock::Timestamp::at(dt));
+    }
+    let now = crate::clock::now().to_offset(offset);
+    let hm = time::macros::format_description!("[hour]:[minute]");
+    if let Ok(t) = time::Time::parse(text, &hm) {
+        let today = now.date().with_time(t).assume_offset(offset);
+        let at = if today > now { today } else { today + time::Duration::days(1) };
+        return Ok(crate::clock::Timestamp::at(at));
+    }
+    let day = time::macros::format_description!("[year]-[month]-[day]");
+    if let Ok(date) = time::Date::parse(text, &day) {
+        return Ok(crate::clock::Timestamp::at(date.with_time(time::macros::time!(9:00)).assume_offset(offset)));
+    }
+    Err(OttoError::usage(format!(
+        "--until takes a time (09:00), a date (2026-10-19) or a timestamp, not {text:?}"
+    )))
 }
 
 // ---------------------------------------------------------------------------

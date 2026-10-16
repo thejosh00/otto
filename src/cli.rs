@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 
 use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
-    ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, OpenGateArgs,
-    RecordFactArgs, SetPhaseArgs, SetStatusArgs, TailArgs, TickArgs,
+    ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
+    OpenGateArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, TailArgs, TickArgs,
 };
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
 
@@ -22,6 +22,8 @@ pub enum Command {
     Ls(crate::human::LsArgs),
     /// Where one run stands, and the open question in full.
     Show(crate::human::ShowArgs),
+    /// What every run has put in front of you: questions to answer, and messages to read.
+    Inbox(crate::human::InboxArgs),
     /// Answer the open gate, then continue the run.
     Answer(crate::human::AnswerArgs),
     /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
@@ -40,9 +42,11 @@ pub enum Command {
     Rename(crate::human::RenameArgs),
     /// Give every run from before run numbers a number, keeping its old id as an alias.
     Renumber,
+    /// Hold back a run's scheduled wakes — for a while, or until you resume it.
+    Pause(crate::human::PauseArgs),
     /// Retire a run.
     Stop(crate::human::StopArgs),
-    /// Bring a stopped or failed run back, and wake it.
+    /// Lift a pause, or bring a stopped or failed run back and wake it.
     Resume(crate::human::ResumeArgs),
     /// Run one wake: spawn the model, then validate what it left behind.
     Wake(crate::wake::WakeArgs),
@@ -129,6 +133,8 @@ pub enum StateCommand {
     OpenGate(OpenGateArgs),
     /// Record the answer verbatim and clear the gate
     CloseGate(CloseGateArgs),
+    /// Send the person a message — a report, a draft to send on, an update — to their inbox
+    Message(MessageArgs),
     /// Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
     ArmTimer(ArmTimerArgs),
     /// Give the run a standing check script, or remove the one a wake gave it

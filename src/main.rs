@@ -10,16 +10,20 @@ mod event;
 mod exec;
 mod gate;
 mod human;
+mod inbox;
 mod install;
 mod launchd;
 mod liveness;
+mod messages;
 mod notes;
 mod notify;
 mod paths;
+mod plain;
 mod poke;
 mod server;
 mod spawner;
 mod state;
+mod story;
 mod todo;
 mod wake;
 
@@ -43,7 +47,9 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Run(args) => human::run(args),
         Command::Ls(args) => human::ls(args),
         Command::Show(args) => human::show(args),
+        Command::Inbox(args) => human::inbox(args),
         Command::Answer(args) => human::answer(args),
+        Command::Pause(args) => human::pause(args),
         Command::Note(args) => human::note(args),
         Command::Check(args) => human::check(args),
         Command::Logs(args) => human::logs(args),
@@ -83,6 +89,7 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::RecordFact(a) => commands::record_fact(a),
         StateCommand::OpenGate(a) => commands::open_gate(a),
         StateCommand::CloseGate(a) => commands::close_gate(a),
+        StateCommand::Message(a) => commands::message(a),
         StateCommand::SetCheck(a) => commands::set_check(a),
         StateCommand::ArmTimer(a) => commands::arm_timer(a),
         StateCommand::Tick(a) => commands::tick(a),

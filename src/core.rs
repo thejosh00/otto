@@ -376,6 +376,13 @@ pub struct LsRow {
     pub next_wake: String,
     pub running: bool,
     pub terminal: bool,
+    /// The run in one line, as a person reads it (`story::glance`).
+    pub mood: crate::story::Mood,
+    pub line: String,
+    /// Messages it has sent that are still in the inbox.
+    pub messages: usize,
+    /// When it last ran or checked (`last_run`).
+    pub last_run_at: Option<crate::clock::Timestamp>,
 }
 
 /// A gate a person can act on right now.
@@ -429,6 +436,10 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         next_wake: "?".to_string(),
                         running: false,
                         terminal: false,
+                        mood: crate::story::Mood::Trouble,
+                        line: "Its run.json can't be read — a person needs to look".to_string(),
+                        messages: 0,
+                        last_run_at: None,
                     });
                 }
                 continue;
@@ -439,8 +450,10 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         }
         let running = liveness.probe(&state.id).is_busy();
         let dir = crate::paths::run_dir(&state.id).ok();
+        let mut question_title = None;
         if let Some(gate) = &state.gate {
             let question = dir.as_ref().and_then(|d| crate::gate::read_question(d, gate).ok()).unwrap_or_default();
+            question_title = Some(question_title_of(&question, &gate.slug));
             needs_you.push(NeedsYou {
                 id: state.id.clone(),
                 short: short_id_among(&state.id, &all_ids),
@@ -459,6 +472,11 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         let limit = state.budget.wakes;
         let wakes = if limit > 0 { format!("{spent}/{limit}") } else { spent.to_string() };
         let todo = dir.as_deref().and_then(crate::todo::read).map(|t| t.counts);
+        let said = dir
+            .as_ref()
+            .and_then(|d| std::fs::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
+            .and_then(|handoff| where_this_is(&handoff));
+        let glance = crate::story::glance(&state, running, question_title.as_deref(), said.as_deref());
         rows.push(LsRow {
             todo_left_open: todo_left_open(&state, todo.as_ref()),
             todo,
@@ -469,10 +487,11 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             status: status_label(&state),
             phase: state.phase.clone(),
             blocking: blocking(&state, running),
-            where_this_is: dir
-                .as_ref()
-                .and_then(|d| std::fs::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
-                .and_then(|handoff| where_this_is(&handoff)),
+            where_this_is: said,
+            mood: glance.mood,
+            line: glance.line,
+            messages: state.messages.len(),
+            last_run_at: dir.as_deref().and_then(|d| last_run(d, &state)).map(|l| l.at),
             wakes,
             period: if state.status.is_terminal() {
                 "—".to_string()
@@ -583,6 +602,40 @@ pub struct RunDetail {
     pub workdir: Option<WorkdirView>,
     /// Everything this run's wakes have used.
     pub usage: TokenTotals,
+    /// The run in one line, as the list shows it (`story::glance`).
+    pub glance: crate::story::Glance,
+    /// The open question in one line, when there is one.
+    pub question_title: Option<String>,
+    /// What it has sent, newest first, open or done.
+    pub messages: Vec<MessageLine>,
+    /// Its last week, for a picture.
+    pub timeline: crate::story::Timeline,
+    /// What has happened lately, in words, newest first.
+    pub lately: Vec<crate::story::Happening>,
+}
+
+/// One message, as a list of them shows it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageLine {
+    #[serde(flatten)]
+    pub meta: crate::messages::MessageMeta,
+    pub open: bool,
+}
+
+/// How many messages a run's page lists.
+pub const MESSAGES_SHOWN: usize = 20;
+/// How many things a run's page tells in `lately`.
+pub const LATELY_SHOWN: usize = 30;
+
+/// A question's title for a list: its own heading or first sentence, else its slug in words.
+pub fn question_title_of(question: &str, slug: &str) -> String {
+    let title = crate::gate::title(question, crate::story::QUESTION_TITLE_CHARS);
+    if title.is_empty() {
+        slug.replace('-', " ")
+    } else {
+        title
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -638,7 +691,20 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let check = check_view(&dir, &state);
     let wake_cost = wake_cost(&dir);
     let todo = crate::todo::read(&dir);
+    let question_title = gate.as_ref().map(|g| question_title_of(&g.question, &g.slug));
+    let glance =
+        crate::story::glance(&state, running, question_title.as_deref(), handoff.as_deref().and_then(where_this_is).as_deref());
+    let messages = crate::messages::history(&dir)
+        .into_iter()
+        .take(MESSAGES_SHOWN)
+        .map(|meta| MessageLine { open: state.messages.iter().any(|m| m.id == meta.id), meta })
+        .collect();
     Ok(RunDetail {
+        glance,
+        question_title,
+        messages,
+        timeline: crate::story::timeline(&dir, &state),
+        lately: crate::story::lately(&dir, LATELY_SHOWN),
         todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
         todo,
         activity: activity(&dir, ACTIVITY_SHOWN),
@@ -1379,6 +1445,11 @@ pub struct ResumeOutcome {
 /// run goes back to waiting on it instead.
 pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<ResumeOutcome, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
+    // A paused run is not stopped: resuming it is lifting the pause, and a wake already running
+    // while it was paused is no reason to refuse.
+    if read_run(&id)?.paused.is_some() && !read_run(&id)?.status.is_terminal() {
+        return unpause_run(&id);
+    }
     let reason = reason.unwrap_or_else(|| "resumed by hand".to_string());
     // A wake that `stop` failed to kill must not get a second one alongside it.
     refuse_if_busy(&id)?;
@@ -1399,8 +1470,10 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
         }
         // A fresh start: whatever counted towards giving up last time should not count again.
         state.incomplete_wakes = 0;
+        state.clear_start_failures();
         state.spawn_attempts = 0;
         state.ticks_without_progress = 0;
+        state.paused = None;
         if state.gate.is_some() {
             state.status = Status::AwaitingHuman;
             state.next_wake_at = None;
@@ -1437,6 +1510,193 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
         Err(err) => outcome.note = Some(format!("resumed, but the wake did not start: {} — the next poke will retry it", err.message)),
     }
     Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// pause
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseOutcome {
+    pub id: String,
+    pub until: Option<crate::clock::Timestamp>,
+    /// A wake running now finishes; the pause holds back the scheduled ones after it.
+    pub running: bool,
+}
+
+/// Hold back a run's scheduled wakes until `until`, or until it is resumed (`otto resume`). Nothing
+/// is killed and nothing is lost: questions stay open, and a person can still answer, note or wake
+/// it by hand. A later pause replaces an earlier one.
+pub fn pause_run(id: &str, until: Option<crate::clock::Timestamp>, reason: Option<String>) -> Result<PauseOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    if until.is_some_and(|u| u.is_past()) {
+        return Err(OttoError::usage("that time has already passed — pause until a time still to come"));
+    }
+    crate::state::transaction(&id, |path, state| {
+        if state.status.is_terminal() {
+            return Err(OttoError::conflict(format!(
+                "{} is {} — it never wakes again, so there is nothing to pause",
+                state.label(),
+                crate::state::commands::status_str(state.status)
+            )));
+        }
+        state.paused = Some(crate::state::Pause { at: crate::clock::Timestamp::now(), until, reason: reason.clone() });
+        crate::event::record(path, &crate::event::Event::Paused { until, reason: reason.clone() })
+    })?;
+    Ok(PauseOutcome { running: LockLiveness.probe(&id).is_busy(), id, until })
+}
+
+/// Lift a pause. The run goes back on its schedule; a wake it missed while paused comes at the
+/// next poke — one, never a backlog.
+pub fn unpause_run(id: &str) -> Result<ResumeOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let status = crate::state::transaction(&id, |path, state| {
+        if state.paused.take().is_none() {
+            return Err(OttoError::conflict(format!("{} is not paused", state.label())));
+        }
+        crate::event::record(path, &crate::event::Event::Unpaused { by: "person".to_string() })?;
+        Ok(state.status)
+    })?;
+    let state = read_run(&id)?;
+    let note = match (&state.gate, state.next_wake_at) {
+        (Some(gate), _) => format!("back on its schedule, and still waiting on question {}", gate.id),
+        (None, Some(at)) if at.is_past() => "back on its schedule — the run it missed comes at the next poke".to_string(),
+        (None, Some(at)) => format!("back on its schedule — next run {}", relative(at)),
+        (None, None) => "back on its schedule".to_string(),
+    };
+    Ok(ResumeOutcome { id, status, reason: "pause lifted".to_string(), wake: None, note: Some(note) })
+}
+
+// ---------------------------------------------------------------------------
+// messages
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDoneOutcome {
+    pub id: String,
+    pub done: crate::messages::Done,
+    /// When the run will read the reply, in words — only with a reply.
+    pub delivery: Option<String>,
+    pub wake: Option<WakeStart>,
+    pub not_woken: Option<String>,
+}
+
+/// Mark a message done, and with a reply, pass it to the run — and, with `now`, wake it to read it.
+pub fn message_done(id: &str, which: Option<&str>, reply: Option<&str>, now: bool) -> Result<MessageDoneOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let done = crate::messages::done(&id, which, reply)?;
+    let state = read_run(&id)?;
+    let running = LockLiveness.probe(&id).is_busy();
+    let mut outcome = MessageDoneOutcome {
+        delivery: done.note.as_ref().map(|_| note_delivery(&state, running, false)),
+        done,
+        id: id.clone(),
+        wake: None,
+        not_woken: None,
+    };
+    if now && outcome.done.note.is_some() {
+        match why_not_wake_for_note(&state, running) {
+            Some(why) => outcome.not_woken = Some(why),
+            None => match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None) {
+                Ok(wake) => outcome.wake = Some(wake),
+                Err(err) => outcome.not_woken = Some(format!("the run did not start: {}", err.message)),
+            },
+        }
+    }
+    Ok(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// health
+// ---------------------------------------------------------------------------
+
+/// A run otto cannot get going, for the health line.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Struggling {
+    pub id: String,
+    pub short: String,
+    pub name: String,
+    pub start_failures: u32,
+    /// What claude said the last time.
+    pub said: Option<String>,
+}
+
+/// Whether the machinery that keeps runs going is working — the one thing about otto itself a
+/// person needs to know. Everything here is otto's problem, not any run's, so it is said once, as
+/// one line, rather than as a question on each run.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Health {
+    pub ok: bool,
+    /// What is wrong, in sentences; empty when nothing is.
+    pub problems: Vec<String>,
+    pub reviver_loaded: Option<bool>,
+    pub last_poke: Option<crate::clock::Timestamp>,
+    pub struggling: Vec<Struggling>,
+    pub stranded_sleepers: usize,
+}
+
+/// A reviver that should poke every five minutes and hasn't for this long has stopped.
+const POKE_SILENT_MINUTES: i64 = 20;
+
+pub fn health() -> Result<Health, OttoError> {
+    let ids = crate::paths::all_run_ids();
+    let mut struggling = Vec::new();
+    let mut sleeping = 0usize;
+    for entry in read_all_runs()? {
+        let RunEntry::Readable(state) = entry else { continue };
+        if state.status.is_terminal() {
+            continue;
+        }
+        if state.start_failures >= crate::notify::START_FAILURES_NOTIFIED {
+            struggling.push(Struggling {
+                short: short_id_among(&state.id, &ids),
+                name: state.display_name(),
+                id: state.id.clone(),
+                start_failures: state.start_failures,
+                said: state.start_failure.clone(),
+            });
+        }
+        if state.status == Status::Sleeping && state.gate.is_none() {
+            sleeping += 1;
+        }
+    }
+    let agent = crate::launchd::agent_status()?;
+    let mut problems = Vec::new();
+    let stranded_sleepers = if agent.loaded == Some(false) { sleeping } else { 0 };
+    if stranded_sleepers > 0 {
+        problems.push(format!(
+            "The reviver isn't running, so {stranded_sleepers} sleeping run(s) will never wake on their own."
+        ));
+    } else if agent.loaded == Some(true) {
+        if let Some(last) = agent.last_poke {
+            let silent = (crate::clock::now() - last.dt()).whole_minutes();
+            if silent > POKE_SILENT_MINUTES && sleeping > 0 {
+                problems.push(format!("The reviver hasn't run for {} — runs aren't being woken.", relative(last).trim_end_matches(" ago")));
+            }
+        }
+    }
+    if !struggling.is_empty() {
+        let names: Vec<String> = struggling.iter().map(|s| s.name.clone()).collect();
+        let said = struggling.iter().find_map(|s| s.said.as_deref());
+        problems.push(format!(
+            "{} couldn't start{}. {}",
+            names.join(", "),
+            crate::story::claude_says(said),
+            crate::story::start_failure_hint(said)
+        ));
+    }
+    Ok(Health {
+        ok: problems.is_empty(),
+        problems,
+        reviver_loaded: agent.loaded,
+        last_poke: agent.last_poke,
+        struggling,
+        stranded_sleepers,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2293,7 +2553,7 @@ mod tests {
         let summary = |id: &str| view.rows.iter().find(|r| r.id == id).unwrap().where_this_is.clone();
         assert_eq!(summary("2026-09-20-moved").as_deref(), Some("Halfway."));
         // `init`'s own handoff has the section, so a run that has never woken still says something.
-        assert!(summary("2026-09-20-fresh").unwrap().contains("No wake has run yet."));
+        assert!(summary("2026-09-20-fresh").unwrap().contains("nothing has been done yet"));
         let json = serde_json::to_value(&view).unwrap();
         assert!(json["rows"][0].get("whereThisIs").is_some(), "the web page reads it in camelCase");
     }

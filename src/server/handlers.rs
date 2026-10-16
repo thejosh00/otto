@@ -258,6 +258,68 @@ pub async fn logs(State(state): State<Arc<AppState>>, Path(id): Path<String>, Qu
     .await
 }
 
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct InboxQuery {
+    all: bool,
+}
+
+pub async fn inbox(Query(q): Query<InboxQuery>) -> Response {
+    blocking(move || crate::inbox::inbox(q.all)).await
+}
+
+pub async fn health() -> Response {
+    blocking(crate::core::health).await
+}
+
+pub async fn message(Path((id, message)): Path<(String, String)>) -> Response {
+    blocking(move || {
+        let id = crate::paths::resolve_run_id(&id)?;
+        crate::messages::read(&id, Some(&message))
+    })
+    .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct MessageDoneBody {
+    reply: Option<String>,
+    now: bool,
+}
+
+pub async fn message_done(Path((id, message)): Path<(String, String)>, Json(body): Json<MessageDoneBody>) -> Response {
+    blocking(move || crate::core::message_done(&id, Some(&message), body.reply.as_deref(), body.now)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct PauseBody {
+    /// A timestamp to pause until; with neither this nor `for`, until resumed.
+    until: Option<String>,
+    /// A length of time: `1h`, `3d`.
+    #[serde(rename = "for")]
+    for_: Option<String>,
+    reason: Option<String>,
+}
+
+pub async fn pause(State(state): State<Arc<AppState>>, Path(id): Path<String>, Json(body): Json<PauseBody>) -> Response {
+    let offset = state.offset;
+    blocking(move || {
+        let until = match (body.for_.as_deref().filter(|s| !s.trim().is_empty()), body.until.as_deref().filter(|s| !s.trim().is_empty())) {
+            (Some(age), _) => {
+                let d = crate::clock::parse_age(age.trim())
+                    .filter(|d| d.whole_minutes() > 0)
+                    .ok_or_else(|| OttoError::usage(format!("pause for a length of time like 1h or 3d, not \"{age}\"")))?;
+                Some(crate::clock::Timestamp::at(crate::clock::now() + d))
+            }
+            (None, Some(when)) => Some(crate::human::parse_until(when, offset)?),
+            (None, None) => None,
+        };
+        crate::core::pause_run(&id, until, body.reason.filter(|r| !r.trim().is_empty()))
+    })
+    .await
+}
+
 pub async fn agent_status() -> Response {
     blocking(crate::launchd::agent_status).await
 }

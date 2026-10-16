@@ -226,6 +226,12 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         if let Some(check) = state.check.as_mut() {
             check.consecutive_no_change = 0;
         }
+        // A pause whose time has come is over; one still holding stays — a person started this
+        // wake by hand, and the pause still holds back the scheduled ones after it.
+        if state.paused.is_some() && !state.is_paused() {
+            state.paused = None;
+            crate::event::record(path, &Event::Unpaused { by: "time".to_string() })?;
+        }
         crate::event::record(
             path,
             &Event::WakeStarted {
@@ -367,6 +373,7 @@ fn finish_wake(
                     wake.outcome = Some(WakeOutcome::Complete);
                 }
                 state.incomplete_wakes = 0;
+                state.clear_start_failures();
                 // Only a wake that met the contract delivers its notes; a crashed one leaves them
                 // for the next wake to be given again.
                 if let Some(n) = state.wake.as_ref().map(|w| w.n) {
@@ -408,6 +415,12 @@ fn finish_wake(
                     let next = record_usage_limited(id, limit)?;
                     println!("wake stopped by the usage limit — sleeping until {next}\n  what it said: {}", dump.display());
                 }
+                None if couldnt_start(output, result, started_at.elapsed().unwrap_or_default())
+                    && contract::handoff_is_fresh(run_path, started_at, 0).is_err() =>
+                {
+                    let next = record_start_failure(id, &claude_said(output).unwrap_or_else(|| why.clone()))?;
+                    println!("the wake never got going — retrying at {next}\n  what it said: {}", dump.display());
+                }
                 None => {
                     record_incomplete(id, why)?;
                     println!("wake incomplete — {why}\n  what it said: {}", dump.display());
@@ -446,6 +459,70 @@ pub fn record_usage_limited(id: &str, limit: &transcript::UsageLimit) -> Result<
     Ok(next)
 }
 
+/// How long a wake with no readable transcript may have run and still count as never having got
+/// going. A real wake spends longer than this just orienting.
+const COULDNT_START_SECONDS: u64 = 30;
+
+/// Whether a failed wake never got going at all: claude exited non-zero having produced nothing —
+/// no output tokens, or, with no transcript to read, within seconds. (The caller also requires that
+/// it never rewrote the handoff: a wake that did that got going, whatever else happened.) Seen as
+/// five wakes in a row of two live runs, one turn and zero tokens each, every one printing "Failed
+/// to authenticate: OAuth session expired and could not be refreshed": the runs were fine, the
+/// login was not, and blocking each run on a gate asked its owner a question about their account
+/// dressed up as a question about the work. They sat blocked for five days.
+pub fn couldnt_start(output: &Output, result: &WakeResult, ran: Duration) -> bool {
+    if output.code == 0 || output.timed_out {
+        return false;
+    }
+    match &result.usage {
+        Some(usage) => usage.output_tokens == 0,
+        None => ran < Duration::from_secs(COULDNT_START_SECONDS),
+    }
+}
+
+/// The first thing claude printed, when it printed anything — for a wake that couldn't start, that
+/// is the whole story ("Failed to authenticate: …").
+fn claude_said(output: &Output) -> Option<String> {
+    [output.stdout.as_str(), output.stderr.as_str()]
+        .iter()
+        .flat_map(|text| text.lines())
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| crate::exec::truncate(line, 200))
+}
+
+/// Record a wake that never got going, and try again later — for as long as it takes. Not counted
+/// toward `maxIncompleteWakes`: nothing about the run is wrong, so nothing about it should block.
+/// Poke tells the person after a few in a row (`notify`), and the list says so; the backoff caps at
+/// an hour, so a run comes back within the hour of whatever broke being fixed.
+pub fn record_start_failure(id: &str, why: &str) -> Result<Timestamp, OttoError> {
+    let mut next = Timestamp::now();
+    transaction(id, |path, state| {
+        if let Some(wake) = state.wake.as_mut() {
+            wake.outcome = Some(WakeOutcome::Incomplete);
+        }
+        state.start_failures += 1;
+        state.start_failure = Some(why.to_string());
+        let consecutive = state.start_failures;
+        crate::event::record(path, &Event::StartFailed { reason: why.to_string(), consecutive })?;
+        next = Timestamp::in_minutes(crate::poke::backoff_minutes(consecutive));
+        // With a question open the run waits on the person, as it did before this wake.
+        if state.gate.is_some() {
+            if state.status != Status::Blocked {
+                state.status = Status::AwaitingHuman;
+            }
+            return Ok(());
+        }
+        state.status = Status::Sleeping;
+        state.next_wake_at = Some(next);
+        crate::event::record(
+            path,
+            &Event::TimerArmed { next_wake_at: next, note: Some("couldn't start; retrying".to_string()) },
+        )
+    })?;
+    Ok(next)
+}
+
 /// Record a wake that did not finish, and arrange for another attempt.
 ///
 /// Shared with `poke`, which reaches the same conclusion by a different route: it kills a wake
@@ -463,6 +540,8 @@ pub fn record_incomplete(id: &str, why: &str) -> Result<(), OttoError> {
             wake.outcome = Some(WakeOutcome::Incomplete);
         }
         state.incomplete_wakes += 1;
+        // This one got going, so whatever kept wakes from starting is over.
+        state.clear_start_failures();
         consecutive = state.incomplete_wakes;
         crate::event::record(path, &Event::WakeIncomplete { reason: why_owned.clone(), consecutive })?;
         if limit > 0 && consecutive >= limit {
@@ -507,20 +586,42 @@ fn describe_stop(state: &RunState) -> String {
 /// `blocked` on its own would strand the run, so a gate goes with it — the contract this
 /// module enforces applies to otto's own writes too.
 fn open_stuck_gate(id: &str, why: &str, consecutive: u32) -> Result<(), OttoError> {
+    let short = crate::paths::short_id(id);
     let question = format!(
-        "Run `{id}` has failed to finish a wake {consecutive} times in a row and has stopped \
-         retrying.\n\nThe last failure was: {why}\n\nA wake \"fails\" when it exits without \
-         leaving the run somewhere anything could resume it — no gate open, no wake time set — \
-         or without rewriting `handoff.md`. That usually means the wrapped instructions are \
-         asking for something a wake cannot do (waiting for an interactive answer, most often), \
-         or the work genuinely cannot proceed.\n\n## Options\n\n\
-         - **Retry** — clear the counter and wake it again; right if you have fixed the cause.\n\
-         - **Stop the run** — retire it (`otto stop {id}`).\n\
-         - **Investigate** — read `otto logs {id}` and the journal first; the run stays blocked \
-         meanwhile.\n\nDefault: investigate. Nothing further happens on its own."
+        "# I keep stopping before I finish\n\n\
+         I started work {consecutive} times in a row and each time stopped without leaving things where \
+         I could pick them up again, so I've stopped trying until you say.\n\n\
+         The last time: {}\n\n\
+         That usually means my instructions ask for something I can't do on my own — most often waiting \
+         for a reply in the session, which nobody is there to give — or the work is stuck on something \
+         outside me. What each attempt said is in its log (`otto logs {short}`).\n\n\
+         ## Options\n\n\
+         - **Retry** — try again; right once the cause is fixed.\n\
+         - **Stop** — retire this run.\n\n\
+         Nothing happens until you answer.",
+        plain_failure(why)
     );
-    crate::state::ops::open_gate(id, "wake-stuck", &question, None)?;
+    crate::state::ops::open_gate(id, "keeps-stopping", &question, None)?;
     Ok(())
+}
+
+/// A contract failure (`contract::stopping_state_is_legal`, `handoff_is_fresh`), said for a person.
+/// The original rides along in brackets, because it is what the logs will show.
+fn plain_failure(why: &str) -> String {
+    let said = if why.contains("killed at its deadline") {
+        "it ran past its time limit and was stopped"
+    } else if why.contains("nothing would ever bring this run back") || why.contains("nextWakeAt is unset") {
+        "it stopped without asking anything or saying when to come back"
+    } else if why.contains("was not written") || why.contains("was not rewritten") || why.contains("is empty") {
+        "it stopped without writing down where it got to"
+    } else if why.contains("over the") && why.contains("cap") {
+        "its notes for next time grew past their size limit"
+    } else if why.contains("no gate open") {
+        "it said it was waiting on you without asking a question"
+    } else {
+        "it stopped part-way"
+    };
+    format!("{said} ({why}).")
 }
 
 fn block_on_budget(id: &str, why: &str) -> Result<(), OttoError> {
@@ -811,6 +912,97 @@ mod tests {
         (at.dt() - crate::clock::now()).whole_minutes()
     }
 
+    /// What two live runs' wakes did five times in a row each while the login had lapsed: one turn,
+    /// no tokens, exit 1, and one line on stdout.
+    fn couldnt_authenticate(id: &'static str, exec: &mut FakeExec) {
+        exec.queue(Output {
+            code: 1,
+            stdout: "Failed to authenticate: OAuth session expired and could not be refreshed\n".into(),
+            stderr: String::new(),
+            timed_out: false,
+        });
+        exec.on_exec(move || leave_transcript(id, 1, 0, 0, 0));
+    }
+
+    #[test]
+    fn a_wake_that_never_got_going_retries_without_ever_blocking() {
+        let _h = TempHome::new();
+        test_init("w-auth", "a goal").unwrap();
+        age_handoff("w-auth");
+        for n in 1..=7u32 {
+            let mut exec = FakeExec::new();
+            couldnt_authenticate("w-auth", &mut exec);
+            run_wake(&args("w-auth"), &mut exec).unwrap();
+            let state = read_run("w-auth").unwrap();
+            assert_eq!(state.start_failures, n);
+            assert_eq!(state.incomplete_wakes, 0, "nothing about the run failed");
+            assert_eq!(state.status, Status::Sleeping, "never blocked, never a question: attempt {n}");
+            assert!(state.gate.is_none());
+            assert!(minutes_until(state.next_wake_at.unwrap()) <= crate::poke::backoff_minutes(n));
+        }
+        let state = read_run("w-auth").unwrap();
+        assert_eq!(
+            state.start_failure.as_deref(),
+            Some("Failed to authenticate: OAuth session expired and could not be refreshed"),
+            "what claude said is what tells a person what to fix"
+        );
+        assert!(!state.check_gates_wake(), "the retry is a real wake, not a check's opinion");
+        let glance = crate::story::glance(&state, false, None, None);
+        assert!(glance.line.contains("Log in again"), "{}", glance.line);
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-auth").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""event":"start-failed""#));
+        assert!(!journal.contains("wake-incomplete"));
+
+        // The login is fixed: the next wake gets going, and the streak is over.
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-auth"));
+        run_wake(&args("w-auth"), &mut exec).unwrap();
+        let state = read_run("w-auth").unwrap();
+        assert_eq!((state.start_failures, state.start_failure.as_deref()), (0, None));
+    }
+
+    /// A wake that wrote its handoff got going, whatever else happened to it.
+    #[test]
+    fn a_wake_that_wrote_its_handoff_and_then_crashed_is_a_failure_not_a_non_start() {
+        let _h = TempHome::new();
+        test_init("w-wrote", "a goal").unwrap();
+        age_handoff("w-wrote");
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 1, stdout: "Failed to authenticate".into(), stderr: String::new(), timed_out: false });
+        exec.on_exec(|| {
+            write_handoff_only("w-wrote");
+            leave_transcript("w-wrote", 1, 0, 0, 0);
+        });
+        run_wake(&args("w-wrote"), &mut exec).unwrap();
+        let state = read_run("w-wrote").unwrap();
+        assert_eq!((state.incomplete_wakes, state.start_failures), (1, 0));
+    }
+
+    /// A pause whose time has passed is cleared by the next wake; one still holding stays, since a
+    /// wake a person starts by hand does not lift it.
+    #[test]
+    fn a_wake_clears_a_pause_that_has_run_out_and_keeps_one_that_has_not() {
+        let _h = TempHome::new();
+        test_init("w-pause", "a goal").unwrap();
+        crate::core::pause_run("w-pause", Some(Timestamp::in_minutes(60)), None).unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-pause"));
+        run_wake(&args("w-pause"), &mut exec).unwrap();
+        assert!(read_run("w-pause").unwrap().is_paused(), "a wake by hand leaves the pause in place");
+
+        transaction("w-pause", |_p, s| {
+            s.paused.as_mut().unwrap().until = Some(Timestamp::in_minutes(-1));
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-pause"));
+        run_wake(&args("w-pause"), &mut exec).unwrap();
+        assert!(read_run("w-pause").unwrap().paused.is_none());
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-pause").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""event":"unpaused","by":"time""#), "got: {journal}");
+    }
+
     /// The period: a wake that did its work and said nothing about when to come back sleeps
     /// for the run's own period, measured from when it started.
     #[test]
@@ -936,7 +1128,7 @@ mod tests {
         let state = read_run("w-stuck").unwrap();
         assert_eq!(state.status, Status::Blocked);
         assert!(state.gate.is_some(), "blocked without a gate would strand the run");
-        assert_eq!(state.gate.as_ref().unwrap().slug, "wake-stuck");
+        assert_eq!(state.gate.as_ref().unwrap().slug, "keeps-stopping");
         let blocked = state.blocked.as_ref().expect("a blocked run says why");
         assert_eq!(blocked.cause, crate::state::BlockedCause::WakeFailures);
         assert!(blocked.detail.as_deref().unwrap_or("").contains("nothing would ever bring this run back"));
@@ -1091,6 +1283,8 @@ mod tests {
         let _h = TempHome::new();
         test_init("w-blind", "a goal").unwrap();
         let mut exec = FakeExec::new();
+        // It got going — it rewrote the handoff — so this is a failed wake, not one that never started.
+        exec.on_exec(|| write_handoff_only("w-blind"));
         exec.queue(Output {
             code: 1,
             stdout: "some narration".into(),

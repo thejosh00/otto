@@ -133,6 +133,13 @@ pub fn decide(
         return Decision::base(&run_id, Action::Skip, "a wake is running".to_string());
     }
 
+    // A person paused it: nothing scheduled starts — not the period, a timer, a check, or an
+    // expiring gate. Past its `until` it holds no longer, and the wake that follows clears it.
+    if state.paused_at(now) {
+        let until = state.paused.as_ref().and_then(|p| p.until).map(|u| format!(" until {u}")).unwrap_or_default();
+        return Decision::base(&run_id, Action::Skip, format!("paused{until}"));
+    }
+
     if let Some(gate) = &state.gate {
         // A gate is nobody else's business: a person answers it, and `otto answer` starts the
         // next wake. An expired gate falls through to the due-time path below instead.
@@ -710,6 +717,34 @@ mod tests {
             state.next_wake_at = Some(at(now() - Duration::hours(30)));
             assert_eq!(decide_with(&state, &idle()).action, Action::Reap, "{status:?}");
         }
+    }
+
+    /// A pause holds back everything scheduled: a due wake, a check in front of one, an expiring
+    /// gate. Past its `until` it holds nothing.
+    #[test]
+    fn a_paused_run_is_left_alone_until_its_pause_runs_out() {
+        let mut state = due_with_check("r", a_check(24));
+        state.paused = Some(crate::state::Pause { at: at(now() - Duration::hours(1)), until: None, reason: None });
+        let decision = decide_with(&state, &idle());
+        assert_eq!((decision.action, decision.reason.as_str()), (Action::Skip, "paused"));
+
+        state.check = None;
+        state.paused.as_mut().unwrap().until = Some(at(now() + Duration::hours(2)));
+        assert_eq!(decide_with(&state, &idle()).action, Action::Skip);
+
+        state.paused.as_mut().unwrap().until = Some(at(now() - Duration::minutes(1)));
+        assert_eq!(decide_with(&state, &idle()).action, Action::Spawn, "its time is up: the missed wake comes now");
+    }
+
+    /// A wake still running when its run was paused is not killed for it — but one past its
+    /// deadline still is.
+    #[test]
+    fn a_pause_does_not_spare_a_stuck_wake() {
+        let mut state = base_state("r");
+        state.paused = Some(crate::state::Pause { at: at(now()), until: None, reason: None });
+        state.wake = Some(wake_with(3, at(now() - Duration::hours(1)), 4242));
+        let busy = FakeLiveness::with_running(&["r"]);
+        assert_eq!(decide_with(&state, &busy).action, Action::Kill);
     }
 
     #[test]

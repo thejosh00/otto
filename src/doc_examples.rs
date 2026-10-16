@@ -241,6 +241,11 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         Renumbered { from: s() },
         CheckCleared { script: s(), by: s() },
         Notified { key: s(), title: s(), message: s() },
+        MessageSent { message: s(), kind: crate::messages::MessageKind::Report, title: s(), file: s() },
+        MessageDone { message: s(), reply: some(), note: some() },
+        Paused { until: Some(at), reason: some() },
+        Unpaused { by: s() },
+        StartFailed { reason: s(), consecutive: 1 },
     ];
     for event in &events {
         match event {
@@ -253,7 +258,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
             | NoteAdded { .. } | NotesDelivered { .. } | NoteDropped { .. } | CheckSet { .. }
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
-            | Notified { .. } => {}
+            | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
+            | StartFailed { .. } => {}
         }
     }
     events

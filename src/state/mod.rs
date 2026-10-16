@@ -272,6 +272,34 @@ pub struct Note {
     pub given_to_wake: Option<u32>,
 }
 
+/// A message the run has sent a person and that is still waiting for them (see `messages`). The
+/// message itself — its body, any draft, what it attached — lives in `messages/NNN-<slug>.*`; this
+/// is the index the inbox reads, so listing what needs a person never scans a run's history. A
+/// message leaves this list when the person marks it done, and its files stay.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenMessage {
+    pub id: String,
+    pub kind: crate::messages::MessageKind,
+    pub title: String,
+    /// The message's metadata file, relative to the run directory (`messages/004-report.json`).
+    pub file: String,
+    #[serde(rename = "sentAt")]
+    pub sent_at: crate::clock::Timestamp,
+}
+
+/// A person has paused the run: poke starts no wake for it — not the period's, not a timer's, not
+/// a check script's — until `until`, or until they resume it. A wake already running finishes, and
+/// a person can still answer, note or wake it by hand; a pause holds back only what is scheduled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Pause {
+    pub at: crate::clock::Timestamp,
+    /// `None`: until a person resumes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<crate::clock::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// What an opt-in check script (DESIGN.md §8) reported. `Changed` and `Error` are handled
 /// identically by poke — both spawn a wake — but kept distinct in the journal so a person can
 /// tell "the PR moved" from "the script broke" in `otto logs`.
@@ -514,6 +542,16 @@ pub struct RunState {
     pub check: Option<Check>,
     #[serde(rename = "incompleteWakes", default)]
     pub incomplete_wakes: u32,
+    /// Wakes in a row that never got going: claude exited straight away, having done nothing
+    /// (`wake::couldnt_start`). Kept apart from `incompleteWakes` because the cause is the machine —
+    /// an account out of credit, a login that lapsed — not the run, so these back off and retry for
+    /// as long as it takes and never block the run on a question its owner cannot answer.
+    #[serde(rename = "startFailures", default, skip_serializing_if = "is_zero")]
+    pub start_failures: u32,
+    /// What claude said the last time a wake couldn't start — "Failed to authenticate: OAuth
+    /// session expired" — since that, not otto's account of it, is what tells a person what to fix.
+    #[serde(rename = "startFailure", default, skip_serializing_if = "Option::is_none")]
+    pub start_failure: Option<String>,
     /// Why `status` is `blocked`, when it is. Set through `block`; cleared by `transaction`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<Blocked>,
@@ -551,6 +589,16 @@ pub struct RunState {
     /// Notes a person has left for the run that are still to be delivered, and standing ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// Messages the run has sent that the person has not yet marked done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<OpenMessage>,
+    /// Set while a person has paused the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<Pause>,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// `k=v` pairs. Values are JSON when parseable (so `prNumber=42` is a number), else the literal
@@ -748,6 +796,25 @@ impl RunState {
         self.armed_wake_at.is_some() && self.armed_wake_at == self.next_wake_at
     }
 
+    /// A wake got going, or a person started over: whatever kept wakes from starting is behind it.
+    pub fn clear_start_failures(&mut self) {
+        self.start_failures = 0;
+        self.start_failure = None;
+    }
+
+    /// Whether a person's pause is holding back the run's scheduled wakes right now. A pause whose
+    /// `until` has passed no longer holds; the next wake clears it.
+    pub fn is_paused(&self) -> bool {
+        self.paused_at(crate::clock::now())
+    }
+
+    pub fn paused_at(&self, now: time::OffsetDateTime) -> bool {
+        match &self.paused {
+            Some(pause) => pause.until.is_none_or(|until| until.dt() > now),
+            None => false,
+        }
+    }
+
     /// Whether the run is asleep until the account's usage limit resets (`limitedUntil`).
     pub fn usage_limited(&self) -> bool {
         self.limited_until.is_some() && self.limited_until == self.next_wake_at
@@ -767,6 +834,7 @@ impl RunState {
                 self.status == Status::Sleeping
                     && self.gate.is_none()
                     && self.incomplete_wakes == 0
+                    && self.start_failures == 0
                     && !self.usage_limited()
                     && !(check.pinned && self.wake_armed_timer())
             }
@@ -797,7 +865,8 @@ impl RunState {
     /// The cause `set-status --status blocked` means when the wake did not say: the stall guard,
     /// if its counter is what tripped; otherwise the instructions themselves decided.
     pub fn inferred_block_cause(&self) -> BlockedCause {
-        let limit = self.policy.max_ticks_without_progress;
+        // A perpetual run has no stall guard (`commands::tick`), so its counter never means one.
+        let limit = if self.policy.perpetual { 0 } else { self.policy.max_ticks_without_progress };
         if limit > 0 && i64::from(self.ticks_without_progress) >= limit {
             BlockedCause::Stall
         } else {
@@ -929,6 +998,8 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         wake: None,
         check: None,
         incomplete_wakes: 0,
+        start_failures: 0,
+        start_failure: None,
         blocked: None,
         spawn_attempts: 0,
         last_spawned_at: None,
@@ -944,6 +1015,8 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         authorizations: Map::new(),
         notified: BTreeMap::new(),
         notes: Vec::new(),
+        messages: Vec::new(),
+        paused: None,
     }
 }
 

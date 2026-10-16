@@ -38,6 +38,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `usage-limited` | `limit`, `resetsAt` | It ran into the account's usage limit (`limit` is claude's name for which, e.g. `five_hour`). Not counted as incomplete: the run sleeps until `resetsAt` |
 | `wake-killed` | `reason` | Poke killed a wake past its deadline |
 | `spawn-abandoned` | `reason` | Poke gave up trying to start a wake that never started (said once) |
+| `start-failed` | `reason`, `consecutive` | A wake never got going — claude exited at once, having done nothing; `reason` is what it printed. Retried on a backoff for as long as it takes, never counted toward blocking the run |
 
 ## Waiting
 
@@ -61,6 +62,10 @@ the budget events, the wake failures, and `usage-limited`.
 | `notes-delivered` | `notes`, `wake` | A completed wake carried these one-off notes |
 | `note-dropped` | `note`, `standing` | A person withdrew a note |
 | `notified` | `key`, `title`, `message` | Poke sent a desktop notification |
+| `message-sent` | `message`, `kind`, `title`, `file` | A wake sent the person a message (`otto state message`): a `report`, a `draft` or an `update` |
+| `message-done` | `message`, `reply`, `note` | The person marked it done (`otto inbox done`); a `reply` became `note` |
+| `paused` | `until`, `reason` | A person paused the run (`otto pause`) |
+| `unpaused` | `by` | The pause ended: by a `person` (`otto resume`) or `time` |
 
 ## Budgets, locks and authorizations
 
