@@ -85,6 +85,9 @@ pub struct MessageMeta {
     /// Paths, relative to the run directory, of files the message points at (a full report, a plan).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    /// The output version it is about (`design@2`), shown as a card that opens it (`outputs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub done_at: Option<Timestamp>,
     /// What the person replied when they marked it done, verbatim.
@@ -101,6 +104,9 @@ pub struct MessageView {
     pub meta: MessageMeta,
     pub text: String,
     pub attached: Vec<Attachment>,
+    /// What `output` points at, as it is now — its draft and whether it still waits on the person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_ref: Option<crate::outputs::OutputRef>,
     /// Still in the person's inbox.
     pub open: bool,
 }
@@ -120,6 +126,8 @@ pub struct Outgoing<'a> {
     pub body: &'a str,
     pub draft: Option<&'a str>,
     pub attachments: &'a [String],
+    /// An output's key, or key@version, the message is about.
+    pub output: Option<&'a str>,
 }
 
 fn next_number(dir: &Path) -> Result<u64, OttoError> {
@@ -193,6 +201,7 @@ pub fn send(run_id: &str, out: &Outgoing) -> Result<OpenMessage, OttoError> {
     crate::state::transaction(run_id, |path, state| {
         let attachments =
             out.attachments.iter().map(|a| check_attachment(path, a)).collect::<Result<Vec<_>, _>>()?;
+        let output = out.output.map(|o| crate::outputs::resolve_about(path, o)).transpose()?;
         let dir = path.join(MESSAGES_DIR);
         std::fs::create_dir_all(&dir)?;
         let id = format!("{:03}", next_number(&dir)?);
@@ -209,6 +218,7 @@ pub fn send(run_id: &str, out: &Outgoing) -> Result<OpenMessage, OttoError> {
             body: body_file.clone(),
             draft: draft.map(str::to_string),
             attachments,
+            output,
             done_at: None,
             reply: None,
         };
@@ -292,7 +302,8 @@ fn view(dir: &Path, meta: MessageMeta, open: bool) -> MessageView {
                 .and_then(|bytes| String::from_utf8(bytes).ok()),
         })
         .collect();
-    MessageView { meta, text, attached, open }
+    let output_ref = meta.output.as_deref().and_then(|o| crate::outputs::reference(dir, o));
+    MessageView { meta, text, attached, output_ref, open }
 }
 
 /// What marking a message done did.
@@ -368,7 +379,7 @@ mod tests {
     use crate::state::read_run;
 
     fn report(title: &str) -> Outgoing<'_> {
-        Outgoing { kind: MessageKind::Report, title, body: "It isn't the model.\n\n## Why\n\nStale index.", draft: None, attachments: &[] }
+        Outgoing { kind: MessageKind::Report, title, body: "It isn't the model.\n\n## Why\n\nStale index.", draft: None, attachments: &[], output: None }
     }
 
     #[test]
@@ -430,6 +441,7 @@ mod tests {
             body: "Their key is on the default tier.",
             draft: Some("Hi Sam! Your key is on the default tier."),
             attachments: &attachments,
+            output: None,
         };
         send("m-att", &out).unwrap();
         let view = read("m-att", Some("1")).unwrap();

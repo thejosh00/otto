@@ -46,6 +46,18 @@ fn next_gate_number(gates_dir: &std::path::Path) -> Result<u64, OttoError> {
 /// file's path, for a caller that wants to say where it lives — the CLI prints it; an internal
 /// caller usually just needs the write to have happened.
 pub fn open_gate(id: &str, slug: &str, question: &str, expires_at: Option<Timestamp>) -> Result<String, OttoError> {
+    open_gate_about(id, slug, question, expires_at, None)
+}
+
+/// `open_gate`, for a question about an output: `about` is its key, or `key@version`, and the
+/// answer is kept on that version as the person's review of it (`outputs::record_review`).
+pub fn open_gate_about(
+    id: &str,
+    slug: &str,
+    question: &str,
+    expires_at: Option<Timestamp>,
+    about: Option<&str>,
+) -> Result<String, OttoError> {
     if question.trim().is_empty() {
         return Err(OttoError::usage("a gate question must not be empty — it has to be answerable cold"));
     }
@@ -54,6 +66,7 @@ pub fn open_gate(id: &str, slug: &str, question: &str, expires_at: Option<Timest
         if let Some(existing) = &state.gate {
             return Err(OttoError::conflict(format!("gate {} is already open — close it first", existing.id)));
         }
+        let about = about.map(|a| crate::outputs::resolve_about(path, a)).transpose()?;
         let gates_dir = path.join("gates");
         std::fs::create_dir_all(&gates_dir)?;
         let used = next_gate_number(&gates_dir)?;
@@ -81,6 +94,7 @@ pub fn open_gate(id: &str, slug: &str, question: &str, expires_at: Option<Timest
             asked_at: asked,
             answered_at: None,
             expires_at,
+            about: about.clone(),
         });
         // A run that is already `blocked` stays blocked: the gate is how a person unblocks
         // it, and flattening that to `awaiting_human` would lose the distinction between
@@ -95,7 +109,7 @@ pub fn open_gate(id: &str, slug: &str, question: &str, expires_at: Option<Timest
             state.next_wake_at = Some(e);
         }
         gate_file_path = gate_file.display().to_string();
-        crate::event::record(path, &Event::GateOpened { gate: gate_id, slug, phase: state.phase.clone(), expires_at })
+        crate::event::record(path, &Event::GateOpened { gate: gate_id, slug, phase: state.phase.clone(), expires_at, about })
     })?;
     Ok(gate_file_path)
 }
@@ -132,6 +146,11 @@ pub fn close_gate(id: &str, answer: Option<&str>, status: Status) -> Result<(), 
         state.status = status;
         state.next_wake_at = None;
         let answer_text = answer_text.trim_end().to_string();
+        if let (Some(about), false) = (&gate.about, expired) {
+            // Best effort: the answer is in the gate file and the journal whatever happens here, and
+            // an unreadable outputs index must not stop a person answering.
+            let _ = crate::outputs::record_review(path, about, &gate.id, &answer_text, answered);
+        }
         crate::event::record(
             path,
             &if expired {

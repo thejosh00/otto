@@ -252,6 +252,10 @@ pub struct Gate {
     pub answered_at: Option<crate::clock::Timestamp>,
     #[serde(rename = "expiresAt")]
     pub expires_at: Option<crate::clock::Timestamp>,
+    /// The output version the question is about (`design@1`): its answer is kept on that version
+    /// as the person's review of it (`outputs::record_review`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
 }
 
 /// A person's note to the run, outside any gate: guidance on how to do the work, handed to the

@@ -56,7 +56,7 @@ the budget events, the wake failures, and `usage-limited`.
 
 | Event | Fields | When |
 |---|---|---|
-| `gate-opened` | `gate`, `slug`, `phase`, `expiresAt` | A wake asked a question |
+| `gate-opened` | `gate`, `slug`, `phase`, `expiresAt`, `about` | A wake asked a question; `about` is the output version it asks about (`design@1`), whose review the answer becomes |
 | `gate-closed` | `gate`, `slug`, `askedAt`, `answeredAt`, `answer` | It was answered; `answer` is verbatim |
 | `gate-expired` | same | Its expiry passed with no answer |
 | `note-added` | `note`, `file`, `standing` | A person left a note |
@@ -65,6 +65,9 @@ the budget events, the wake failures, and `usage-limited`.
 | `notified` | `key`, `title`, `message` | Poke sent a desktop notification |
 | `message-sent` | `message`, `kind`, `title`, `file` | A wake sent the person a message (`otto state message`): a `report`, a `draft` or an `update` |
 | `message-done` | `message`, `reply`, `note` | The person marked it done (`otto inbox done`); a `reply` became `note` |
+| `output-published` | `output`, `version`, `title`, `stage`, `file`, `link` | A wake published a version of an output (`otto state publish`) — the first when `version` is 1. Its text is at `file`, or it lives at `link` |
+| `output-state` | `output`, `state`, `by`, `note` | An output was marked `waiting`, `done` or `dropped` — by the `person` ("I sent it", `otto outputs --mark`) or a `wake` (`otto state output-state`) |
+| `stages-set` | `stages` | A wake declared the steps its work moves through (`otto state stages`) |
 | `paused` | `until`, `reason` | A person paused the run (`otto pause`) |
 | `unpaused` | `by` | The pause ended: by a `person` (`otto resume`) or `time` |
 

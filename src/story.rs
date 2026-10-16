@@ -168,8 +168,19 @@ pub struct Timeline {
     pub waiting: Vec<Span>,
     pub paused: Vec<Span>,
     pub looking: Vec<Span>,
+    /// What it published, and when (`outputs`).
+    pub made: Vec<Made>,
     /// The next wake it has scheduled, when one is.
     pub next: Option<Timestamp>,
+}
+
+/// One version of an output, as a mark on the timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct Made {
+    pub at: Timestamp,
+    pub key: String,
+    pub version: u32,
+    pub title: String,
 }
 
 struct Entry {
@@ -200,6 +211,9 @@ fn did_something(lines: &[&Entry]) -> Option<Option<String>> {
     if let Some(own) = own {
         return Some(str_of(&own.value, "message").map(str::to_string).or_else(|| Some(own.event.clone())));
     }
+    if let Some(made) = lines.iter().rev().find(|e| e.event == "output-published") {
+        return Some(str_of(&made.value, "title").map(|t| format!("made: {t}")));
+    }
     if let Some(sent) = lines.iter().rev().find(|e| e.event == "message-sent") {
         return Some(str_of(&sent.value, "title").map(|t| format!("sent you: {t}")));
     }
@@ -221,6 +235,7 @@ pub fn timeline(dir: &Path, state: &RunState) -> Timeline {
     let mut waiting = Vec::new();
     let mut paused = Vec::new();
     let mut looking = Vec::new();
+    let mut made = Vec::new();
     let mut wake_start: Option<usize> = None;
     let mut gate_open: Option<Timestamp> = None;
     let mut pause_start: Option<(Timestamp, Option<Timestamp>)> = None;
@@ -266,6 +281,12 @@ pub fn timeline(dir: &Path, state: &RunState) -> Timeline {
                     }
                 }
             }
+            "output-published" if entry.at.dt() >= from.dt() => made.push(Made {
+                at: entry.at,
+                key: str_of(&entry.value, "output").unwrap_or("").to_string(),
+                version: entry.value.get("version").and_then(Value::as_u64).unwrap_or(1) as u32,
+                title: str_of(&entry.value, "title").unwrap_or("").to_string(),
+            }),
             "check-set" => check_start = check_start.or(Some(entry.at)),
             "check-cleared" => {
                 if let Some(start) = check_start.take() {
@@ -289,7 +310,7 @@ pub fn timeline(dir: &Path, state: &RunState) -> Timeline {
         looking.push(Span { from: clip(check_start.unwrap_or(from)), to: now });
     }
     let next = state.next_wake_at.filter(|_| !state.status.is_terminal() && state.gate.is_none());
-    Timeline { from, now, wakes, waiting, paused, looking, next }
+    Timeline { from, now, wakes, waiting, paused, looking, made, next }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +328,9 @@ pub struct Happening {
     /// The message this is about, when it is about one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The output this is about, when it is about one: its key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
     /// How many times in a row it happened — five failed attempts are one line, not five.
     pub times: u32,
 }
@@ -340,6 +364,8 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
     let all = entries(dir);
     let titles: std::collections::HashMap<String, String> =
         crate::messages::history(dir).into_iter().map(|m| (m.id, m.title)).collect();
+    let made: std::collections::HashMap<String, String> =
+        crate::outputs::index_or_empty(dir).outputs.into_iter().map(|o| (o.key, o.title)).collect();
     let mut out: Vec<Happening> = Vec::new();
     for entry in all.iter().rev() {
         if out.len() > limit {
@@ -348,7 +374,10 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
         }
         let v = &entry.value;
         let at = entry.at;
-        let happening = |kind: &'static str, text: String| Some(Happening { at, kind, text, message: None, times: 1 });
+        let happening = |kind: &'static str, text: String| Some(Happening { at, kind, text, message: None, output: None, times: 1 });
+        let about_output = |kind: &'static str, text: String, key: &str| {
+            Some(Happening { at, kind, text, message: None, output: Some(key.to_string()), times: 1 })
+        };
         let item = match entry.event.as_str() {
             e if !crate::event::OTTO_EVENTS.contains(&e) => {
                 let text = str_of(v, "message").map(|m| first_line(m, 240)).unwrap_or_else(|| e.to_string());
@@ -367,6 +396,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                     str_of(v, "title").unwrap_or("")
                 ),
                 message: str_of(v, "message").map(str::to_string),
+                output: None,
                 times: 1,
             }),
             "message-done" => {
@@ -376,7 +406,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                     Some(reply) => format!("You replied to “{title}”: {}", first_line(reply, 200)),
                     None => format!("You marked “{title}” done"),
                 };
-                Some(Happening { at, kind: "you", text, message: Some(id.to_string()), times: 1 })
+                Some(Happening { at, kind: "you", text, message: Some(id.to_string()), output: None, times: 1 })
             }
             "gate-opened" => happening(
                 "asked",
@@ -390,6 +420,12 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                 // A reply to a message is told as the reply, by `message-done`.
                 if text.starts_with("In reply to message ") {
                     None
+                } else if let Some(rest) = text.strip_prefix(crate::outputs::NOTE_ABOUT_PREFIX) {
+                    // "About output design@2, \"Design\":\n\n<words>"
+                    let key = rest.split('@').next().unwrap_or("");
+                    let words = rest.split_once("\n\n").map(|(_, w)| w).unwrap_or("");
+                    let title = made.get(key).cloned().unwrap_or_else(|| key.to_string());
+                    about_output("you", format!("You said about “{title}”: {}", first_line(words, 200)), key)
                 } else {
                     happening("you", format!("{}: {}", if standing { "You pinned" } else { "You said" }, first_line(&text, 200)))
                 }
@@ -428,6 +464,32 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "check-cleared" => happening("status", "Stopped checking for news before each run".to_string()),
             "renamed" => happening("you", format!("You renamed it from {}", str_of(v, "from").unwrap_or("?"))),
             "budget-exhausted" => happening("trouble", format!("Reached its budget: {}", str_of(v, "reason").unwrap_or(""))),
+            "output-published" => {
+                let key = str_of(v, "output").unwrap_or("");
+                let title = str_of(v, "title").unwrap_or(key);
+                let text = match v.get("version").and_then(Value::as_u64).unwrap_or(1) {
+                    1 if v.get("link").is_some() => format!("Linked: {title}"),
+                    1 => format!("Made: {title}"),
+                    n => format!("Updated: {title} (v{n})"),
+                };
+                about_output("made", text, key)
+            }
+            "output-state" => {
+                let key = str_of(v, "output").unwrap_or("");
+                let title = made.get(key).cloned().unwrap_or_else(|| key.to_string());
+                let note = str_of(v, "note").map(|n| format!(" — {n}")).unwrap_or_default();
+                match (str_of(v, "by"), str_of(v, "state")) {
+                    (Some("person"), Some("done")) => about_output("you", format!("You marked “{title}” done"), key),
+                    (Some("person"), Some("dropped")) => about_output("you", format!("You dropped “{title}”"), key),
+                    (_, Some("dropped")) => about_output("status", format!("“{title}” isn't needed any more{note}"), key),
+                    _ => None,
+                }
+            }
+            "stages-set" => {
+                let stages: Vec<&str> =
+                    v.get("stages").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                happening("status", format!("Laid out its steps: {}", stages.join(" → ")))
+            }
             _ => None,
         };
         match (item, out.last_mut()) {
@@ -521,6 +583,7 @@ mod tests {
                 body: "Stale index.",
                 draft: None,
                 attachments: &[],
+                output: None,
             },
         )
         .unwrap();

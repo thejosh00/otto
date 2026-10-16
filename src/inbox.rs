@@ -137,7 +137,7 @@ mod tests {
     use crate::state::commands::test_init;
 
     fn update(title: &str) -> Outgoing<'_> {
-        Outgoing { kind: MessageKind::Update, title, body: "body", draft: None, attachments: &[] }
+        Outgoing { kind: MessageKind::Update, title, body: "body", draft: None, attachments: &[], output: None }
     }
 
     #[test]

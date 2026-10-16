@@ -31,7 +31,8 @@ pub const OTTO_EVENTS: &[&str] = &[
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
-    "message-done", "paused", "unpaused", "start-failed", "handoff-refused",
+    "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
+    "stages-set",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +79,9 @@ pub enum Event {
         phase: String,
         #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
         expires_at: Option<Timestamp>,
+        /// The output version the question is about (`design@1`), when it is about one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        about: Option<String>,
     },
     GateClosed {
         gate: String,
@@ -301,6 +305,32 @@ pub enum Event {
     /// own words (`plain`). Journaled so how often a wake has to rewrite is measured, not guessed.
     HandoffRefused {
         reason: String,
+    },
+    /// A wake published a version of an output (`otto state publish`): its first, when `version`
+    /// is 1. See `outputs`.
+    OutputPublished {
+        output: String,
+        version: u32,
+        title: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stage: Option<String>,
+        /// Where its text is, relative to the run directory — or `link`, for work kept elsewhere.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        link: Option<String>,
+    },
+    /// An output was marked waiting, done or dropped — by the `person` ("I sent it") or a `wake`.
+    OutputState {
+        output: String,
+        state: crate::outputs::OutputState,
+        by: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    /// A wake declared the steps its work moves through (`otto state stages`).
+    StagesSet {
+        stages: Vec<String>,
     },
 }
 

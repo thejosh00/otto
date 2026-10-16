@@ -674,6 +674,10 @@ pub struct OpenGateArgs {
     /// same, relative to now
     #[arg(long = "expires-in", value_name = "SECONDS")]
     pub expires_in: Option<i64>,
+    /// The output the question is about — its key, or key@version — when you need it approved:
+    /// the answer is kept on that version as the person's review of it
+    #[arg(long, value_name = "KEY")]
+    pub about: Option<String>,
 }
 
 /// A thin CLI adapter: resolve `--question`/`--question-file`/`--stdin` and `--expires-at`/
@@ -690,7 +694,7 @@ pub fn open_gate(args: OpenGateArgs) -> Result<(), OttoError> {
         (None, Some(seconds)) => Some(Timestamp::in_seconds(seconds)),
         (None, None) => None,
     };
-    let gate_file_path = super::ops::open_gate(&args.id, &args.slug, &question, expires)?;
+    let gate_file_path = super::ops::open_gate_about(&args.id, &args.slug, &question, expires, args.about.as_deref())?;
     println!("{gate_file_path}");
     Ok(())
 }
@@ -957,6 +961,10 @@ pub struct MessageArgs {
     /// A file in the run directory the message points at, relative to it (repeatable)
     #[arg(long = "attach", value_name = "PATH")]
     pub attach: Vec<String>,
+    /// The output the message is about — its key, or key@version: the inbox shows it as a card that
+    /// opens it, so the message can be the short news and the output the work
+    #[arg(long, value_name = "KEY")]
+    pub output: Option<String>,
 }
 
 /// A wake sends the person something: the result it was asked for, a draft for them to send, news.
@@ -978,9 +986,140 @@ pub fn message(args: MessageArgs) -> Result<(), OttoError> {
             body: &body,
             draft: draft.as_deref(),
             attachments: &args.attach,
+            output: args.output.as_deref(),
         },
     )?;
     println!("{}", open.file);
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PublishArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// What it is, for good: a new key is a new output (a report a day: `2026-10-16-refund-policy-qa`);
+    /// the same key again is the next version of it (`design`)
+    #[arg(long, required = true)]
+    pub key: String,
+    /// What it is in a few words, for a list: "refund-policy-qa: a stale index, not the model"
+    #[arg(long, required = true)]
+    pub title: String,
+    /// The text of this version — a path, or one relative to the run directory (artifacts/design.md)
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
+    /// Read the text from stdin
+    #[arg(long)]
+    pub stdin: bool,
+    /// Or where the work lives, for work kept elsewhere: a ticket, a PR, a page
+    #[arg(long, value_name = "URL")]
+    pub link: Option<String>,
+    /// Which of the run's declared stages it belongs to (`otto state stages`)
+    #[arg(long)]
+    pub stage: Option<String>,
+    /// What it responds to, usually a link: the thread a question was asked in, the ticket
+    #[arg(long)]
+    pub about: Option<String>,
+    /// Text for the person to send on, verbatim — a reply to the question it is about
+    #[arg(long, conflicts_with = "draft_file")]
+    pub draft: Option<String>,
+    /// Read the draft from this file
+    #[arg(long = "draft-file", value_name = "PATH")]
+    pub draft_file: Option<String>,
+    /// Whether it waits on the person; an output with a draft waits until they deal with it
+    #[arg(long, value_enum)]
+    pub state: Option<crate::outputs::OutputState>,
+}
+
+/// A wake keeps something it made where the person can find it again: the run's page lists it
+/// under "Its work", every version of it.
+pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let text = match (&args.file, args.stdin) {
+        (Some(_), true) => return Err(OttoError::usage("give --file or --stdin, not both")),
+        (Some(file), false) => {
+            // A wake runs in its working directory, and its artifacts are in the run directory:
+            // either is where a relative path can mean.
+            let given = std::path::Path::new(file);
+            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
+            let bytes = std::fs::read(&found).map_err(|e| OttoError::usage(format!("cannot read {file}: {e}")))?;
+            let text = String::from_utf8(bytes).map_err(|_| {
+                OttoError::usage(format!("{file} is not text — publish text a person reads, or --link to where the file lives"))
+            })?;
+            let ext = given.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+            Some((text, ext))
+        }
+        (None, true) => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+            Some((buf, "md".to_string()))
+        }
+        (None, false) => None,
+    };
+    let draft = match (&args.draft, &args.draft_file) {
+        (Some(text), _) => Some(text.clone()),
+        (None, Some(path)) => {
+            Some(std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?)
+        }
+        (None, None) => None,
+    };
+    let out = crate::outputs::publish(
+        &id,
+        &crate::outputs::Publish {
+            key: &args.key,
+            title: &args.title,
+            text: text.as_ref().map(|(t, e)| (t.as_str(), e.as_str())),
+            link: args.link.as_deref(),
+            stage: args.stage.as_deref(),
+            about: args.about.as_deref(),
+            draft: draft.as_deref(),
+            state: args.state,
+        },
+    )?;
+    if out.unchanged {
+        println!("{}@{} unchanged — the same as its latest version, so no new one", out.key, out.version);
+    } else {
+        println!("{}@{}", out.key, out.version);
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct StagesArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The steps the work moves through, in order: Research Design Plan
+    #[arg(required = true, num_args = 1..)]
+    pub stages: Vec<String>,
+}
+
+/// Declare the stages a run's work moves through; its page shows them as a track.
+pub fn stages(args: StagesArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let stages = crate::outputs::set_stages(&id, &args.stages)?;
+    println!("{}", stages.join(" → "));
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct OutputStateArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The output's key
+    pub key: String,
+    /// waiting, done, or dropped (not needed any more)
+    #[arg(value_enum)]
+    pub state: crate::outputs::OutputState,
+    /// Why, in a few words: "Sam answered it in the thread"
+    #[arg(long)]
+    pub note: Option<String>,
+}
+
+/// A wake says an output no longer waits on the person — someone else answered the question its
+/// draft was for — or waits again.
+pub fn output_state(args: OutputStateArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let out = crate::outputs::set_state(&id, &args.key, args.state, args.note.as_deref(), "wake")?;
+    println!("{} {}", out.key, args.state.as_str());
     Ok(())
 }
 
@@ -1368,6 +1507,7 @@ mod tests {
                 stdin: false,
                 expires_at: None,
                 expires_in: None,
+                about: None,
             });
             assert!(file.is_ok(), "{file:?}");
             close_gate(CloseGateArgs {
@@ -1405,6 +1545,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
 

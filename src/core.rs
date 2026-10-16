@@ -614,6 +614,8 @@ pub struct RunDetail {
     pub question_title: Option<String>,
     /// What it has sent, newest first, open or done.
     pub messages: Vec<MessageLine>,
+    /// What it has made, kept: its stages and its outputs, newest change first (`outputs::view`).
+    pub outputs: crate::outputs::OutputsView,
     /// Its last week, for a picture.
     pub timeline: crate::story::Timeline,
     /// What has happened lately, in words, newest first.
@@ -711,6 +713,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         messages,
         timeline: crate::story::timeline(&dir, &state),
         lately: crate::story::lately(&dir, LATELY_SHOWN),
+        outputs: crate::outputs::view(&dir, &state),
         todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
         todo,
         activity: activity(&dir, ACTIVITY_SHOWN),
@@ -1358,6 +1361,17 @@ pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, Ott
         wake: None,
         not_woken: None,
     })
+}
+
+/// A note's text, opening with the output it is about when it is about one (`outputs::note_text`).
+pub fn note_about(id: &str, about: Option<&str>, text: &str) -> Result<String, OttoError> {
+    match about.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(about) => {
+            let id = crate::paths::resolve_run_id(id)?;
+            crate::outputs::note_text(&crate::paths::run_dir(&id)?, about, text)
+        }
+        None => Ok(text.to_string()),
+    }
 }
 
 /// `add_note`, then — when `now` — a backgrounded wake to read it.
@@ -2229,6 +2243,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
     }

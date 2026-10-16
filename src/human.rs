@@ -436,6 +436,117 @@ pub fn inbox(args: InboxArgs) -> Result<(), OttoError> {
     Ok(())
 }
 
+#[derive(clap::Args, Debug)]
+pub struct OutputsArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// One output's key: print it in full. Omitted, list them all
+    pub key: Option<String>,
+    /// Which version of it. Omitted, the latest
+    #[arg(long, value_name = "N", requires = "key")]
+    pub version: Option<u32>,
+    /// Mark it done (you sent its draft, you acted on it), waiting again, or dropped
+    #[arg(long, value_enum, requires = "key", conflicts_with = "version")]
+    pub mark: Option<crate::outputs::OutputState>,
+    /// Print as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// What a run has made, listed newest first — or one output in full, with its draft.
+pub fn outputs(args: OutputsArgs) -> Result<(), OttoError> {
+    let id = crate::paths::resolve_run_id(&args.id)?;
+    let state = read_run(&id)?;
+    if let (Some(key), Some(mark)) = (&args.key, args.mark) {
+        let out = crate::outputs::set_state(&id, key, mark, None, "person")?;
+        println!("{} — {}", out.title, mark.as_str());
+        return Ok(());
+    }
+    let dir = crate::paths::run_dir(&id)?;
+    if let Some(key) = &args.key {
+        let v = crate::outputs::read(&id, key, args.version)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&v)?);
+            return Ok(());
+        }
+        let of = v.output.latest().n;
+        println!(
+            "{} · {} · version {}{} · {}",
+            state.label(),
+            v.output.key,
+            v.version.n,
+            if of > 1 { format!(" of {of}") } else { String::new() },
+            crate::clock::relative(v.version.at)
+        );
+        println!("{}
+", v.output.title);
+        if let Some(about) = &v.output.about {
+            println!("about: {about}
+");
+        }
+        match (&v.text, &v.version.link) {
+            (Some(text), _) => println!("{}", text.trim_end()),
+            (None, Some(link)) => println!("{link}"),
+            (None, None) => println!("(its file {} is missing)", v.version.file.as_deref().unwrap_or("?")),
+        }
+        if let Some(draft) = &v.version.draft {
+            println!("\n─── draft to send — otto never sends it for you ───\n{}", draft.trim_end());
+        }
+        for review in &v.version.reviews {
+            println!("\n─── your review, {} ───\n{}", crate::clock::relative(review.at), review.answer.trim_end());
+        }
+        return Ok(());
+    }
+    let view = crate::outputs::view(&dir, &state);
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+    if view.outputs.is_empty() {
+        println!("{} has published nothing yet", state.label());
+        return Ok(());
+    }
+    if !view.stages.is_empty() {
+        let track: Vec<String> = view
+            .stages
+            .iter()
+            .map(|s| match s.status {
+                "done" => format!("✓ {}", s.name),
+                "current" => format!("▸ {}", s.name),
+                _ => s.name.clone(),
+            })
+            .collect();
+        println!("{}\n", track.join("  →  "));
+    }
+    let key_width = view.outputs.iter().map(|o| o.output.key.len()).max().unwrap_or(3).min(40);
+    for line in &view.outputs {
+        let o = &line.output;
+        let n = o.latest().n;
+        let mut tail = Vec::new();
+        if n > 1 {
+            tail.push(format!("v{n}"));
+        }
+        if let Some(stage) = &o.stage {
+            tail.push(stage.clone());
+        }
+        if let Some(st) = o.state {
+            tail.push(st.as_str().to_string());
+        }
+        if line.asking {
+            tail.push("asking you".to_string());
+        }
+        println!(
+            "  {:>8}  {:<key_width$}  {}{}",
+            crate::clock::relative(line.latest_at),
+            clip(&o.key, key_width),
+            o.title,
+            if tail.is_empty() { String::new() } else { format!("  ({})", tail.join(", ")) }
+        );
+    }
+    println!("\n`otto outputs {} <key>` prints one in full", crate::paths::short_id(&id));
+    Ok(())
+}
+
 fn inbox_read(args: InboxReadArgs) -> Result<(), OttoError> {
     let id = crate::paths::resolve_run_id(&args.id)?;
     let state = read_run(&id)?;
@@ -453,6 +564,15 @@ fn inbox_read(args: InboxReadArgs) -> Result<(), OttoError> {
     println!("{}", message.text.trim_end());
     if let Some(draft) = &meta.draft {
         println!("\n─── draft to send — otto never sends it for you ───\n{}", draft.trim_end());
+    }
+    if let Some(output) = &message.output_ref {
+        println!(
+            "\n─── about {} (version {}) — `otto outputs {short} {}` ───",
+            output.title, output.version, output.key
+        );
+        if let (None, Some(draft)) = (&meta.draft, &output.draft) {
+            println!("draft to send — otto never sends it for you:\n{}", draft.trim_end());
+        }
     }
     if !message.attached.is_empty() {
         println!("\n─── attached ───");
@@ -850,8 +970,11 @@ pub struct NoteArgs {
     /// Wake the run now to read it, rather than waiting for its next wake
     #[arg(long)]
     pub now: bool,
+    /// The output the note is about — its key, or key@version — so the run knows which one you mean
+    #[arg(long, value_name = "KEY")]
+    pub about: Option<String>,
     /// Show the run's standing notes and the ones not yet delivered
-    #[arg(long, conflicts_with_all = ["text", "file", "standing", "now", "drop"])]
+    #[arg(long, conflicts_with_all = ["text", "file", "standing", "now", "drop", "about"])]
     pub list: bool,
     /// Withdraw an undelivered note, or retire a standing one, by number
     #[arg(long, value_name = "NOTE", conflicts_with_all = ["text", "file", "standing", "now"])]
@@ -878,6 +1001,7 @@ pub fn note(args: NoteArgs) -> Result<(), OttoError> {
         (_, Some(path)) => std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?,
         (None, None) => return Err(OttoError::usage("give the note: `otto note <run> \"…\"`, or --file <path>")),
     };
+    let text = crate::core::note_about(&args.id, args.about.as_deref(), &text)?;
     let outcome = crate::core::add_note(&args.id, &text, args.standing)?;
     println!("note {} recorded — {}", outcome.note.id, outcome.delivery);
     if !args.now {
@@ -1299,6 +1423,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
     }

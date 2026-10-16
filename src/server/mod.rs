@@ -86,6 +86,8 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/pause", post(handlers::pause))
         .route("/runs/{id}/messages/{message}", get(handlers::message))
         .route("/runs/{id}/messages/{message}/done", post(handlers::message_done))
+        .route("/runs/{id}/outputs/{key}", get(handlers::output))
+        .route("/runs/{id}/outputs/{key}/state", post(handlers::output_state))
         .route("/inbox", get(handlers::inbox))
         .route("/health", get(handlers::health))
         .route("/runs/{id}/logs", get(handlers::logs))
@@ -246,6 +248,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
         let (status, body) =
@@ -269,6 +272,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
         let (status, body) = rt().block_on(send(post_req(
@@ -364,6 +368,7 @@ mod tests {
                 body: "Their key is on the default tier.",
                 draft: Some("Hi Sam!"),
                 attachments: &[],
+                output: None,
             },
         )
         .unwrap();

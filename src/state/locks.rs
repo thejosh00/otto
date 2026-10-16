@@ -355,6 +355,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
         let result = lock(LockArgs { id: "lock-taker-6".into(), repo: "/tmp/repo-g".into(), force: false });

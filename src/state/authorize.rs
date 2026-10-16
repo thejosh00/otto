@@ -191,6 +191,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
         close_gate(CloseGateArgs {
@@ -240,6 +241,7 @@ mod tests {
             stdin: false,
             expires_at: None,
             expires_in: None,
+            about: None,
         })
         .unwrap();
         let result = authorize(AuthorizeArgs {

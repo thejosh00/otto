@@ -801,6 +801,7 @@ mod tests {
             asked_at: Timestamp::now(),
             answered_at: None,
             expires_at,
+            about: None,
         }
     }
 

@@ -17,6 +17,7 @@ mod liveness;
 mod messages;
 mod notes;
 mod notify;
+mod outputs;
 mod paths;
 mod plain;
 mod poke;
@@ -48,6 +49,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Ls(args) => human::ls(args),
         Command::Show(args) => human::show(args),
         Command::Inbox(args) => human::inbox(args),
+        Command::Outputs(args) => human::outputs(args),
         Command::Answer(args) => human::answer(args),
         Command::Pause(args) => human::pause(args),
         Command::Note(args) => human::note(args),
@@ -90,6 +92,9 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::OpenGate(a) => commands::open_gate(a),
         StateCommand::CloseGate(a) => commands::close_gate(a),
         StateCommand::Message(a) => commands::message(a),
+        StateCommand::Publish(a) => commands::publish(a),
+        StateCommand::Stages(a) => commands::stages(a),
+        StateCommand::OutputState(a) => commands::output_state(a),
         StateCommand::SetCheck(a) => commands::set_check(a),
         StateCommand::ArmTimer(a) => commands::arm_timer(a),
         StateCommand::Tick(a) => commands::tick(a),

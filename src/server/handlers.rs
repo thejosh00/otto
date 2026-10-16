@@ -111,10 +111,16 @@ pub struct NoteBody {
     text: String,
     standing: bool,
     now: bool,
+    /// The output it is about, as key or key@version.
+    about: Option<String>,
 }
 
 pub async fn add_note(Path(id): Path<String>, Json(body): Json<NoteBody>) -> Response {
-    blocking(move || crate::core::note_in_background(&id, &body.text, body.standing, body.now)).await
+    blocking(move || {
+        let text = crate::core::note_about(&id, body.about.as_deref(), &body.text)?;
+        crate::core::note_in_background(&id, &text, body.standing, body.now)
+    })
+    .await
 }
 
 pub async fn drop_note(Path((id, note)): Path<(String, String)>) -> Response {
@@ -289,6 +295,38 @@ pub struct MessageDoneBody {
 
 pub async fn message_done(Path((id, message)): Path<(String, String)>, Json(body): Json<MessageDoneBody>) -> Response {
     blocking(move || crate::core::message_done(&id, Some(&message), body.reply.as_deref(), body.now)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutputQuery {
+    /// Which version; the latest when absent.
+    v: Option<u32>,
+}
+
+pub async fn output(Path((id, key)): Path<(String, String)>, Query(q): Query<OutputQuery>) -> Response {
+    blocking(move || {
+        let id = crate::paths::resolve_run_id(&id)?;
+        crate::outputs::read(&id, &key, q.v)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OutputStateBody {
+    state: crate::outputs::OutputState,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// The person marks an output: "I sent it" is `done`.
+pub async fn output_state(Path((id, key)): Path<(String, String)>, Json(body): Json<OutputStateBody>) -> Response {
+    blocking(move || {
+        let id = crate::paths::resolve_run_id(&id)?;
+        crate::outputs::set_state(&id, &key, body.state, body.note.as_deref(), "person")
+    })
+    .await
 }
 
 #[derive(Deserialize, Default)]

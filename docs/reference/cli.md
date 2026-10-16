@@ -205,6 +205,39 @@ Options:
           Print help
 ```
 
+## `otto outputs`
+
+```text
+What a run has made: its reports, documents and drafts, every version kept
+
+Usage: otto outputs [OPTIONS] <ID> [KEY]
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [KEY]
+          One output's key: print it in full. Omitted, list them all
+
+Options:
+      --version <N>
+          Which version of it. Omitted, the latest
+
+      --mark <MARK>
+          Mark it done (you sent its draft, you acted on it), waiting again, or dropped
+
+          Possible values:
+          - waiting: It waits on the person: a draft to send, something to act on
+          - done:    The person has dealt with it — sent the draft, acted on it
+          - dropped: Not needed any more — someone else answered, it was overtaken
+
+      --json
+          Print as JSON
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
 ## `otto answer`
 
 ```text
@@ -256,6 +289,9 @@ Options:
 
       --now
           Wake the run now to read it, rather than waiting for its next wake
+
+      --about <KEY>
+          The output the note is about — its key, or key@version — so the run knows which one you mean
 
       --list
           Show the run's standing notes and the ones not yet delivered
@@ -752,6 +788,9 @@ Commands:
   open-gate         Write the gate file and stop the run on it
   close-gate        Record the answer verbatim and clear the gate
   message           Send the person a message — a report, a draft to send on, an update — to their inbox
+  publish           Keep something the run made where the person can find it: a new key is a new output, the same key again its next version
+  stages            Declare the stages the run's work moves through, in order
+  output-state      Mark an output waiting, done, or not needed any more
   arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
   set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
@@ -1013,6 +1052,9 @@ Options:
       --expires-in <SECONDS>
           same, relative to now
 
+      --about <KEY>
+          The output the question is about — its key, or key@version — when you need it approved: the answer is kept on that version as the person's review of it
+
   -h, --help
           Print help
 ```
@@ -1091,6 +1133,109 @@ Options:
 
       --attach <PATH>
           A file in the run directory the message points at, relative to it (repeatable)
+
+      --output <KEY>
+          The output the message is about — its key, or key@version: the inbox shows it as a card that opens it, so the message can be the short news and the output the work
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+### `otto state publish`
+
+```text
+Keep something the run made where the person can find it: a new key is a new output, the same key again its next version
+
+Usage: otto state publish [OPTIONS] --key <KEY> --title <TITLE> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --key <KEY>
+          What it is, for good: a new key is a new output (a report a day: `2026-10-16-refund-policy-qa`); the same key again is the next version of it (`design`)
+
+      --title <TITLE>
+          What it is in a few words, for a list: "refund-policy-qa: a stale index, not the model"
+
+      --file <PATH>
+          The text of this version — a path, or one relative to the run directory (artifacts/design.md)
+
+      --stdin
+          Read the text from stdin
+
+      --link <URL>
+          Or where the work lives, for work kept elsewhere: a ticket, a PR, a page
+
+      --stage <STAGE>
+          Which of the run's declared stages it belongs to (`otto state stages`)
+
+      --about <ABOUT>
+          What it responds to, usually a link: the thread a question was asked in, the ticket
+
+      --draft <DRAFT>
+          Text for the person to send on, verbatim — a reply to the question it is about
+
+      --draft-file <PATH>
+          Read the draft from this file
+
+      --state <STATE>
+          Whether it waits on the person; an output with a draft waits until they deal with it
+
+          Possible values:
+          - waiting: It waits on the person: a draft to send, something to act on
+          - done:    The person has dealt with it — sent the draft, acted on it
+          - dropped: Not needed any more — someone else answered, it was overtaken
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+### `otto state stages`
+
+```text
+Declare the stages the run's work moves through, in order
+
+Usage: otto state stages <ID> <STAGES>...
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <STAGES>...
+          The steps the work moves through, in order: Research Design Plan
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto state output-state`
+
+```text
+Mark an output waiting, done, or not needed any more
+
+Usage: otto state output-state [OPTIONS] <ID> <KEY> <STATE>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <KEY>
+          The output's key
+
+  <STATE>
+          waiting, done, or dropped (not needed any more)
+
+          Possible values:
+          - waiting: It waits on the person: a draft to send, something to act on
+          - done:    The person has dealt with it — sent the draft, acted on it
+          - dropped: Not needed any more — someone else answered, it was overtaken
+
+Options:
+      --note <NOTE>
+          Why, in a few words: "Sam answered it in the thread"
 
   -h, --help
           Print help (see a summary with '-h')

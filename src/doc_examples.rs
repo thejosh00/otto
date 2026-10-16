@@ -209,7 +209,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         PhaseChanged { from: s(), to: s(), status: s(), note: some() },
         StatusChanged { from: s(), to: s(), reason: some(), because: some(), left_open: vec![s()] },
         FactsRecorded { facts: serde_json::Map::new() },
-        GateOpened { gate: s(), slug: s(), phase: s(), expires_at: Some(at) },
+        GateOpened { gate: s(), slug: s(), phase: s(), expires_at: Some(at), about: some() },
         GateClosed { gate: s(), slug: s(), asked_at: at, answered_at: at, answer: s() },
         GateExpired { gate: s(), slug: s(), asked_at: at, answered_at: at, answer: s() },
         TimerArmed { next_wake_at: at, note: some() },
@@ -247,6 +247,9 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         Unpaused { by: s() },
         StartFailed { reason: s(), consecutive: 1 },
         HandoffRefused { reason: s() },
+        OutputPublished { output: s(), version: 1, title: s(), stage: some(), file: some(), link: some() },
+        OutputState { output: s(), state: crate::outputs::OutputState::Done, by: s(), note: some() },
+        StagesSet { stages: vec![s()] },
     ];
     for event in &events {
         match event {
@@ -260,7 +263,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | NoteAdded { .. } | NotesDelivered { .. } | NoteDropped { .. } | CheckSet { .. }
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
-            | StartFailed { .. } | HandoffRefused { .. } => {}
+            | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }
+            | StagesSet { .. } => {}
         }
     }
     events

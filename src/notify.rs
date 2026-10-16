@@ -234,6 +234,7 @@ mod tests {
             asked_at: Timestamp::at(now() - Duration::hours(asked_hours_ago)),
             answered_at: None,
             expires_at: None,
+            about: None,
         }
     }
 

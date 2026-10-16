@@ -3,7 +3,8 @@ use clap::{Parser, Subcommand};
 use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
     ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
-    OpenGateArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, TailArgs, TickArgs,
+    OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
+    TickArgs,
 };
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
 
@@ -24,6 +25,8 @@ pub enum Command {
     Show(crate::human::ShowArgs),
     /// What every run has put in front of you: questions to answer, and messages to read.
     Inbox(crate::human::InboxArgs),
+    /// What a run has made: its reports, documents and drafts, every version kept.
+    Outputs(crate::human::OutputsArgs),
     /// Answer the open gate, then continue the run.
     Answer(crate::human::AnswerArgs),
     /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
@@ -135,6 +138,13 @@ pub enum StateCommand {
     CloseGate(CloseGateArgs),
     /// Send the person a message — a report, a draft to send on, an update — to their inbox
     Message(MessageArgs),
+    /// Keep something the run made where the person can find it: a new key is a new output, the
+    /// same key again its next version
+    Publish(PublishArgs),
+    /// Declare the stages the run's work moves through, in order
+    Stages(StagesArgs),
+    /// Mark an output waiting, done, or not needed any more
+    OutputState(OutputStateArgs),
     /// Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
     ArmTimer(ArmTimerArgs),
     /// Give the run a standing check script, or remove the one a wake gave it
