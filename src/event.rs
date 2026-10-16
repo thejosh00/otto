@@ -19,6 +19,20 @@ use crate::state::{Budget, CheckResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// The name of every event otto writes, as the journal has it. Anything else in a journal, a wake
+/// wrote with `otto state log`, and that is what a run's activity feed shows (`core::activity`).
+/// By name rather than by type, because otto also writes some of these untyped (the lock events).
+/// A test in `doc_examples` keeps this in step with `Event`, so a variant added without its name
+/// here fails rather than putting otto's bookkeeping in the feed.
+pub const OTTO_EVENTS: &[&str] = &[
+    "run-created", "phase-changed", "status-changed", "facts-recorded", "gate-opened", "gate-closed",
+    "gate-expired", "timer-armed", "tick", "noop-tick", "wake-started", "wake-spent", "usage-unavailable",
+    "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
+    "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
+    "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
+    "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {

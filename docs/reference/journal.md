@@ -6,8 +6,9 @@ later. Read it with `otto logs <id>` (formatted, with `--event`, `--since`, `--d
 `-f`), or `otto state tail <id>` for the raw lines.
 
 The events below are otto's own. Wrapped instructions can also journal anything they like with
-`otto state log <id> --event <name>` — `error` for each real failure, by convention — so a journal
-may contain names not listed here.
+`otto state log <id> --event <name>` — `error` for each real failure, by convention, and one line
+per cycle for a run that repeats — so a journal may contain names not listed here. Those lines are
+the run's [activity](../concepts.md#activity).
 
 `otto logs --decisions` keeps the turning points: `run-created`, `phase-changed`,
 `status-changed`, the gate events, the note events, `check-set`, `check-cleared`, `period-set`,

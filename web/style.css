@@ -273,6 +273,23 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
   .top { gap: 12px; }
 }
 
+/* a run's activity: what its wakes said they did, newest first */
+/* One grid for the whole feed, each line's cells laid straight into it, so the columns line up. */
+.activity { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); gap: 8px 10px; align-items: baseline; line-height: 1.45; overflow-wrap: anywhere; }
+.activity-item { display: contents; }
+.activity-item .event { justify-self: start; }
+.activity-item .when, .last .when { color: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.activity-item .event, .last .event { font-family: var(--mono); font-size: 12px; color: var(--ink-2); background: var(--surface-2); border-radius: 4px; padding: 0 6px; }
+.activity-item.bad .event, .last.bad .event { color: var(--bad); background: var(--bad-soft); }
+@media (max-width: 520px) {
+  .activity { grid-template-columns: max-content minmax(0, 1fr); }
+  .activity-item .text { grid-column: 1 / -1; }
+}
+/* …and its newest line, under the run in the list: one line, cut short */
+.table tr.where .last { -webkit-line-clamp: 1; margin-top: 3px; }
+.table tr.where .last span + span { margin-left: 8px; }
+.table tr.where .last .event { background: var(--line); }
+
 /* a todo's progress: in the runs list under the phase, and atop the run page's todo */
 .progress { margin-top: 6px; max-width: 160px; }
 .card > .progress { max-width: 320px; margin-top: 0; }

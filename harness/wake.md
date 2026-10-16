@@ -122,7 +122,7 @@ Write it as though for a competent stranger, because that is exactly who reads i
 When the work comes in pieces (several targets, several deliverables, steps that span wakes),
 keep `artifacts/todo.md`: the plan of record, one line per piece, marked as you go. otto shows it
 to the person as the run's progress, so it must be true whenever you stop. Skip it for a run that
-only watches or polls, where there is nothing to tick off.
+only watches or repeats, where there is nothing to tick off: its progress is its activity, below.
 
 ```markdown
 # <what this is>
@@ -145,6 +145,23 @@ only watches or polls, where there is nothing to tick off.
   the wrapped instructions keep a ledger of their own, that is the list; don't keep a second one.
 - `set-status done` names any item still `[ ]` or `[~]`. Each one either happened (mark it `[x]`)
   or didn't (mark it `[-]` and say why). Left open, it reads as work that silently never happened.
+
+## Activity
+
+A run that watches or repeats (polling a queue, one proposal a day) has no todo. What the person
+sees instead is its activity: every event you journal with `otto state log`, newest first, on the
+run's page and under the run in the list. So a wake that did something ends with one line saying
+what, for someone skimming:
+
+```
+otto state log <id> --event cycle --message "2 tasks in next: did OMNI-41 (branch fix-flaky), left OMNI-42 for a decision"
+```
+
+- **One line per wake that did something**, not one per step. A wake that found nothing needs no
+  line; `otto state tick` already records it.
+- **Say what happened, not what you ran**: "added 1 talk (Thariq on agents)", not "ran legenda".
+- **The event name the instructions use**, if they have one; otherwise `cycle`. A real failure is
+  `--event error`, as under Recording what happened.
 
 ## When the instructions assume a live session
 

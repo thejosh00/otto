@@ -113,6 +113,15 @@ function pill(status, live = false) {
   return h("span.pill." + statusClass(status) + (live ? ".live" : ""), status.replace("_", " "));
 }
 
+// One line of a run's activity (`core::ActivityLine`): when, the name the wake gave it, and what
+// it said. Untrusted text, like everything a wake wrote — it only ever reaches the DOM as text.
+function activityLine(a, spec = "div.activity-item") {
+  return h(spec + (a.event === "error" ? ".bad" : ""), { title: `${localTime(a.at)} · ${a.event}${a.text ? ": " + a.text : ""}` },
+    h("span.when", relative(a.at)),
+    h("span.event", a.event),
+    h("span.text", a.text));
+}
+
 // A todo's counts (`todo::Counts`) as a bar in the marks' proportions — what's finished leads,
 // what's left trails — over "accounted for / total". `leftOpen` is a done run that wasn't.
 function progressBar(t, leftOpen) {
@@ -314,7 +323,7 @@ function runsView() {
       // A tbody per run, so the run's row and its where-this-is line under it are one thing to
       // hover and click.
       rows.map((r) => h("tbody", { onclick: () => { location.hash = `#/run/${encodeURIComponent(r.id)}`; } },
-        h(r.whereThisIs ? "tr.has-where" : "tr",
+        h(r.whereThisIs || r.lastActivity ? "tr.has-where" : "tr",
           // The name leads — it's what a person recognises; the number underneath is what to type.
           h("td.run",
             h("a", { href: `#/run/${encodeURIComponent(r.id)}`, onclick: (e) => e.stopPropagation() }, r.name || r.id),
@@ -326,10 +335,12 @@ function runsView() {
             r.nextWakeAt && !r.running && !r.terminal ? `${due(r.nextWakeAt)} · ${clockTime(r.nextWakeAt)}` : "—"),
           h("td.mono", { dataset: { label: "period" } }, r.period),
           h("td.mono", { dataset: { label: "wakes" } }, r.wakes)),
-        // The last wake's own account of where the run stands, clamped to two lines; the rest is
-        // on hover and on the run page.
-        r.whereThisIs
-          ? h("tr.where", h("td", { colSpan: columns.length, title: r.whereThisIs }, h("div", r.whereThisIs)))
+        // The last wake's own account of where the run stands, clamped to two lines, and the newest
+        // line of its activity on one; the rest of each is on hover and on the run page.
+        r.whereThisIs || r.lastActivity
+          ? h("tr.where", h("td", { colSpan: columns.length },
+            r.whereThisIs ? h("div", { title: r.whereThisIs }, r.whereThisIs) : null,
+            r.lastActivity ? activityLine(r.lastActivity, "div.last") : null))
           : null)),
     ));
   }
@@ -348,6 +359,7 @@ function runView(id) {
   const facts = h("div");
   const gateBox = h("div");
   const todoBox = h("div");
+  const activityBox = h("div");
   const notesBox = h("div");
   const actions = h("div");
   const panel = h("div");
@@ -356,7 +368,7 @@ function runView(id) {
 
   view.replaceChildren(
     h("p", h("a.faint", { href: "#/" }, "← Runs")),
-    head, facts, todoBox, gateBox, notesBox, actions,
+    head, facts, todoBox, activityBox, gateBox, notesBox, actions,
     h("div.tabs", { role: "tablist" },
       tabButton("logs", "Logs"),
       tabButton("live", "Live wake")),
@@ -387,6 +399,7 @@ function runView(id) {
     renderFacts(d);
     renderGate(d);
     renderTodo(d);
+    renderActivity(d);
     renderNotes(d);
     renderActions(d);
   }
@@ -565,6 +578,17 @@ function runView(id) {
             h("span.mark", { title: name, "aria-label": name }, glyph),
             h("div", line.text, line.detail.length ? h("div.detail", line.detail.join("\n")) : null));
         }))),
+    );
+  }
+
+  // What the run's wakes have said they did, newest first — for a run that watches or repeats,
+  // this is its progress, where a run with an end has its todo. Redrawn every refresh, so the
+  // times stay current; there is nothing in it to lose.
+  function renderActivity(d) {
+    if (!d.activity.length) { activityBox.replaceChildren(); return; }
+    activityBox.replaceChildren(
+      h("h2", "Activity"),
+      h("div.card.activity", { style: "margin-top:10px" }, d.activity.map((a) => activityLine(a))),
     );
   }
 

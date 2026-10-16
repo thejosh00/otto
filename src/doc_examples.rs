@@ -259,6 +259,20 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
     events
 }
 
+/// `event::OTTO_EVENTS` is how the activity feed tells otto's lines from a wake's: a name missing
+/// from it puts otto's bookkeeping in the feed, and a stale one hides a wake's line.
+#[test]
+fn every_event_otto_writes_is_named_as_otto_s() {
+    let names: Vec<String> = one_of_each_event()
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap()["event"].as_str().unwrap().to_string())
+        .collect();
+    for name in &names {
+        assert!(crate::event::OTTO_EVENTS.contains(&name.as_str()), "`{name}` is missing from event::OTTO_EVENTS");
+    }
+    assert_eq!(names.len(), crate::event::OTTO_EVENTS.len(), "event::OTTO_EVENTS names an event otto no longer writes");
+}
+
 /// `journal.md` lists every event otto writes and every field it carries — in the table row that
 /// names the event, or a row that says it has the `same` fields as the one above.
 #[test]

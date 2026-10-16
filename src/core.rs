@@ -230,6 +230,44 @@ pub fn where_this_is(handoff: &str) -> Option<String> {
     (!body.is_empty()).then(|| body.join(" "))
 }
 
+/// One line of a run's activity feed: something a wake journaled about its own work.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityLine {
+    pub at: crate::clock::Timestamp,
+    /// The name the wake gave it: `cycle`, `curated`, `error`, ….
+    pub event: String,
+    /// Its `message`, then any other fields as `key=value`.
+    pub text: String,
+}
+
+/// How much of a run's activity its page shows. The journal has the rest (`otto logs`).
+pub const ACTIVITY_SHOWN: usize = 20;
+
+/// What a run's wakes have said they did, newest first, at most `limit` lines: every journal
+/// entry otto did not write itself (`event::OTTO_EVENTS`), which is to say everything a wake
+/// recorded with `otto state log`. A run that watches or repeats has no todo to tick off, and this
+/// is its progress instead (`harness/wake.md`, "Activity").
+pub fn activity(dir: &std::path::Path, limit: usize) -> Vec<ActivityLine> {
+    let Ok(text) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    text.lines()
+        .rev()
+        .filter_map(|line| {
+            let Value::Object(mut fields) = serde_json::from_str::<Value>(line).ok()? else { return None };
+            let event = fields.remove("event")?.as_str()?.to_string();
+            if crate::event::OTTO_EVENTS.contains(&event.as_str()) {
+                return None;
+            }
+            let at = crate::clock::Timestamp::parse(fields.remove("ts")?.as_str()?).ok()?;
+            let message = fields.remove("message").and_then(|m| m.as_str().map(str::to_string));
+            let extra = fields.iter().map(|(k, v)| format!("{k}={}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
+            let text = message.into_iter().chain(extra).collect::<Vec<_>>().join(" ");
+            Some(ActivityLine { at, event, text })
+        })
+        .take(limit)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LsRow {
@@ -246,6 +284,8 @@ pub struct LsRow {
     pub todo: Option<crate::todo::Counts>,
     /// See `todo_left_open`.
     pub todo_left_open: bool,
+    /// The newest line of its activity feed (`activity`).
+    pub last_activity: Option<ActivityLine>,
     pub wakes: String,
     /// `1h`, `30m`; `—` for a finished run, which will never wake again.
     pub period: String,
@@ -301,6 +341,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         where_this_is: None,
                         todo: None,
                         todo_left_open: false,
+                        last_activity: None,
                         wakes: "?".to_string(),
                         period: "?".to_string(),
                         next_wake_at: None,
@@ -340,6 +381,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         rows.push(LsRow {
             todo_left_open: todo_left_open(&state, todo.as_ref()),
             todo,
+            last_activity: dir.as_deref().and_then(|d| activity(d, 1).into_iter().next()),
             id: state.id.clone(),
             short: short_id_among(&state.id, &all_ids),
             name: state.display_name(),
@@ -441,6 +483,8 @@ pub struct RunDetail {
     pub todo: Option<crate::todo::Todo>,
     /// See `todo_left_open`.
     pub todo_left_open: bool,
+    /// What its wakes have said they did, newest first (`activity`).
+    pub activity: Vec<ActivityLine>,
     /// Standing notes, and one-off notes not yet delivered.
     pub notes: Vec<NoteView>,
     /// `None` means every wake is a full model session — worth saying, since a check is the
@@ -513,6 +557,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     Ok(RunDetail {
         todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
         todo,
+        activity: activity(&dir, ACTIVITY_SHOWN),
         workdir: workdir_view(&state),
         usage: run_usage(&dir),
         short,
@@ -2111,6 +2156,36 @@ mod tests {
         assert!(summary("2026-09-20-fresh").unwrap().contains("No wake has run yet."));
         let json = serde_json::to_value(&view).unwrap();
         assert!(json["rows"][0].get("whereThisIs").is_some(), "the web page reads it in camelCase");
+    }
+
+    /// The feed is what wakes wrote with `otto state log`, newest first — never otto's own lines,
+    /// including the ones otto writes untyped.
+    #[test]
+    fn activity_is_what_wakes_logged_newest_first() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-act", "a goal").unwrap();
+        let dir = crate::paths::run_dir("2026-09-20-act").unwrap();
+        let log = |event: &str, message: &str, data: &[&str]| {
+            crate::state::commands::log(crate::state::commands::LogArgs {
+                id: "2026-09-20-act".into(),
+                event: event.into(),
+                message: Some(message.into()),
+                data: data.iter().map(|d| d.to_string()).collect(),
+            })
+            .unwrap()
+        };
+        log("curated", "added 1 talk", &["picked=3"]);
+        crate::state::journal(&dir, "lock-acquired", serde_json::json!({"repo": "/r"})).unwrap();
+        log("cycle", "nothing new in next", &[]);
+
+        let feed = activity(&dir, 10);
+        let said: Vec<(&str, &str)> = feed.iter().map(|a| (a.event.as_str(), a.text.as_str())).collect();
+        assert_eq!(said, vec![("cycle", "nothing new in next"), ("curated", "added 1 talk picked=3")]);
+        assert_eq!(activity(&dir, 1).len(), 1);
+
+        let row = list_runs(false).unwrap().rows.into_iter().find(|r| r.id == "2026-09-20-act").unwrap();
+        assert_eq!(row.last_activity.unwrap().event, "cycle");
+        assert_eq!(run_detail(Some("act")).unwrap().activity.len(), 2);
     }
 
     #[test]

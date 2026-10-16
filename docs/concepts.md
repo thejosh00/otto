@@ -7,6 +7,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Runs and wakes](#runs-and-wakes)
 - [The handoff](#the-handoff)
 - [The todo](#the-todo)
+- [Activity](#activity)
 - [The contract](#the-contract)
 - [Statuses](#statuses)
 - [When a run wakes: the period and timers](#when-a-run-wakes-the-period-and-timers)
@@ -83,6 +84,20 @@ A run marked `done` with items still `[ ]` or `[~]` is allowed, but never silent
 says so to the wake that did it, the `status-changed` line in the journal lists them, and `otto
 show` and the web page flag the run. A skipped or failed item is accounted for; only one left open
 is work nothing says happened.
+
+## Activity
+
+A run that watches or repeats — an hourly queue check, a daily curation — has nothing to tick off,
+so its progress is what each wake did. A wake that did something journals one line about it:
+
+```bash
+otto state log <id> --event cycle --message "added 1 talk; still no feedback since Oct 5"
+```
+
+Everything a wake journals this way (any event that isn't one of otto's own) is the run's
+**activity**: the newest line shows under the run in the web list and as `last` in `otto show`, and
+the run page lists the last 20. A wake that found nothing writes nothing, so a quiet run's feed
+stays quiet. `otto logs` still has the whole journal.
 
 ## The contract
 
