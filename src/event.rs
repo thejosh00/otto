@@ -31,7 +31,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
-    "message-done", "paused", "unpaused", "start-failed",
+    "message-done", "paused", "unpaused", "start-failed", "handoff-refused",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -296,6 +296,11 @@ pub enum Event {
     StartFailed {
         reason: String,
         consecutive: u32,
+    },
+    /// `otto state handoff` refused a handoff — past its cap, or speaking to the person in otto's
+    /// own words (`plain`). Journaled so how often a wake has to rewrite is measured, not guessed.
+    HandoffRefused {
+        reason: String,
     },
 }
 

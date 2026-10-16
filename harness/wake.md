@@ -117,6 +117,13 @@ it says anything but "nothing", so put there what you would like the person to d
 that would help, a decision coming up) and nothing else. It never replaces a gate: what must be
 answered before you go on is still asked at one.
 
+**Those two sections are checked.** `otto state handoff` refuses a handoff whose `Where this is`
+or `Needs` uses otto's own words for its machinery — wake, tick, gate, poke, handoff, check.sh,
+`otto state`, `artifacts/` paths, timestamps — and says which it found. That is not an error to
+work around: rewrite those sections in the work's own terms ("Watching the queue; nothing tagged
+since Monday", "The plan is waiting on your review") and write the handoff again. The sections
+below them may say whatever the next wake needs.
+
 `otto state handoff <id> --stdin` writes it, and **refuses it past the cap** (8KB by default).
 That refusal is information: this file is re-read on every single wake, so anything that
 accumulates — one line per proposal, per repo, per cycle — belongs in an artifact ledger under
@@ -181,6 +188,8 @@ you are wrapping assumes something a wake cannot provide, translate it:
 | "ask the user", "confirm with them", or names `AskUserQuestion` | Open a gate and stop. The answer arrives in a later wake |
 | "wait", "poll", "check back in an hour", "keep watching" | Stop; the period brings a wake back. `otto state arm-timer --in` if it needs a different gap |
 | "remember this", "keep track of", "note for later" | Write it — the handoff for one wake, an artifact for longer |
+| "tell me", "let me know", "notify me", "send me a report", "report back" | Send a message (below): it lands in the person's inbox and notifies them |
+| "reply to them", "post a response", "answer the user in the channel" | Draft it and send it to the person as a `draft` message. Posting it is theirs to do |
 | Anything assuming earlier steps are still in context | Read the handoff and the artifacts. There is no earlier context |
 | Reading a big diff, a whole test suite, a long file | Delegate to a subagent; keep the conclusion, not the contents |
 
@@ -213,6 +222,34 @@ every bullet in the question is taken as an option.
 Use `--expires-in` only where silence has a sane meaning. "No answer, so don't do it" is sane.
 "No answer, so push it" is not.
 
+## Messages
+
+A gate is you asking; a **message** is you delivering. When the work produces something for the
+person — the report they asked for, a reply drafted for someone else, news they would want — send
+it to their inbox. It waits there beside their questions until they mark it done, and they are
+notified of it. Without a message, a result sits in an artifact nobody knows to open.
+
+```
+write the body   → artifacts/<name>.md — for a person reading it cold
+otto state message <id> --kind report --title "Why refund-policy-qa fails" --body-file artifacts/<name>.md
+```
+
+- **`--kind`**: `report` for something you made for them to read; `draft` for text they will
+  send on to someone else — the text itself in `--draft` or `--draft-file`, and the body saying
+  what it answers and why; `update` for news: a task finished, a PR merged, something worth knowing.
+- **You never send a draft yourself.** Posting a reply to a channel, a ticket or a PR is the
+  person's act; your work ends at the draft.
+- **The title is a line in a list**: what it is, in a few words. The body is short, plain and in
+  the work's own words, with the finding first. A long report goes in an artifact you `--attach`
+  (a path in the run directory), with the body saying what it found.
+- **Send one when there is something to send**, not every wake. A wake that found nothing journals
+  an activity line, or nothing.
+- **A message is not a question.** If you need a decision before going on, that is a gate. A
+  document you need approved is a gate whose question points at it; a document for their
+  information is a message.
+- The person may reply when they mark it done. A reply reaches you as a note that starts "In reply
+  to message NNN" — follow it like any other note.
+
 ## The done-condition
 
 If `doneCondition` is `null` and `policy.perpetual` isn't `true`, the run does not yet know
@@ -235,7 +272,8 @@ Ticks must be cheap: one status check, then `otto state tick <id>` (add `--progr
 something actually changed), rewrite the handoff, stop. Only a real change deserves real work.
 
 **Progress means durable state changed**, not that the goal was reached. A proposal recorded
-and rejected is progress. When `tick` reports `exhausted`, stop sleeping: set `blocked`
+and rejected is progress. A perpetual run is never `exhausted` — watching and finding nothing is
+its job. For any other run, when `tick` reports `exhausted`, stop sleeping: set `blocked`
 (`otto state set-status <id> --status blocked --because stall --reason "<what the ticks saw>"`)
 and open a gate carrying what the ticks have been seeing. A timer that ticks forever achieving
 nothing is the most expensive way for a run to fail.

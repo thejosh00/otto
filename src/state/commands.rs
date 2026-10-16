@@ -1071,18 +1071,21 @@ pub fn handoff(args: HandoffArgs) -> Result<(), OttoError> {
         .map(|state| state.policy.handoff_max_bytes)
         .unwrap_or(HANDOFF_MAX_BYTES as u64) as usize;
     let text = if text.ends_with('\n') { text } else { format!("{text}\n") };
-    if cap > 0 && text.len() > cap {
-        return Err(OttoError::usage(format!(
+    let refusal = if cap > 0 && text.len() > cap {
+        Some(format!(
             "handoff is {} bytes, cap is {cap} — put what accumulates in an artifact ledger and \
              keep the handoff to what the next wake needs to start",
             text.len()
-        )));
-    }
-    // Refused like the cap, for the same reason: the wake that wrote it is still there to fix it.
-    if let Some(why) = crate::plain::check_handoff(&text) {
-        return Err(OttoError::usage(format!("handoff refused: {why}")));
-    }
+        ))
+    } else {
+        // Refused like the cap, for the same reason: the wake that wrote it is still there to fix it.
+        crate::plain::check_handoff(&text).map(|why| format!("handoff refused: {why}"))
+    };
     let _lock = RunLock::acquire(&path)?;
+    if let Some(why) = refusal {
+        crate::event::record(&path, &Event::HandoffRefused { reason: why.clone() })?;
+        return Err(OttoError::usage(why));
+    }
     write_atomic(&path.join(HANDOFF_FILE), &text)
 }
 

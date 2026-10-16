@@ -33,6 +33,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `wake-spent` | `turns`, `spentWakes`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
+| `handoff-refused` | `reason` | `otto state handoff` refused a handoff — past its cap, or with otto's own words in `Where this is` or `Needs` — and the wake has to write it again |
 | `wake-complete` | `status` | The wake passed the [contract](../concepts.md#the-contract) |
 | `wake-incomplete` | `reason`, `consecutive` | It didn't; it will be retried after a backoff |
 | `usage-limited` | `limit`, `resetsAt` | It ran into the account's usage limit (`limit` is claude's name for which, e.g. `five_hour`). Not counted as incomplete: the run sleeps until `resetsAt` |

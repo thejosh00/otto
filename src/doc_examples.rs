@@ -246,6 +246,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         Paused { until: Some(at), reason: some() },
         Unpaused { by: s() },
         StartFailed { reason: s(), consecutive: 1 },
+        HandoffRefused { reason: s() },
     ];
     for event in &events {
         match event {
@@ -259,7 +260,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | NoteAdded { .. } | NotesDelivered { .. } | NoteDropped { .. } | CheckSet { .. }
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
-            | StartFailed { .. } => {}
+            | StartFailed { .. } | HandoffRefused { .. } => {}
         }
     }
     events
