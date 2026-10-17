@@ -162,8 +162,17 @@ wake per finished run. To trust a run's `done` as said, start it with `--policy 
 | `stopped` | Retired by a person | `otto resume` |
 
 `blocked` always records a cause: `wake-failures` (wakes kept failing), `budget` (a budget was
-spent), `stall` (ticks kept changing nothing), `instructions` (the wrapped instructions decided
+spent), `stall` (wake after wake changed nothing), `instructions` (the wrapped instructions decided
 it couldn't go on), or `unverified` (it kept saying it was done, and each check found it wasn't).
+
+**A stall is otto's call, not the wake's.** After every wake, otto looks at what the run has to show
+for it: the phase and facts, gates and their answers, outputs and messages, every file under
+`artifacts/` (the todo among them), and the branches and worktrees of its `--repo`s. When
+`maxTicksWithoutProgress` wakes in a row (24 by default) leave all of that as it was, otto blocks the
+run and asks whether to keep going. Waiting is fine; waiting forever, a wake an hour, is the most
+expensive way for a run to fail. A wake whose work lands somewhere otto can't see — a reply posted
+on a PR, a ticket moved — says so with `otto state tick <id> --progress`. A perpetual run is never
+stalled: watching and finding nothing is its job.
 
 ## When a run wakes: the period and timers
 
@@ -324,7 +333,7 @@ gate. There is no dollar budget — nothing can price a wake on a subscription (
 | `periodMinutes` | 60 | The period (prefer `--period` / `otto period`) |
 | `maxWakeMinutes` | 45 | A wake's deadline; poke kills it after |
 | `maxIncompleteWakes` | 5 | Failed wakes in a row before `blocked` |
-| `maxTicksWithoutProgress` | 24 | Polling ticks that change nothing before `blocked`; 0 disables. A perpetual run ignores it: watching and finding nothing is its job |
+| `maxTicksWithoutProgress` | 24 | Wakes in a row that change nothing before otto blocks the run and asks ([stalls](#statuses)); 0 disables. A perpetual run ignores it: watching and finding nothing is its job |
 | `gateStaleAfterHours` | 48 | When an unanswered gate is notified again; 0 disables |
 | `handoffMaxBytes` | 8192 | The handoff's cap |
 | `verifyDone` | true | A wake's `done` is a claim the next wake [checks](#checking-done); `false` trusts it as said |

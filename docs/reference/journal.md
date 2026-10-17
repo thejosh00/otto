@@ -37,7 +37,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
 | `handoff-refused` | `reason` | `otto state handoff` refused a handoff — past its cap, or with otto's own words in `Where this is` or `Needs` — and the wake has to write it again |
-| `wake-complete` | `status` | The wake passed the [contract](../concepts.md#the-contract) |
+| `wake-complete` | `status`, `progress` | The wake passed the [contract](../concepts.md#the-contract). `progress`: it changed something otto can see, or said `tick --progress` |
 | `wake-incomplete` | `reason`, `consecutive` | It didn't; it will be retried after a backoff |
 | `usage-limited` | `limit`, `resetsAt` | It ran into the account's usage limit (`limit` is claude's name for which, e.g. `five_hour`). Not counted as incomplete: the run sleeps until `resetsAt` |
 | `wake-killed` | `reason` | Poke killed a wake past its deadline |
@@ -49,7 +49,7 @@ the budget events, the wake failures, and `usage-limited`.
 | Event | Fields | When |
 |---|---|---|
 | `timer-armed` | `nextWakeAt`, `note` | A sleep was scheduled — by a wake, the period (`note: period`), or a retry backoff |
-| `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A polling wake found progress / found nothing |
+| `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A wake said it moved the run where otto can't see (`--progress`) / said what a look found. otto counts wakes that change nothing itself, so a plain tick adds nothing to the count |
 | `period-set` | `periodMinutes`, `previousMinutes` | A person changed the period |
 | `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |
 | `check-cleared` | `script`, `by` | The standing check was removed, by a `person` or a `wake` |

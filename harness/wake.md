@@ -359,20 +359,22 @@ it for one sleep; `arm-timer <id>` with neither sleeps for the period explicitly
 wakes you. There is no cron to schedule and no gate to open for a wait; a
 timer gate would mean closing and reopening the same question forever.
 
-Ticks must be cheap: one status check, then `otto state tick <id>` (add `--progress` when
-something actually changed), rewrite the handoff, stop. Only a real change deserves real work.
+Ticks must be cheap: one status check, then `otto state tick <id> --note "<what you saw>"`,
+rewrite the handoff, stop. Only a real change deserves real work.
 
-**Progress means durable state changed**, not that the goal was reached. A proposal recorded
-and rejected is progress. A perpetual run is never `exhausted` — watching and finding nothing is
-its job. For any other run, when `tick` reports `exhausted`, stop sleeping: set `blocked`
-(`otto state set-status <id> --status blocked --because stall --reason "<what the ticks saw>"`)
-and open a gate carrying what the ticks have been seeing. A timer that ticks forever achieving
-nothing is the most expensive way for a run to fail.
+**Progress means durable state changed**, not that the goal was reached — a proposal recorded
+and rejected is progress — and otto looks for itself. After every wake it checks the phase, the
+facts, the gates, outputs and messages, everything under `artifacts/`, and the branches of the
+run's repos. When wake after wake leaves all of that as it was (`policy.maxTicksWithoutProgress`),
+otto stops the run and asks the person whether to keep going; that is not yours to do. When what
+changed is somewhere otto can't see — you posted a reply on a PR, a ticket moved — say so:
+`otto state tick <id> --progress --note "<what changed>"`. Never for looking: a look that found
+nothing is not progress, however carefully it looked. A perpetual run is never stopped for this —
+watching and finding nothing is its job.
 
-Whenever you set `blocked` yourself, say why with `--because` (`stall`, or `instructions` when
-your own instructions decided the run cannot proceed) and `--reason`. `otto ls` and `otto show`
-tell the person what happened and what to do from exactly that; without it otto guesses from
-the tick counter.
+Whenever you set `blocked` yourself, say why with `--because` (`instructions` when your own
+instructions decided the run cannot proceed) and `--reason`. `otto ls` and `otto show` tell the
+person what happened and what to do from exactly that.
 
 **A missed window is one wake, not a backlog.** However long the run was down, reconcile once
 and carry on. Never replay the ticks you missed.

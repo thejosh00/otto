@@ -351,6 +351,8 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         last_spawned_at: None,
         budget_warned_at: None,
         ticks_without_progress: 0,
+        progress_mark: None,
+        said_progress: None,
         launcher: Launcher {
             // Recorded by its full name, so `--launcher nono` reads back as the launcher it found.
             kind: crate::config::launcher(&args.launcher)?.name,
@@ -1295,7 +1297,8 @@ pub fn output_state(args: OutputStateArgs) -> Result<(), OttoError> {
 pub struct TickArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
-    /// something happened: reset the counter
+    /// something changed that otto can't see — a reply posted, a ticket moved — so this wake moved
+    /// the run. otto sees commits, outputs, messages, the todo, facts and the phase for itself
     #[arg(long)]
     pub progress: bool,
     /// What this tick saw, recorded in the journal
@@ -1303,13 +1306,23 @@ pub struct TickArgs {
     pub note: Option<String>,
 }
 
+/// What a look found, for the journal. otto counts the wakes that change nothing itself, at the end
+/// of each (`progress`), so a wake that never ticks counts too and a plain `tick` adds nothing to
+/// the count. `--progress` is the wake's word that this one moved the run where otto can't see.
 pub fn tick(args: TickArgs) -> Result<(), OttoError> {
     let mut count = 0u32;
     let mut limit = 24i64;
     let id = args.id.clone();
     transaction(&id, |path, state| {
-        count = if args.progress { 0 } else { state.ticks_without_progress + 1 };
-        state.ticks_without_progress = count;
+        if args.progress {
+            match state.wake.as_ref().filter(|w| w.outcome.is_none()).map(|w| w.n) {
+                // Counted when the wake ends, with what otto sees (`progress::account`).
+                Some(n) => state.said_progress = Some(n),
+                // A person, by hand.
+                None => state.ticks_without_progress = 0,
+            }
+        }
+        count = if args.progress { 0 } else { state.ticks_without_progress };
         // A configured `0` must stay 0, distinct from "absent → default 24" — Python's
         // `or 24` bug conflated the two. `Policy`'s own default supplies the 24; this just
         // reads it back.
@@ -1328,7 +1341,8 @@ pub fn tick(args: TickArgs) -> Result<(), OttoError> {
             },
         )
     })?;
-    let exhausted = limit > 0 && (count as i64) >= limit;
+    // Whether this wake is the one that stops the run, if it changes nothing otto can see.
+    let exhausted = !args.progress && limit > 0 && i64::from(count) + 1 >= limit;
     println!(
         "{}",
         serde_json::to_string(&json!({"ticksWithoutProgress": count, "limit": limit, "exhausted": exhausted}))?
@@ -1525,7 +1539,7 @@ mod tests {
     /// Put the run's latest wake at `n`, as if wake `n` were the one calling.
     fn as_wake(id: &str, n: u32) {
         super::transaction(id, |_p, state| {
-            state.wake = Some(super::super::Wake {
+            state.wake = Some(crate::state::Wake {
                 n,
                 started_at: super::Timestamp::now(),
                 deadline_at: super::Timestamp::in_minutes(45),
@@ -1766,9 +1780,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        tick(TickArgs { id: "t-watch".into(), progress: false, note: None }).unwrap();
         let state = read_run("t-watch").unwrap();
-        assert_eq!(state.ticks_without_progress, 501);
         assert_eq!(state.inferred_block_cause(), BlockedCause::Instructions, "no stall guard to have tripped");
     }
 
@@ -2135,73 +2147,50 @@ mod tests {
         assert!(err.to_string().contains("not executable"));
     }
 
+    /// otto counts the wakes that change nothing itself (`progress`), so a plain tick only tells
+    /// the journal what the look found.
     #[test]
-    fn tick_default_limit_is_24() {
+    fn a_plain_tick_adds_nothing_to_the_count() {
         let _home = TempHome::new();
         test_init("run-c", "hello-flow").unwrap();
-        for _ in 0..23 {
-            tick(TickArgs { id: "run-c".to_string(), progress: false, note: None }).unwrap();
-        }
-        let state = read_run("run-c").unwrap();
-        assert_eq!(state.ticks_without_progress, 23);
-        tick(TickArgs { id: "run-c".to_string(), progress: false, note: None }).unwrap();
-        let state = read_run("run-c").unwrap();
-        assert_eq!(state.ticks_without_progress, 24);
-    }
-
-    #[test]
-    fn tick_explicit_zero_limit_never_exhausts() {
-        let _home = TempHome::new();
-        test_init("run-d", "improve-flow").unwrap();
-        transaction("run-d", |_p, state| {
-            state.policy.max_ticks_without_progress = 0;
-            Ok(())
-        })
-        .unwrap();
         for _ in 0..30 {
-            tick(TickArgs { id: "run-d".to_string(), progress: false, note: None }).unwrap();
+            tick(TickArgs { id: "run-c".to_string(), progress: false, note: Some("queue empty".into()) }).unwrap();
         }
-        let state = read_run("run-d").unwrap();
-        assert_eq!(state.ticks_without_progress, 30);
-        // exhausted is only observable via tick's own stdout in the CLI; re-derive the
-        // same rule tick() uses to confirm the explicit-zero policy stays "never exhausted".
-        let limit = state.policy.max_ticks_without_progress;
-        assert_eq!(limit, 0);
-        let exhausted = limit > 0 && (state.ticks_without_progress as i64) >= limit;
-        assert!(!exhausted, "an explicit policy of 0 must never be treated as exhausted");
+        assert_eq!(read_run("run-c").unwrap().ticks_without_progress, 0);
+        let journal = std::fs::read_to_string(crate::paths::run_dir("run-c").unwrap().join("journal.jsonl")).unwrap();
+        assert_eq!(journal.matches("\"event\":\"noop-tick\"").count(), 30);
     }
 
+    /// `--progress` is the wake's word that it moved the run where otto can't see, so the wake in
+    /// progress is marked as having moved it; a person saying so by hand resets the count.
     #[test]
-    fn tick_explicit_five_exhausts_at_five() {
-        let _home = TempHome::new();
-        test_init("run-e", "improve-flow").unwrap();
-        transaction("run-e", |_p, state| {
-            state.policy.max_ticks_without_progress = 5;
-            Ok(())
-        })
-        .unwrap();
-        for _ in 0..4 {
-            tick(TickArgs { id: "run-e".to_string(), progress: false, note: None }).unwrap();
-        }
-        let state = read_run("run-e").unwrap();
-        assert_eq!(state.ticks_without_progress, 4);
-        let limit = state.policy.max_ticks_without_progress;
-        assert!(!(limit > 0 && 4 >= limit));
-        tick(TickArgs { id: "run-e".to_string(), progress: false, note: None }).unwrap();
-        let state = read_run("run-e").unwrap();
-        assert_eq!(state.ticks_without_progress, 5);
-        assert!(limit > 0 && 5 >= limit);
-    }
-
-    #[test]
-    fn tick_progress_resets_counter() {
+    fn tick_progress_resets_counter_and_vouches_for_the_wake() {
         let _home = TempHome::new();
         test_init("run-f", "hello-flow").unwrap();
-        for _ in 0..5 {
-            tick(TickArgs { id: "run-f".to_string(), progress: false, note: None }).unwrap();
-        }
-        tick(TickArgs { id: "run-f".to_string(), progress: true, note: None }).unwrap();
+        transaction("run-f", |_p, state| {
+            state.ticks_without_progress = 5;
+            let now = Timestamp::now();
+            state.wake = Some(crate::state::Wake {
+                n: 7,
+                started_at: now,
+                deadline_at: now,
+                launcher: "claude".into(),
+                pid: None,
+                session: None,
+                outcome: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        tick(TickArgs { id: "run-f".to_string(), progress: true, note: Some("replied on the PR".into()) }).unwrap();
         let state = read_run("run-f").unwrap();
-        assert_eq!(state.ticks_without_progress, 0);
+        assert_eq!(state.said_progress, Some(7), "counted when wake 7 ends");
+        transaction("run-f", |_p, state| {
+            state.wake = None;
+            Ok(())
+        })
+        .unwrap();
+        tick(TickArgs { id: "run-f".to_string(), progress: true, note: None }).unwrap();
+        assert_eq!(read_run("run-f").unwrap().ticks_without_progress, 0, "by hand, at once");
     }
 }

@@ -187,7 +187,7 @@ Every way into `blocked` records why — `run.json`'s `blocked: {cause, detail, 
 one of `wake-failures`, `budget`, `stall`, `instructions` — because the remedy depends on it:
 the logs and a retried wake for failures, a plain answer to the gate for a stall where nothing
 failed. otto's own paths set it; a wake setting `blocked` itself says `--because`, or otto infers
-`stall` from the tick counter. `transaction` clears the record whenever the status is no longer
+`stall` from the count of wakes that changed nothing (§8). `transaction` clears the record whenever the status is no longer
 `blocked`, so it can never describe a state the run has left.
 
 Two checks, because two are enforceable against anything. A validator that also demanded a
@@ -487,10 +487,21 @@ change spins up a subagent; that is what makes a week of hourly polling affordab
 slow leak. Since every wake is a cold start, a cheap tick must be a genuinely small *prompt*,
 not just a small amount of work.
 
-`tick` prints `{"ticksWithoutProgress": n, "limit": l, "exhausted": bool}`. Exhausted → stop
-sleeping: `blocked` (`set-status --status blocked --because stall`) plus a human gate. **Progress means durable state changed**, not that the
-goal was reached: a rejected proposal recorded in a ledger is progress. `0` means disabled, for a
-workflow whose ticks are *expected* to achieve nothing (§11.5).
+**Progress means durable state changed**, not that the goal was reached: a rejected proposal
+recorded in a ledger is progress. **otto counts it, not the wake.** The guard used to count `tick`
+calls, which made it a request: it held only for a wake that remembered to tick, judged
+`--progress` for itself, and noticed `exhausted`. On a real daily run six wakes in ten never ticked
+at all, and a run whose wakes never tick never stalls — it wakes every period, forever. otto is
+the only writer of what a run owns, so after each wake that meets the contract it takes a mark
+(`progress::mark`) of the phase, facts, gates, outputs, messages, every file under `artifacts/`,
+and the branches and worktrees of the run's repos, and compares it with the last wake's. The
+handoff, the journal and notes are left out: the first two change every wake whatever the work
+did. Unchanged, and the wake didn't say `tick --progress` — its word for work that lands where
+otto can't see, a reply posted on a PR — and `ticksWithoutProgress` goes up by one; at
+`policy.maxTicksWithoutProgress` otto blocks the run (`stall`) and opens the gate itself, the way
+it does for wakes that keep failing. A plain `tick` only journals what a look found. `0` disables
+the guard, for a workflow whose wakes are *expected* to change nothing (§11.5), and a perpetual run
+has none.
 
 **A missed window is one wake, never a replay.** However long the run was down — an hour, three
 days — it gets one reconcile. A closed lid through six ticks is one catch-up, because a run has

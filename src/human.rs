@@ -1935,7 +1935,7 @@ mod tests {
         state.ticks_without_progress = 24;
         state.block(BlockedCause::Stall, None);
         let stall = blocked_explanation(&state, "why");
-        assert!(stall.contains("24 tick(s) in a row changed nothing"), "got: {stall}");
+        assert!(stall.contains("24 wakes in a row changed nothing"), "got: {stall}");
         assert!(stall.contains("nothing failed"), "got: {stall}");
         assert!(stall.contains("answer gate 001"), "got: {stall}");
         assert!(!stall.contains("otto wake"), "retrying is not the remedy for a stall: {stall}");
@@ -1956,7 +1956,7 @@ mod tests {
         // and says that it is one.
         state.blocked = None;
         let legacy = blocked_explanation(&state, "why");
-        assert!(legacy.contains("24 tick(s) in a row changed nothing"), "got: {legacy}");
+        assert!(legacy.contains("24 wakes in a row changed nothing"), "got: {legacy}");
         assert!(legacy.contains("cause inferred"), "got: {legacy}");
         assert!(legacy.contains("answer gate 001"), "got: {legacy}");
     }

@@ -408,22 +408,46 @@ fn finish_wake(
 
     match &outcome {
         contract::Outcome::Complete => {
+            // Taken outside the lock: it runs git in the run's repos.
+            let mark = crate::progress::mark(run_path, &state);
+            let mut stalled = None;
             transaction(id, |path, state| {
                 if let Some(wake) = state.wake.as_mut() {
                     wake.outcome = Some(WakeOutcome::Complete);
                 }
                 state.incomplete_wakes = 0;
                 state.clear_start_failures();
+                let n = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
                 // Only a wake that met the contract delivers its notes; a crashed one leaves them
                 // for the next wake to be given again.
-                if let Some(n) = state.wake.as_ref().map(|w| w.n) {
+                if n > 0 {
                     crate::notes::deliver(path, state, n)?;
+                }
+                let progress = crate::progress::account(state, mark.clone(), n);
+                if crate::progress::stalled(state) {
+                    stalled = Some(state.ticks_without_progress);
+                    let from = crate::state::commands::status_str(state.status).to_string();
+                    let reason = format!("{} wakes in a row changed nothing", state.ticks_without_progress);
+                    state.block(crate::state::BlockedCause::Stall, Some(reason.clone()));
+                    crate::event::record(
+                        path,
+                        &Event::StatusChanged {
+                            from,
+                            to: "blocked".into(),
+                            reason: Some(reason),
+                            because: Some(crate::state::BlockedCause::Stall.label().into()),
+                            left_open: Vec::new(),
+                        },
+                    )?;
                 }
                 crate::event::record(
                     path,
-                    &Event::WakeComplete { status: crate::state::commands::status_str(state.status).to_string() },
+                    &Event::WakeComplete { status: crate::state::commands::status_str(state.status).to_string(), progress },
                 )
             })?;
+            if let Some(wakes) = stalled {
+                open_stall_gate(id, run_path, wakes)?;
+            }
             // Tokens rather than dollars: there is no per-wake dollar figure to report without
             // `-p`, and an estimate dressed up as a measurement is worse than neither.
             println!(
@@ -642,6 +666,28 @@ fn open_stuck_gate(id: &str, why: &str, consecutive: u32) -> Result<(), OttoErro
         plain_failure(why)
     );
     crate::state::ops::open_gate(id, "keeps-stopping", &question, None)?;
+    Ok(())
+}
+
+/// The stall guard, enforced by otto rather than left to a wake to notice: `wakes` in a row met the
+/// contract and changed nothing it can see (`progress`). Nothing failed, so the question is only
+/// whether to keep looking.
+fn open_stall_gate(id: &str, run_dir: &std::path::Path, wakes: u32) -> Result<(), OttoError> {
+    let handoff = std::fs::read_to_string(run_dir.join(crate::state::commands::HANDOFF_FILE)).unwrap_or_default();
+    let stands = crate::core::where_this_is(&handoff)
+        .map(|said| format!("\n\nWhere it stands, as I last put it: {said}"))
+        .unwrap_or_default();
+    let question = format!(
+        "# Nothing has changed in a while\n\n\
+         I've looked {wakes} times in a row and found nothing to do: no commits, nothing published or \
+         sent, nothing ticked off or recorded. Nothing has failed — what I'm waiting on may just be \
+         slow — but each look costs, so I've stopped until you say.{stands}\n\n\
+         ## Options\n\n\
+         - **Keep going** — carry on as before; I'll ask again if another {wakes} go by the same way.\n\
+         - **Stop** — retire this run.\n\n\
+         Nothing happens until you answer."
+    );
+    crate::state::ops::open_gate(id, "nothing-changing", &question, None)?;
     Ok(())
 }
 
@@ -1584,6 +1630,69 @@ mod tests {
         run_wake(&args("w-note"), &mut exec).unwrap();
         let call = exec.last_call().join(" ");
         assert!(!call.contains("Skip the e2e suite") && call.contains("Never touch legacy/."));
+    }
+
+    /// Wakes that meet the contract and change nothing otto can see are counted by otto — a plain
+    /// tick doesn't save one — and at the limit the run stops and asks, rather than leaving it to a
+    /// wake to notice. The first wake has nothing to compare with.
+    #[test]
+    fn wakes_that_change_nothing_stop_the_run_and_ask() {
+        let _h = TempHome::new();
+        test_init("w-stall", "a goal").unwrap();
+        transaction("w-stall", |_p, s| {
+            s.policy.max_ticks_without_progress = 3;
+            Ok(())
+        })
+        .unwrap();
+        for _ in 0..4 {
+            let mut exec = FakeExec::new();
+            exec.on_exec(|| {
+                let look = crate::state::commands::TickArgs { id: "w-stall".into(), progress: false, note: Some("queue empty".into()) };
+                crate::state::commands::tick(look).unwrap();
+                behave_well("w-stall");
+            });
+            run_wake(&args("w-stall"), &mut exec).unwrap();
+        }
+        let state = read_run("w-stall").unwrap();
+        assert_eq!(state.status, Status::Blocked);
+        assert!(matches!(state.blocked.as_ref().map(|b| b.cause), Some(crate::state::BlockedCause::Stall)));
+        let gate = state.gate.expect("otto asks");
+        assert_eq!(gate.slug, "nothing-changing");
+        let dir = crate::paths::run_dir("w-stall").unwrap();
+        let question = std::fs::read_to_string(dir.join(&gate.file)).unwrap();
+        assert!(question.contains("3 times in a row"), "{question}");
+        let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+        assert_eq!(journal.matches("\"progress\":false").count(), 3, "{journal}");
+    }
+
+    /// Work otto can see keeps the run going, and so does a wake's word for work it can't.
+    #[test]
+    fn work_or_a_wake_s_word_for_it_keeps_the_run_going() {
+        let _h = TempHome::new();
+        test_init("w-busy", "a goal").unwrap();
+        transaction("w-busy", |_p, s| {
+            s.policy.max_ticks_without_progress = 2;
+            Ok(())
+        })
+        .unwrap();
+        for n in 1..=6u32 {
+            let mut exec = FakeExec::new();
+            exec.on_exec(move || {
+                if n % 3 == 0 {
+                    let dir = crate::paths::run_dir("w-busy").unwrap();
+                    std::fs::create_dir_all(dir.join("artifacts")).unwrap();
+                    std::fs::write(dir.join("artifacts/seen.md"), format!("look {n}\n")).unwrap();
+                } else {
+                    let said = crate::state::commands::TickArgs { id: "w-busy".into(), progress: true, note: Some("replied on the PR".into()) };
+                    crate::state::commands::tick(said).unwrap();
+                }
+                behave_well("w-busy");
+            });
+            run_wake(&args("w-busy"), &mut exec).unwrap();
+        }
+        let state = read_run("w-busy").unwrap();
+        assert_eq!((state.status, state.ticks_without_progress), (Status::Sleeping, 0));
+        assert!(state.gate.is_none());
     }
 
     /// The safety net counts "nothing new" results since the run was last actually looked at, so

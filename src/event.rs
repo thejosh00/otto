@@ -176,6 +176,8 @@ pub enum Event {
     },
     WakeComplete {
         status: String,
+        /// Whether it moved the run: otto saw its work change, or it said `tick --progress`.
+        progress: bool,
     },
     WakeIncomplete {
         reason: String,
@@ -380,7 +382,7 @@ mod tests {
     /// `"event"` key so `otto logs` and every existing test keep reading the same shape.
     #[test]
     fn the_tag_is_kebab_case_and_named_event() {
-        let value = serde_json::to_value(Event::WakeComplete { status: "sleeping".into() }).unwrap();
+        let value = serde_json::to_value(Event::WakeComplete { status: "sleeping".into(), progress: true }).unwrap();
         assert_eq!(value["event"], "wake-complete");
         assert_eq!(value["status"], "sleeping");
     }

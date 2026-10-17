@@ -643,8 +643,17 @@ pub struct RunState {
     /// earn the run a second warning.
     #[serde(rename = "budgetWarnedAt", default, skip_serializing_if = "Option::is_none")]
     pub budget_warned_at: Option<crate::clock::Timestamp>,
+    /// Wakes in a row that changed nothing, by otto's look or the wake's word (`progress`). The
+    /// name is from when only `tick` calls counted.
     #[serde(rename = "ticksWithoutProgress")]
     pub ticks_without_progress: u32,
+    /// otto's mark of what it can see of the run's work, taken after the last wake that met the
+    /// contract (`progress::mark`). A wake that leaves it as it was changed nothing.
+    #[serde(rename = "progressMark", default, skip_serializing_if = "Option::is_none")]
+    pub progress_mark: Option<String>,
+    /// The wake that last said `tick --progress`: what changed is somewhere otto can't see.
+    #[serde(rename = "saidProgress", default, skip_serializing_if = "Option::is_none")]
+    pub said_progress: Option<u32>,
     pub launcher: Launcher,
     pub permission: Permission,
     pub budget: Budget,
@@ -1091,6 +1100,8 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         last_spawned_at: None,
         budget_warned_at: None,
         ticks_without_progress: 0,
+        progress_mark: None,
+        said_progress: None,
         launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![], workdir: None },
         permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
         budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, spent_usd: 0.0 },

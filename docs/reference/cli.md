@@ -1342,7 +1342,7 @@ Arguments:
 
 Options:
       --progress
-          something happened: reset the counter
+          something changed that otto can't see — a reply posted, a ticket moved — so this wake moved the run. otto sees commits, outputs, messages, the todo, facts and the phase for itself
 
       --note <NOTE>
           What this tick saw, recorded in the journal

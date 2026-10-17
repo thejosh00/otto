@@ -21,6 +21,7 @@ mod outputs;
 mod paths;
 mod plain;
 mod poke;
+mod progress;
 mod server;
 mod spawner;
 mod state;

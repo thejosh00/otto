@@ -323,7 +323,7 @@ fn last_wake(dir: &std::path::Path) -> Option<LastRun> {
         format!("asked you: {}", gate.get("slug").and_then(Value::as_str).unwrap_or("a question"))
     } else if has("tick") {
         "made progress".to_string()
-    } else if has("noop-tick") {
+    } else if has("noop-tick") || lines[end].get("progress").and_then(Value::as_bool) == Some(false) {
         "no changes".to_string()
     } else {
         "finished".to_string()
@@ -764,7 +764,7 @@ pub fn blocked_explanation(state: &RunState, short: &str) -> String {
             detail.unwrap_or("a budget ceiling was reached")
         ),
         BlockedCause::Stall => format!(
-            "blocked: {} tick(s) in a row changed nothing (policy maxTicksWithoutProgress = {}) — nothing \
+            "blocked: {} wakes in a row changed nothing (policy maxTicksWithoutProgress = {}) — nothing \
              failed, the run is asking whether to keep going; {gate}",
             state.ticks_without_progress, state.policy.max_ticks_without_progress
         ),

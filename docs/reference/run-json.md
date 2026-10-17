@@ -38,7 +38,9 @@ what the ideas mean.
 | `incompleteWakes` | Wakes in a row that didn't finish; reset by one that does |
 | `startFailures`, `startFailure` | Wakes in a row that never got going — claude exited at once, having done nothing — and the first line it printed the last time. Retried for as long as it takes, never counted toward blocking the run; reset by a wake that gets going |
 | `paused` | While a person has paused it (`otto pause`): `{at, until, reason}`, `until` absent for "until resumed". Poke starts no scheduled wake meanwhile |
-| `ticksWithoutProgress` | Polling ticks in a row that changed nothing |
+| `ticksWithoutProgress` | Wakes in a row that changed nothing otto could see and didn't say `tick --progress`; at `policy.maxTicksWithoutProgress`, otto blocks the run (`stall`) and asks |
+| `progressMark` | otto's mark of the run's work after the last wake that finished: phase, facts, gates, outputs, messages, `artifacts/`, and the `--repo`s' branches and worktrees. A wake that leaves it as it was changed nothing |
+| `saidProgress` | The wake that last said `tick --progress`: it moved the run somewhere otto can't see |
 
 ## How it runs
 

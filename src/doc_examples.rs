@@ -223,7 +223,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         UsageUnavailable { note: s() },
         WakeReportedError { exit_code: 1, timed_out: false, turns: 0 },
         BudgetWarning { fraction_spent: 0.8, budget: crate::state::test_run_state("x").budget },
-        WakeComplete { status: s() },
+        WakeComplete { status: s(), progress: true },
         WakeIncomplete { reason: s(), consecutive: 1 },
         UsageLimited { limit: some(), resets_at: Some(at) },
         BudgetExhausted { reason: s() },
