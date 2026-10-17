@@ -1294,6 +1294,33 @@ pub fn output_state(args: OutputStateArgs) -> Result<(), OttoError> {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct FeedbackArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// In your own words: what got in the way, what you did about it, and what would have helped
+    #[arg(long)]
+    pub body: Option<String>,
+    /// Read it from this file
+    #[arg(long = "body-file")]
+    pub body_file: Option<String>,
+    /// Read it from stdin
+    #[arg(long)]
+    pub stdin: bool,
+}
+
+/// A wake tells otto's maker what got in its way (`crate::feedback`). Never fails: whatever happens
+/// it says so and exits 0, so a report can never cost the work.
+pub fn feedback(args: FeedbackArgs) -> Result<(), OttoError> {
+    let sent = read_text_arg(args.body.as_deref(), args.body_file.as_deref(), args.stdin, "body")
+        .and_then(|text| crate::feedback::send(&args.id, &text));
+    match sent {
+        Ok(report) => println!("otto: kept as feedback {} — thank you. Nothing to wait for; carry on with the work", report.id),
+        Err(e) => eprintln!("otto: not kept: {} — carry on with the work", e.message),
+    }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
 pub struct TickArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,

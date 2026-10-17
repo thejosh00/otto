@@ -64,6 +64,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `gate-expired` | same | Its expiry passed with no answer |
 | `note-added` | `note`, `file`, `standing` | A person left a note |
 | `notes-delivered` | `notes`, `wake` | A completed wake carried these one-off notes |
+| `feedback-sent` | `report`, `wake` | The wake told otto's maker what got in its way; the report is number `report` in `$OTTO_HOME/feedback.jsonl` (`otto feedback`) |
 | `notes-given-late` | `notes`, `wake`, `before` | The wake was about to ask (`gate`), claim done (`done`) or confirm a claim (`confirm`) without these notes, added while it ran: refused once, and given them |
 | `note-dropped` | `note`, `standing` | A person withdrew a note |
 | `notified` | `key`, `title`, `message` | Poke sent a desktop notification |

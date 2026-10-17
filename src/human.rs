@@ -99,6 +99,78 @@ fn ensure_default_workdir(init: &InitArgs) -> Result<(), OttoError> {
 }
 
 // ---------------------------------------------------------------------------
+// otto feedback
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct FeedbackArgs {
+    /// Include the reports already handled
+    #[arg(long)]
+    pub all: bool,
+    /// Mark these reports handled — read, and fixed or set aside. They stay in the file
+    #[arg(long, value_name = "N", num_args = 1..)]
+    pub done: Vec<u32>,
+    /// Print the reports as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// What wakes have said about otto itself, newest first (`crate::feedback`).
+pub fn feedback(args: FeedbackArgs) -> Result<(), OttoError> {
+    if !args.done.is_empty() {
+        let marked = crate::feedback::mark_handled(&args.done)?;
+        let list = |ids: &[u32]| ids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+        match marked.len() {
+            0 => println!("already handled"),
+            _ => println!("handled: {}", list(&marked)),
+        }
+        return Ok(());
+    }
+    let mut reports: Vec<crate::feedback::Report> =
+        crate::feedback::all().into_iter().filter(|r| args.all || r.handled_at.is_none()).collect();
+    reports.reverse();
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+        return Ok(());
+    }
+    if reports.is_empty() {
+        println!(
+            "{} — wakes send it with `otto state feedback` when otto gets in their way",
+            if args.all { "no feedback yet" } else { "no feedback waiting" }
+        );
+        return Ok(());
+    }
+    let harness = crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes());
+    for (i, report) in reports.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let wake = report.wake.map(|n| format!(", wake {n}")).unwrap_or_default();
+        let mut about = vec![report.wraps.clone()];
+        if report.harness != harness {
+            about.push("an older harness".to_string());
+        }
+        if let Some(at) = report.handled_at {
+            about.push(format!("handled {}", crate::clock::local_clock(at)));
+        }
+        println!(
+            "{:>3}  {}  {}{wake} · {}",
+            report.id,
+            crate::clock::local_clock(report.at),
+            crate::paths::label_of(&report.run),
+            about.join(" · ")
+        );
+        for line in report.text.lines() {
+            println!("     {line}");
+        }
+    }
+    if !args.all {
+        println!("\n`otto feedback --done <n>…` once read");
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // otto usage
 // ---------------------------------------------------------------------------
 

@@ -22,6 +22,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Outward actions and repo locks](#outward-actions-and-repo-locks)
 - [The reviver and notifications](#the-reviver-and-notifications)
 - [What a wake costs](#what-a-wake-costs)
+- [Feedback from wakes](#feedback-from-wakes)
 - [Where everything lives](#where-everything-lives)
 
 ## Runs and wakes
@@ -379,6 +380,24 @@ and prompt caching does not carry across wakes. So fewer, longer wakes are cheap
 short ones, and a check script that answers "nothing new" for free is the biggest saving
 available for a polling run.
 
+## Feedback from wakes
+
+Wakes are otto's real users, and they hit things no test thought of: the harness disagreeing with
+the instructions a run wraps, a refusal that didn't say what to do instead. When otto itself gets in
+a wake's way, it can say so — `otto state feedback <id> --body "…"` — and carry on. You read them
+with `otto feedback`:
+
+```bash
+otto feedback                 # what wakes have said about otto, newest first
+otto feedback --done 3 4      # read, and fixed or set aside
+otto feedback --all --json    # every report, for reading in bulk
+```
+
+Each report is stamped by otto with the run, the wake, what the run wraps and which harness it was
+given (one from before the current harness says so). They're about otto, not the run's work, so they
+stay out of the inbox and nothing notifies you; the run's journal only notes that one was sent
+(`feedback-sent`). A wake sends two at most, in its own words, and the command never fails.
+
 ## Where everything lives
 
 ```
@@ -395,6 +414,7 @@ available for a polling run.
     outputs/<key>/v<n>.md        each version's text, verbatim
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
+  feedback.jsonl                 what wakes have said about otto itself — `otto feedback`
   logs/poke.log, serve.log       the launchd jobs' output
 ```
 

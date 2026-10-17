@@ -70,6 +70,7 @@ otto pause <id> --for 2d      # hold back its schedule; `otto resume <id>` lifts
 otto show                     # the one that needs you, and its question in full
 otto answer --choice Approve  # answer it
 otto logs <id> -f             # the journal, readably (the run's number, or its name)
+otto feedback                 # where otto itself got in a wake's way, in the wake's words
 otto serve --open             # or all of the above in a browser
 ```
 
@@ -118,6 +119,7 @@ src/
   server/        `otto serve`: a JSON API over core, and the embedded page
   state/         the only writer of run state — atomic write, journal, per-run lock
   messages.rs    what a run sends you; inbox.rs gathers them, with its questions, across runs
+  feedback.rs    what wakes say about otto itself
   outputs.rs     what a run makes, kept: keys, versions, stages, drafts, your reviews
   story.rs       a run in plain words: its line, its week, what happened lately
   poke.rs        the reviver

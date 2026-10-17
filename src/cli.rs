@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
-    ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
+    ArmTimerArgs, CloseGateArgs, FeedbackArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
     OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
     TickArgs, VerifyArgs,
 };
@@ -37,6 +37,8 @@ pub enum Command {
     Logs(crate::human::LogsArgs),
     /// What wakes have used, in tokens, across every run — by run or by day.
     Usage(crate::human::UsageArgs),
+    /// What wakes have said about otto itself: where it got in their way.
+    Feedback(crate::human::FeedbackArgs),
     /// Follow what the running wake is saying and doing, as it happens.
     Attach(crate::human::AttachArgs),
     /// See or change how often a run wakes.
@@ -153,6 +155,8 @@ pub enum StateCommand {
     SetCheck(SetCheckArgs),
     /// Account for one timer tick
     Tick(TickArgs),
+    /// Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
+    Feedback(FeedbackArgs),
     /// Runs whose nextWakeAt has passed
     Due,
     /// Record that a specific commit may go outward

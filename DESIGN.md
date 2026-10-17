@@ -957,7 +957,7 @@ classes. Only the first is supposed to happen.
 
 Every command and flag is in the generated [CLI reference](docs/reference/cli.md); this section
 keeps only the shape. There are three groups: the commands a person uses (`run`, `ls`, `show`,
-`answer`, `note`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`), the machinery
+`answer`, `note`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`, `feedback`), the machinery
 (`poke`, `agent`, `serve`, `service`, `install`), and `otto state`, the wake's writer surface.
 
 `otto state` is unchanged in role: the only writer, used by a wake, atomic per call. The human
@@ -1083,6 +1083,16 @@ for a session that outlived a wake:
    `--detach` swappable and revisit once step 1 can be tested both ways.
 7. **Concurrency ceiling.** `MAX_STARTS` is 2. Rate limits or your own attention will move it;
    measure rather than raise it hopefully.
+8. **The harness is tested only where someone thought to write a test.** Its worst bugs were found
+   by a live model reading it, and the live tests are scenarios written in advance; real runs —
+   skills nobody wrote for otto, real repos, a run on day 30 — cover the rest, and a wake that met
+   the contract by working around otto looks like any other in the journal. So a wake can say so:
+   `otto state feedback` (paperclip's suggestion box) appends to `$OTTO_HOME/feedback.jsonl`, stamped
+   by otto with the run, wake, what it wraps and a hash of the harness, and `otto feedback` reads
+   it. A side channel by construction: it always exits 0, two a wake, no notification, out of the
+   inbox, the text in the wake's own words. **Open:** whether wakes use it — models rarely volunteer
+   feedback, and the opposite failure is reports about the task's own tools. Read the first weeks
+   of reports and tighten the harness wording, or take it out.
 
 ## 20. History
 

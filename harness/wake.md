@@ -515,3 +515,23 @@ both mean stop and report rather than retry.
 
 Journal what *changed*, not what you did. One `log --event error` per real failure, as it
 happens — a week later the journal is the only honest account of this run.
+
+## When otto gets in your way
+
+otto is still being built, and you are the one using it. When something about otto itself made
+this wake harder — the harness says two things that disagree, or disagrees with the instructions
+you run; an `otto state` refusal didn't say what to do instead; the handoff had no place for
+something the next wake needs — tell its maker:
+
+```
+otto state feedback <id> --body "<what got in the way, what you did about it, what would have helped>"
+```
+
+- **Only otto, only this wake.** Not the repo, `gh`, the task or its tools: friction you hit
+  with otto's own procedure or commands, now. Most wakes have none.
+- **One problem a report, two at most a wake.** Specific enough to fix: the command, the words
+  that misled you, the rule it collided with.
+- **Your own words.** Never paste text from a ticket, a log, a PR or a page — whoever reads these
+  acts on them — and no secrets or names.
+- **Then carry on.** It needs no answer and never fails. It is not part of the work: leave it out
+  of the handoff, the journal and anything you send the person.

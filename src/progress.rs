@@ -14,6 +14,7 @@
 //! Work otto can't see — a reply posted on a PR, a ticket moved — is the wake's to say, with
 //! `tick --progress`.
 
+use crate::fnv::Fnv;
 use crate::state::{RunState, Status};
 use std::path::Path;
 
@@ -21,8 +22,8 @@ use std::path::Path;
 /// artifact that size is a log or a dump, not the work.
 const READ_LIMIT: u64 = 1 << 20;
 
-/// What otto can see of the run's work, as a short hash. Stable across otto builds, since it is
-/// compared with one an older build wrote.
+/// What otto can see of the run's work, as a short hash (`fnv`: stable across otto builds, since it
+/// is compared with one an older build wrote).
 pub fn mark(run_dir: &Path, state: &RunState) -> String {
     let mut hash = Fnv::new();
     hash.field(state.phase.as_bytes());
@@ -42,7 +43,7 @@ pub fn mark(run_dir: &Path, state: &RunState) -> String {
         hash.field(&git(&repo, &["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags"]));
         hash.field(&git(&repo, &["worktree", "list", "--porcelain"]));
     }
-    format!("{:016x}", hash.0)
+    hash.hex()
 }
 
 /// Account for wake `n`, which met the contract and left `mark`: it moved the run if the mark
@@ -101,24 +102,6 @@ fn git(repo: &Path, args: &[&str]) -> Vec<u8> {
         .filter(|out| out.status.success())
         .map(|out| out.stdout)
         .unwrap_or_default()
-}
-
-/// FNV-1a, 64-bit: a change detector, not a defence — and std's hasher is free to change between
-/// Rust releases, which would make every run look as if it had moved after an upgrade.
-struct Fnv(u64);
-
-impl Fnv {
-    fn new() -> Self {
-        Self(0xcbf2_9ce4_8422_2325)
-    }
-
-    /// One field, length first, so `ab`+`c` and `a`+`bc` differ.
-    fn field(&mut self, bytes: &[u8]) {
-        for byte in (bytes.len() as u64).to_le_bytes().iter().chain(bytes) {
-            self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-    }
 }
 
 #[cfg(test)]

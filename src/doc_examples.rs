@@ -238,6 +238,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         NoteAdded { note: s(), file: s(), standing: false },
         NotesDelivered { notes: vec![], wake: 1 },
         NotesGivenLate { notes: vec![], wake: 1, before: String::new() },
+        FeedbackSent { report: 1, wake: Some(1) },
         NoteDropped { note: s(), standing: false },
         CheckSet { script: s(), wake_after: 24, by: s() },
         PeriodSet { period_minutes: 60, previous_minutes: 60 },
@@ -265,7 +266,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | WakeComplete { .. } | WakeIncomplete { .. } | UsageLimited { .. } | BudgetExhausted { .. }
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
-            | NoteAdded { .. } | NotesDelivered { .. } | NotesGivenLate { .. } | NoteDropped { .. } | CheckSet { .. }
+            | NoteAdded { .. } | NotesDelivered { .. } | NotesGivenLate { .. } | FeedbackSent { .. } | NoteDropped { .. } | CheckSet { .. }
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }

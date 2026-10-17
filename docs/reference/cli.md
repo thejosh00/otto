@@ -388,6 +388,27 @@ Options:
           Print help
 ```
 
+## `otto feedback`
+
+```text
+What wakes have said about otto itself: where it got in their way
+
+Usage: otto feedback [OPTIONS]
+
+Options:
+      --all
+          Include the reports already handled
+
+      --done <N>...
+          Mark these reports handled — read, and fixed or set aside. They stay in the file
+
+      --json
+          Print the reports as JSON
+
+  -h, --help
+          Print help
+```
+
 ## `otto attach`
 
 ```text
@@ -795,6 +816,7 @@ Commands:
   arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
   set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
+  feedback          Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
   due               Runs whose nextWakeAt has passed
   authorize         Record that a specific commit may go outward
   check-authorized  Refuse an outward action that nobody approved
@@ -1346,6 +1368,31 @@ Options:
 
       --note <NOTE>
           What this tick saw, recorded in the journal
+
+  -h, --help
+          Print help
+```
+
+### `otto state feedback`
+
+```text
+Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
+
+Usage: otto state feedback [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --body <BODY>
+          In your own words: what got in the way, what you did about it, and what would have helped
+
+      --body-file <BODY_FILE>
+          Read it from this file
+
+      --stdin
+          Read it from stdin
 
   -h, --help
           Print help

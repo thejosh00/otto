@@ -8,6 +8,8 @@ mod doc_examples;
 mod error;
 mod event;
 mod exec;
+mod feedback;
+mod fnv;
 mod gate;
 mod human;
 mod inbox;
@@ -57,6 +59,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Check(args) => human::check(args),
         Command::Logs(args) => human::logs(args),
         Command::Usage(args) => human::usage(args),
+        Command::Feedback(args) => human::feedback(args),
         Command::Attach(args) => human::attach(args),
         Command::Period(args) => human::period(args),
         Command::Rename(args) => human::rename(args),
@@ -100,6 +103,7 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::SetCheck(a) => commands::set_check(a),
         StateCommand::ArmTimer(a) => commands::arm_timer(a),
         StateCommand::Tick(a) => commands::tick(a),
+        StateCommand::Feedback(a) => commands::feedback(a),
         StateCommand::Due => commands::due(),
         StateCommand::Authorize(a) => authorize::authorize(a),
         StateCommand::CheckAuthorized(a) => authorize::check_authorized(a),
