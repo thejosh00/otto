@@ -53,15 +53,24 @@ pub fn stdout(output: &Output) -> String {
 /// its shell finds, and that is otherwise the installed one — an older build that may not have
 /// the change being tested. Wakes inherit `PATH` (`detach` hands it to the tmux session), so this
 /// reaches them, unless the shell a wake runs in puts another otto first.
-pub fn use_this_build_first_on_path() {
-    let dir = otto_bin().parent().expect("the binary has a directory").to_path_buf();
-    let path = std::env::var("PATH").unwrap_or_default();
-    std::env::set_var("PATH", format!("{}:{path}", dir.display()));
+///
+/// Called by `require_launcher`, which every live test starts with: `live_gate` and
+/// `live_revive` once didn't call this, and so had always tested the installed otto's `otto
+/// state` rather than this build's. Once per process, because tests in one binary run on threads
+/// side by side and the environment is shared.
+fn use_this_build_first_on_path() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = otto_bin().parent().expect("the binary has a directory").to_path_buf();
+        let path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{path}", dir.display()));
+    });
 }
 
-/// otto (and `claude`) exist on PATH — checked first, so a missing prerequisite reads as a
-/// clear message rather than a wall of unrelated timeouts.
+/// Put this build first on PATH, and check `claude` is there — first, so a missing prerequisite
+/// reads as a clear message rather than a wall of unrelated timeouts.
 pub fn require_launcher(checks: &mut Checks) {
+    use_this_build_first_on_path();
     let claude_ok = Command::new("claude").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
     checks.check(claude_ok, "claude is reachable", "claude is not on PATH");
 }
@@ -243,6 +252,22 @@ impl Run {
         self.dir.join("artifacts").join(rel)
     }
 
+    /// Whether a wake holds this run right now, asked the way otto's own liveness asks it: try
+    /// `wake.lock` and give it straight back. Anything but "free" counts as running, so a probe
+    /// that can't tell waits rather than racing a wake.
+    pub fn wake_running(&self) -> bool {
+        let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("wake.lock")) else {
+            return true;
+        };
+        match fs4::fs_std::FileExt::try_lock_exclusive(&file) {
+            Ok(()) => {
+                let _ = fs4::fs_std::FileExt::unlock(&file);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+
     pub fn gate_files_matching(&self, suffix: &str) -> Vec<PathBuf> {
         let gates_dir = self.dir.join("gates");
         let Ok(entries) = std::fs::read_dir(&gates_dir) else {
@@ -343,21 +368,20 @@ pub fn await_gate(run: &Run, slug: &str, timeout: Duration) -> bool {
     await_field(run, "gate.slug", slug, timeout)
 }
 
-/// Wait for a wake to stop holding the run, so a poll does not race a wake mid-write. A running
-/// wake shows in `otto ls` as `working (wake N)`, or — once it has opened a gate, which is where
-/// this is most often called — as `(wake N still running)`, and both have to clear. `--all`,
-/// because a wake that has just set `done` is still running, and plain `ls` hides finished runs.
-pub fn await_idle(timeout: Duration) -> bool {
+/// Wait for this run's wake to stop holding it, so a poll does not race a wake mid-write — a wake
+/// that opened its gate or set `done` is often still finishing. Only this run: it once read
+/// `otto ls --all` for any running wake, which made every live test wait on every other one's
+/// wakes and so forced them to run one at a time.
+pub fn await_idle(run: &Run, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
-        let listed = stdout(&otto(&["ls", "--all"]));
-        if !listed.contains("working (wake") && !listed.contains("still running)") {
+        if !run.wake_running() {
             return true;
         }
         if Instant::now() >= deadline {
             return false;
         }
-        std::thread::sleep(Duration::from_secs(3));
+        std::thread::sleep(Duration::from_secs(2));
     }
 }
 
@@ -404,7 +428,7 @@ pub fn answer_gate(checks: &mut Checks, run: &Run, expected_slug: &str, answer: 
     // A person answers after the wake that asked has gone. Answering while it is still running —
     // a gate is on disk a few seconds before its wake exits — let a live `dev-flow` wake read the
     // answer and push in the same wake that asked, which is not the cold pickup being tested.
-    if !await_idle(timeout) {
+    if !await_idle(run, timeout) {
         checks.bad(format!("the wake that asked {slug} never exited"));
         return false;
     }

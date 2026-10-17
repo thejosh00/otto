@@ -57,7 +57,7 @@ fn live_gate() {
     checks.check(gate_text.contains("## Question"), "carries a question", "gate file has no question");
     checks.check(gate_text.contains("_unanswered_"), "marked unanswered", "gate file is not marked unanswered");
 
-    checks.check(await_idle(Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the gate");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the gate");
 
     checks.step("3 - the artifact the instructions asked for");
     let greeting = run.artifact("greeting.md");
@@ -100,7 +100,7 @@ fn live_gate() {
     }
     checks.ok(format!("reached done after {}min", checks.elapsed().as_secs() / 60));
     // `done` is set before the wake writes its handoff and exits; count its completion after.
-    checks.check(await_idle(Duration::from_secs(120)), "the second wake has exited", "the second wake is still running");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the second wake has exited", "the second wake is still running");
 
     // The point of the whole exercise: a wake with none of the first wake's context read the
     // answer back off disk and acted on it.

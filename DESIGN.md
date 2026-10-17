@@ -173,7 +173,8 @@ At process exit, `otto wake` checks two things and nothing else:
 | `sleeping`, `nextWakeAt` set | poke |
 | `running`, nothing pending, clean exit, fresh handoff | the parent sleeps it for `policy.periodMinutes` (§8), then poke |
 | `blocked`, gate open | a human |
-| `done` / `failed` / `stopped` | nothing; the run is over |
+| `done` | a fresh wake checks the claim first (§5.4); confirmed, nothing |
+| `failed` / `stopped` | nothing; the run is over |
 
 2. **`handoff.md` was written by this wake** (mtime ≥ `wake.startedAt`) and is within its cap.
 
@@ -191,7 +192,7 @@ failed. otto's own paths set it; a wake setting `blocked` itself says `--because
 
 Two checks, because two are enforceable against anything. A validator that also demanded a
 declared `exitCondition` would only work on skills written for otto, and then the premise in §1
-would be false.
+would be false. (One narrow addition: a wake handed a done claim to check must answer it — §5.4.)
 
 **The stall v1 hunted is now unrepresentable.** v1's worst failure was a conductor that ended a
 turn `running` with no gate and no wake time: nothing waiting, nothing scheduled, status still
@@ -208,6 +209,50 @@ immediately and turns it into a retry.
   wake is `wake-incomplete`, never a clean exit — reaping a finished session is free, and
   pretending a killed one finished is how work silently disappears.
 - **Assume anything from the last wake except `handoff.md` and disk.** There is nothing else.
+
+### 5.4 A done claim is checked by a wake that didn't make it
+
+`done` is the one stopping state nothing ever comes back from, and §19.1 is what taking it on the
+doer's word cost: `dev-flow` went `land → done` with its worktree still on disk, both contract
+checks passed, and nothing said so. That finding concluded no generic check could catch it, and for
+a *mechanical* check that is still true. A *wake* can: the premise (§1) forbids otto requiring a
+declaration it could validate against, but nothing stops a model from reading the done condition and
+the wrapped instructions and then looking at the world. The idea is borrowed from paperclip's task
+watchdog, whose standing instruction is to treat every stop "as a claim that must be verified"
+against the evidence and not to accept the agent's own account as proof.
+
+What makes it cheap here is the design otto already has. Every wake starts cold (§5.1), so "fresh
+eyes" is not a second agent or a second context to build; it is the next wake, given a different
+job. So:
+
+- **`set-status done` records a claim** (`doneClaim` in `run.json`, journaled `done-claimed`) and
+  makes the run due now. It is not `done` yet.
+- **The next wake is the checker**, told so in its prompt, and the harness's "Checking a done claim"
+  is its procedure: the claim is not evidence; know what finished means from `doneCondition` and
+  the wrapped instructions; check each part against the world; account for the todo; don't fix
+  anything; decide. It ends with `otto state verify --confirm` or `--reopen`, each with a reason
+  that is kept (`lastVerdict`), or a gate when only a person can say.
+- **It starts straight away, in the same place.** `otto wake` follows a claim with its check, and a
+  reopen with the fix, without waiting up to five minutes for poke. Poke stays the backstop: the run
+  is due now either way, so a process that dies in between is picked up on the next pass.
+- **Mechanical where it can be.** The wake that made a claim cannot confirm it (`verify` refuses
+  when the caller's wake number is the claimant's). A checker that ends with the claim still
+  waiting and no gate open fails the contract — a third check, but a narrow one, applying only to a
+  wake that was handed a claim. A second claim while one waits is refused.
+- **Bounded.** Past `policy.maxDoneReopens` (2) reopens, the run blocks with cause `unverified` and
+  otto asks the person whether to keep going; their answer comes with a fresh allowance.
+
+The cost is one wake per finished run. Measured on the live test, a checking wake is 10–11 turns and
+about 20 seconds. `--policy verifyDone=false` restores done-on-the-doer's-word for a run where that
+wake isn't worth it.
+
+**Measured, with the premise made certain.** `tests/live_verify.rs` builds the §19.1 failure by
+hand: the work is merged, the worktree and branch are left behind, and the claiming wake's own handoff
+and todo both say they were cleaned up. The checker ignored the account, ran `git worktree list`, and
+reopened with "the note branch still exists… todo item 'Remove the worktree and the note branch' is
+marked [x] without having happened." The next wake, told exactly that, removed both and claimed
+again; a second check confirmed with the evidence. Three wakes, two minutes. Given finished work, a
+single check confirmed it and listed what it had looked at.
 
 ## 6. State model
 
@@ -617,7 +662,8 @@ only bites a run that spans wakes; a wake that can finish the goal outright has 
 negotiate. Where it genuinely matters, pass `--until` and remove the judgement.
 
 `doneCondition` is re-read every wake and never rewritten without a gate. A run that revises its
-own finish line is a run that will never cross it.
+own finish line is a run that will never cross it. It is also what a done claim is checked against
+(§5.4), which is one more reason to state it with `--until` rather than leave it to inference.
 
 ### 10.3 Honest limits
 
@@ -978,6 +1024,13 @@ for a session that outlived a wake:
    The generated-plan fallback stays unbuilt, because the failure it would address is not the one
    that showed up. Note also what a wrapped skill gets from being *well authored* (§11): every
    good behaviour above came from `dev-flow.md` declaring it, not from the engine.
+
+   **Later: a check, not a validator, closed most of the gap** (§5.4). "No generic check can be"
+   complete held for mechanical checks; it did not hold for a wake that reads the done condition
+   and the instructions and then looks. A done claim is now checked by the next wake, cold, and the
+   §19.1 failure rebuilt by hand was caught on the first look. What remains is the honest residue:
+   a checker can only check what the done condition and the instructions say finished means, so a
+   vague `--until` gets a vague check.
 2. **Translation (§10.1) is prose with a mechanical backstop.** It will sometimes be ignored. The
    cost is a wasted wake, and the incomplete-wake path bounds it. Worth measuring on real skills
    before trusting a number.

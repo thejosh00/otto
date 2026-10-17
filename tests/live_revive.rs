@@ -33,6 +33,11 @@ fn tick_seconds() -> u32 {
     std::env::var("OTTO_LIVE_REVIVE_TICK_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(120)
 }
 
+/// Held for the whole of each test here. `otto poke` acts on every run there is, so a poke from
+/// one test would start, recover or kill the other's run, and `cargo test` runs the two side by
+/// side unless told otherwise. For the same reason `test/live.sh` runs this file on its own.
+static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The action field of the `otto poke --verbose` decision line for one run — that line reads
 /// `<stamp> <action> <run-id> <reason...>`, whitespace-separated.
 fn poke_action(run_id: &str, args: &[&str]) -> Option<String> {
@@ -98,6 +103,7 @@ fn start_nap(checks: &mut Checks, run_id: &str, ticks: u32, tick_seconds: u32) -
 #[test]
 #[ignore = "spawns real claude wakes, kills one with SIGKILL, and spends real money — run with --ignored"]
 fn live_revive() {
+    let _alone = ALONE.lock().unwrap_or_else(|e| e.into_inner());
     let ticks_required = ticks();
     let tick_secs = tick_seconds();
     let mut checks = Checks::new();
@@ -125,7 +131,7 @@ fn live_revive() {
     }
     // The wake arms its timer before it finishes its handoff; wait for it to exit, or the kill
     // below can land on this wake instead of the one it starts.
-    checks.check(await_idle(Duration::from_secs(300)), "the first wake has exited", "the first wake is still running");
+    checks.check(await_idle(&run, Duration::from_secs(300)), "the first wake has exited", "the first wake is still running");
     let wake_at = run.field_str("nextWakeAt");
     let done_at_kill = run.field_str("facts.ticksDone");
     checks.check(!wake_at.is_empty() && wake_at != "null", format!("nextWakeAt={wake_at}"), "the timer was never armed");
@@ -208,7 +214,7 @@ fn live_revive() {
     );
     let spawned = poke_action(&run_id, &["--grace", "0"]);
     checks.check(spawned.as_deref() == Some("spawn"), "spawned a wake for the overdue run", format!("expected 'spawn', got '{}'", spawned.as_deref().unwrap_or("nothing")));
-    await_idle(Duration::from_secs(600));
+    await_idle(&run, Duration::from_secs(600));
     let final_ticks: i64 = run.field_str("facts.ticksDone").parse().unwrap_or(0);
     if final_ticks > done_at_kill_n {
         checks.ok(format!("the run carried on: ticksDone={final_ticks}"));
@@ -236,6 +242,7 @@ fn live_revive() {
 #[test]
 #[ignore = "needs the launchd agent installed (`otto agent start`) and spends real money — run with --ignored"]
 fn live_revive_launchd() {
+    let _alone = ALONE.lock().unwrap_or_else(|e| e.into_inner());
     let mut checks = Checks::new();
 
     checks.step("0 - preconditions");
@@ -271,7 +278,7 @@ fn live_revive_launchd() {
         "the launchd agent started a wake with no help from this test",
         "the agent never fired — check ~/.otto/logs/poke.log",
     );
-    await_idle(Duration::from_secs(600));
+    await_idle(&run, Duration::from_secs(600));
 
     finish_run(checks, &run, &run.status(), None, None);
 }

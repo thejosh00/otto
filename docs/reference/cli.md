@@ -784,6 +784,7 @@ Commands:
   list              One line per run
   set-phase         Enter a phase
   set-status        Change status
+  verify            Answer a done claim: confirm the run is done, or send it back to work
   record-fact       Write re-derived facts
   open-gate         Write the gate file and stop the run on it
   close-gate        Record the answer verbatim and clear the gate
@@ -998,9 +999,35 @@ Options:
           - budget:        A ceiling set when the run was created (`--budget-wakes`, `--budget-hours`) was reached
           - stall:         `policy.maxTicksWithoutProgress` ticks in a row changed nothing
           - instructions:  The wrapped instructions decided the run could not proceed
+          - unverified:    It said it was done more than `policy.maxDoneReopens` times, and each time a fresh wake checking the claim found it wasn't
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+### `otto state verify`
+
+```text
+Answer a done claim: confirm the run is done, or send it back to work
+
+Usage: otto state verify --reason <REASON> <--confirm|--reopen> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --confirm
+          The claim holds: the run is done
+
+      --reopen
+          The claim does not hold: the run goes back to work, starting now
+
+      --reason <REASON>
+          With --confirm, what you checked and what showed it; with --reopen, what is missing. Recorded verbatim, and a reopen's reason is the first thing the next wake is told
+
+  -h, --help
+          Print help
 ```
 
 ### `otto state record-fact`

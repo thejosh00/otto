@@ -13,8 +13,9 @@ keeps everything it makes where you can find it again.
 - Babysit a PR through a week of review.
 
 otto contributes none of the doing. It contributes **durability**: state on disk, questions that
-wait for your answer, an inbox, every version of the work kept, timers that survive a reboot, and a
-mechanically enforced guarantee that every stopping point can be resumed cold.
+wait for your answer, an inbox, every version of the work kept, timers that survive a reboot, a
+second look before anything is called done, and a mechanically enforced guarantee that every
+stopping point can be resumed cold.
 
 > Sessions end. The work doesn't.
 
@@ -87,8 +88,8 @@ otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --targ
 
 ## Documentation
 
-- **[Concepts](docs/concepts.md)** — runs, wakes, the handoff, the period, gates, notes, messages
-  and the inbox, outputs, pausing, check scripts, recovery.
+- **[Concepts](docs/concepts.md)** — runs, wakes, the handoff, checking done, the period, gates,
+  notes, messages and the inbox, outputs, pausing, check scripts, recovery.
 - **Guides** — [living with a run](docs/guides/everyday.md) ·
   [wrapping work](docs/guides/wrapping.md) · [check scripts](docs/guides/check-scripts.md) ·
   [sandboxing](docs/guides/sandboxing.md) · [running as a service](docs/guides/running-as-a-service.md)
@@ -100,7 +101,8 @@ otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --targ
 
 ```bash
 cargo test                    # the whole engine: no tmux, no model, no money
-cargo test -- --ignored       # live tests against a real claude — spends real tokens
+test/live.sh                  # live tests against a real claude, side by side: ~5 min, real tokens
+test/live.sh live_devflow     # the hour-long one, dev-flow from ticket to merge
 ```
 
 Everything is unit-testable because the two things that touch the outside world are injected:

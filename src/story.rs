@@ -77,6 +77,7 @@ pub fn glance(state: &RunState, running: bool, question: Option<&str>, said: Opt
             ),
             Status::Blocked => (Mood::Trouble, "Stuck, and nothing is asking you how to go on".to_string()),
             _ if state.incomplete_wakes > 0 => (Mood::Trouble, with_said("Stopped part-way last time; trying again")),
+            _ if state.done_claim.is_some() => (Mood::Idle, with_said("Says it's finished; a fresh look is checking")),
             _ if state.check.as_ref().is_some_and(|c| c.pinned) => (Mood::Watching, said.unwrap_or("Watching").to_string()),
             _ => (Mood::Idle, said.unwrap_or("Nothing to report yet").to_string()),
         }
@@ -218,7 +219,7 @@ fn did_something(lines: &[&Entry]) -> Option<Option<String>> {
         return Some(str_of(&sent.value, "title").map(|t| format!("sent you: {t}")));
     }
     let progressed = lines.iter().any(|e| match e.event.as_str() {
-        "tick" | "gate-opened" | "phase-changed" => true,
+        "tick" | "gate-opened" | "phase-changed" | "done-claimed" | "done-reopened" => true,
         "status-changed" => str_of(&e.value, "to") == Some("done"),
         _ => false,
     });
@@ -439,6 +440,14 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                 (Some("stopped" | "failed"), Some(_)) => happening("you", "You brought it back".to_string()),
                 _ => None,
             },
+            "done-claimed" => happening("status", "Said it's finished; a fresh look checks before it is".to_string()),
+            "done-verified" => {
+                happening("status", format!("Checked that it's finished: {}", first_line(str_of(v, "reason").unwrap_or(""), 200)))
+            }
+            "done-reopened" => happening(
+                "trouble",
+                format!("Not finished after all — a fresh look found: {}", first_line(str_of(v, "reason").unwrap_or(""), 200)),
+            ),
             "start-failed" if v.get("consecutive").and_then(Value::as_u64) == Some(1) => {
                 happening("trouble", "Couldn't start — claude exited straight away; retrying until it can".to_string())
             }

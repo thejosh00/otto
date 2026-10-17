@@ -45,7 +45,6 @@ fn live_todo() {
 
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
-    use_this_build_first_on_path();
 
     checks.step("1 - start todo-flow, which never mentions a todo");
     let run_id = format!("todo-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
@@ -66,7 +65,7 @@ fn live_todo() {
     if !await_field(&run, "status", "awaiting_human", timeout) {
         checks.bail(&run, "never reached the go-on gate");
     }
-    checks.check(await_idle(Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the gate");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the gate");
     checks.check(
         run.artifact("notes/alpha.md").is_file() && run.artifact("notes/beta.md").is_file(),
         "alpha.md and beta.md written",
@@ -118,7 +117,7 @@ fn live_todo() {
     }
     // The wake may still be tidying after it set `done` — `set-status` is what tells it about
     // anything left open — so read the todo only once it has exited.
-    checks.check(await_idle(Duration::from_secs(120)), "the finishing wake has exited", "a wake is still running at done");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the finishing wake has exited", "a wake is still running at done");
     let completed = run.events("wake-complete");
     checks.check(completed >= 2, format!("{completed} wakes passed the contract"), format!("only {completed} wake(s) passed the contract"));
     checks.check(!run.artifact("notes/gamma.md").exists(), "gamma.md not written, as answered", "gamma.md written despite Skip gamma");

@@ -107,9 +107,27 @@ pub fn handoff_is_fresh(run_path: &Path, started_at: std::time::SystemTime, cap:
     Ok(())
 }
 
+/// A wake given a done claim to check (any wake after the one that made it) must answer it, ask a
+/// person, or end the run. Ending any other way leaves the claim for the next wake, which is the
+/// same retry as a stranded run and should be counted as one — otherwise a checker that never
+/// decides would be woken again every period, forever.
+pub fn claim_was_answered(state: &RunState) -> Result<(), String> {
+    match (&state.done_claim, &state.wake) {
+        (Some(claim), Some(wake)) if wake.n > claim.by_wake && state.gate.is_none() => Err(
+            "it was given a done claim to check and ended without a verdict (`otto state verify --confirm` \
+             or `--reopen`)"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
+}
+
 /// The whole contract. `started_at` is when this wake began, for the freshness comparison.
 pub fn validate(run_path: &Path, state: &RunState, started_at: std::time::SystemTime) -> Outcome {
     if let Err(why) = stopping_state_is_legal(state) {
+        return Outcome::Incomplete(why);
+    }
+    if let Err(why) = claim_was_answered(state) {
         return Outcome::Incomplete(why);
     }
     let cap = state.policy.handoff_max_bytes as usize;
@@ -263,6 +281,52 @@ mod tests {
         let outcome = validate(&path, &state, just_now());
         assert!(!outcome.is_complete());
         assert!(outcome.reason().unwrap().contains("still running"));
+    }
+
+    // --- a done claim ---
+
+    /// The wake that claimed done has stopped where it should (the run is due now, to be checked);
+    /// the wake after it was given the claim to check, and must answer it, ask, or end the run.
+    #[test]
+    fn a_wake_given_a_claim_must_answer_it() {
+        let _h = TempHome::new();
+        let (path, mut state) = run("c-claim");
+        write_handoff(&path, "# c-claim\n## Next wake must\nCheck it.\n");
+        state.status = Status::Sleeping;
+        state.next_wake_at = Some(crate::clock::Timestamp::now());
+        state.done_claim = Some(crate::state::DoneClaim {
+            by_wake: 2,
+            at: crate::clock::Timestamp::now(),
+            reason: None,
+            left_open: vec![],
+        });
+        let wake = |n| crate::state::Wake {
+            n,
+            started_at: crate::clock::Timestamp::now(),
+            deadline_at: crate::clock::Timestamp::now(),
+            launcher: "claude".into(),
+            pid: None,
+            session: None,
+            outcome: None,
+        };
+        state.wake = Some(wake(2));
+        assert_eq!(validate(&path, &state, just_now()), Outcome::Complete, "the claiming wake stopped properly");
+
+        state.wake = Some(wake(3));
+        let outcome = validate(&path, &state, just_now());
+        assert!(outcome.reason().unwrap().contains("without a verdict"), "got: {:?}", outcome.reason());
+
+        state.gate = Some(crate::state::Gate {
+            id: "001".into(),
+            slug: "is-it-done".into(),
+            file: "gates/001-is-it-done.md".into(),
+            asked_at: crate::clock::Timestamp::now(),
+            answered_at: None,
+            expires_at: None,
+            about: None,
+        });
+        state.status = Status::AwaitingHuman;
+        assert_eq!(validate(&path, &state, just_now()), Outcome::Complete, "asking a person is an answer for now");
     }
 
     #[test]

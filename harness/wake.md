@@ -69,7 +69,8 @@ to bring the run back from:
 | `sleeping` with `nextWakeAt` set | the timer |
 | `running`, with `handoff.md` rewritten and a clean exit | the run's period — otto sleeps it for you |
 | `blocked` **with a gate open** | the person |
-| `done` / `failed` / `stopped` | nothing — the run is over |
+| `done` | a fresh wake checks it straight away — see Claiming done; once it is confirmed, nothing |
+| `failed` / `stopped` | nothing — the run is over |
 
 **Every run has a period** (`policy.periodMinutes`, an hour unless the run was started with
 `--period`). If you finish cleanly, rewrite the handoff, and leave the run `running` with no gate
@@ -93,6 +94,58 @@ If you run out of road mid-work — something ambiguous turned up, you are near 
 deadline, the budget is nearly spent — that is fine, but **rewrite the handoff first**, and
 open a gate or arm a short timer if waiting a whole period would be wrong. Stopping is always
 allowed. Stopping *silently* is not.
+
+## Claiming done
+
+`otto state set-status <id> --status done --reason "<what finished it>"` does not end the run on
+your word. It records a **claim**, and the next wake — which starts cold and did none of the work —
+checks it against the done condition before the run is done. (A run whose policy has `verifyDone`
+off is the exception: there, done is done. otto's reply says which happened.)
+
+- Claim done only when the done condition holds **now**, which you checked, not remember.
+- Write the handoff for whoever checks: what finished it under `This wake did`, and under `Don't
+  re-derive`, where to look — the merged commit, the published output, the test report.
+- Then stop. One claim at a time; otto refuses a second.
+
+If the check finds something missing, the run comes straight back to work, and the next wake is
+told what was found before anything else. Fix exactly that, and claim done again.
+
+## Checking a done claim
+
+When `run.json` has a `doneClaim`, your prompt says so, and **you are not here to do the work.**
+The last wake said the run is finished. You decide whether it is, the way a reviewer who wasn't
+there would.
+
+1. **The claim is not evidence.** The handoff, the journal and the todo are the claiming wake's own
+   account. Read them for where to look, never as proof.
+2. **Know what finished means.** `doneCondition` in `run.json`, or the goal when there is none. Read
+   what the run wraps as well — the instructions file, or a skill's `SKILL.md` — for anything it
+   says must be true at the end: a cleanup step, a report, a ticket updated. Read it; don't run it.
+   A person can move the finish line at a gate: an answer in `gates/` like "stop at ready-to-push"
+   makes that what finished means, and what they said not to do is not missing. Nothing else can.
+3. **Check each part against the world, now.** For every part of finished, look at the thing
+   itself: the file exists and says what it should, the commit is on the branch it belongs on, the
+   PR is merged, the worktree is gone, the lock is released, the output is published. `git`, `gh`,
+   `ls`, opening the file: direct and cheap. Rerun a test suite only when passing it is part of
+   finished and it is quick; otherwise check a recorded result exists for the commit it claims.
+4. **Check the todo.** Every item `[x]`, or `[-]`/`[!]` with its reason. One still `[ ]` or `[~]` is
+   unfinished unless you can see that it happened.
+5. **Don't fix anything**, even a one-line fix. A fix you make is a fix nobody checks. Say what is
+   missing and reopen; the next wake does it.
+6. **Decide**, and say it specifically:
+   - It holds: `otto state verify <id> --confirm --reason "<what you checked, and what showed it>"`
+     — "origin/main contains 3f2a1c0; git worktree list shows only the main checkout; todo all
+     [x] or [-]".
+   - It doesn't: `otto state verify <id> --reopen --reason "<what is missing, and how you know>"` —
+     "the worktree at ~/work/greeter-wt still exists (git worktree list)". The next wake is given
+     this word for word, first.
+   - Only a person can say: finished turns on a judgement that is theirs to make. Open a gate with
+     what you checked and the decision; the claim waits for their answer.
+7. **Rewrite the handoff** as always: confirmed, `Where this is` says it is finished and what showed
+   it; reopened, `Next wake must` is the fix.
+
+Checking only reads the world: no pushes, comments or merges. A checking wake that ends without one
+of the three counts as a wake that didn't finish.
 
 ## handoff.md
 

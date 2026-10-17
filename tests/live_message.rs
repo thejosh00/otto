@@ -30,7 +30,6 @@ fn live_message() {
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
     // The wake calls `otto state message`, which only this build has.
-    use_this_build_first_on_path();
 
     checks.step("1 - start report-flow, wrapped as an instructions file");
     let run_id = format!("message-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
@@ -51,7 +50,7 @@ fn live_message() {
     if !await_field(&run, "status", "done", timeout) {
         checks.bail(&run, "never finished");
     }
-    checks.check(await_idle(Duration::from_secs(120)), "the wake has exited", "a wake is still running");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the wake has exited", "a wake is still running");
 
     checks.step("3 - it told the person, through the inbox");
     let sent = run.events("message-sent");

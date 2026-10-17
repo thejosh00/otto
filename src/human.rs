@@ -775,6 +775,16 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if state.is_paused() {
         println!("  paused    {} — `otto resume {short}` to lift it", crate::story::paused_line(state).trim_start_matches("Paused").trim());
     }
+    if let Some(claim) = state.done_claim.as_ref().filter(|_| !state.status.is_terminal()) {
+        println!("  done?     wake {} says it's finished; the next wake checks that cold before it is", claim.by_wake);
+    }
+    match &state.last_verdict {
+        Some(v) if v.confirmed && state.status == crate::state::Status::Done => println!("  checked   {}", v.reason),
+        Some(v) if !v.confirmed && state.done_claim.is_none() && !state.status.is_terminal() => {
+            println!("  reopened  said it was finished, but a fresh look found: {}", v.reason)
+        }
+        _ => {}
+    }
     if let Some(newest) = detail.outputs.outputs.first() {
         let n = detail.outputs.outputs.len();
         println!(

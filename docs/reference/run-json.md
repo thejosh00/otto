@@ -26,7 +26,10 @@ what the ideas mean.
 | Field | Meaning |
 |---|---|
 | `status` | `running`, `sleeping`, `awaiting_human`, `blocked`, `done`, `failed` or `stopped` |
-| `blocked` | When `status` is `blocked`: `{cause, detail, at}`, cause one of `wake-failures`, `budget`, `stall`, `instructions` |
+| `blocked` | When `status` is `blocked`: `{cause, detail, at}`, cause one of `wake-failures`, `budget`, `stall`, `instructions`, `unverified` |
+| `doneClaim` | A wake said the run is done and no other wake has checked yet: `{byWake, at, reason, leftOpen}`. The next wake is the check — see [checking done](../concepts.md#checking-done). Gone once the run is over |
+| `lastVerdict` | What the last check of a done claim found: `{confirmed, reason, wake, at}` — on a done run, what was checked; on a reopened one, what was missing |
+| `doneReopens` | Times a check has sent a claim back since the run last asked the person; past `maxDoneReopens` it blocks |
 | `gate` | The open gate: `{id, slug, file, askedAt, answeredAt, expiresAt, about}`, or `null`. `about` is the output version it asks about (`design@1`), when it asks about one |
 | `nextWakeAt` | When poke next wakes the run, or `null` |
 | `armedWakeAt` | The time a wake last asked for with `arm-timer --in`/`--at`. While it equals `nextWakeAt`, the sleep is the wake's own: a person's check doesn't stand in front of it and `otto period` doesn't move it |
@@ -44,7 +47,7 @@ what the ideas mean.
 | `launcher` | `{kind, detach, repos, workdir}`: the launcher's name, `tmux` or `none`, the `--repo` directories, and the absolute directory every wake starts in (absent on runs from before working directories, which use the configured default) |
 | `permission` | `{mode, allowedTools, disallowedTools}`, passed to claude on every wake |
 | `budget` | `{wakes, hours, spentWakes}` — 0 means unlimited. (`usd`/`spentUsd` are vestigial and always 0) |
-| `policy` | `periodMinutes`, `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
+| `policy` | `periodMinutes`, `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, `verifyDone`, `maxDoneReopens`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
 | `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |
 | `messages` | Messages the run has sent that the person has not marked done: `{id, kind, title, file, sentAt}`, `file` the message's `messages/NNN-<slug>.json` |

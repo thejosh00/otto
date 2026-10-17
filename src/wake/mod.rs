@@ -36,7 +36,7 @@ use crate::state::{transaction, RunState, Status, Wake, WakeOutcome};
 use serde_json::Value;
 use std::time::Duration;
 
-#[derive(clap::Args, Debug)]
+#[derive(clap::Args, Debug, Clone)]
 pub struct WakeArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
@@ -140,8 +140,47 @@ pub fn wake(args: WakeArgs) -> Result<(), OttoError> {
     run_wake(&args, &mut exec)
 }
 
-/// The body, with the spawner injected so the whole path is testable without spending money.
+/// A wake, and then — when it claimed done, or was the check that sent a claim back — the wake
+/// that follows from that, straight away and in the same place, rather than up to five minutes
+/// later when poke notices. Poke is still the backstop: the next wake is due now either way, so if
+/// this process dies in between, the next pass starts it.
+///
+/// Bounded twice over: a claim alternates checker and doer, and `maxDoneReopens` caps how often a
+/// check can send it back; `MAX_FOLLOW_ONS` caps the chain should that ever be set to 0 (no limit).
 pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
+    const MAX_FOLLOW_ONS: u32 = 6;
+    run_one_wake(args, exec)?;
+    if args.dry_run {
+        return Ok(());
+    }
+    let next = WakeArgs { answer: None, ..args.clone() };
+    for _ in 0..MAX_FOLLOW_ONS {
+        if !follows_on(&crate::state::read_run(&args.id)?) {
+            break;
+        }
+        run_one_wake(&next, exec)?;
+    }
+    Ok(())
+}
+
+/// Whether the wake that just finished leaves one that should start now: it completed, and either
+/// claimed done (a check is next) or was a check that reopened the run (the fix is next). Not when
+/// anything else holds the run — a gate, a pause, a block.
+fn follows_on(state: &RunState) -> bool {
+    let Some(wake) = &state.wake else { return false };
+    if wake.outcome != Some(WakeOutcome::Complete) || state.gate.is_some() || state.is_paused() {
+        return false;
+    }
+    if state.status != Status::Sleeping {
+        return false;
+    }
+    let claimed = state.done_claim.as_ref().is_some_and(|c| c.by_wake == wake.n);
+    let reopened = state.last_verdict.as_ref().is_some_and(|v| !v.confirmed && v.wake == wake.n);
+    claimed || reopened
+}
+
+/// One wake, with the spawner injected so the whole path is testable without spending money.
+fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     let run_path = crate::paths::run_dir(&args.id)?;
     let state = crate::state::read_run(&args.id)?;
 
@@ -155,9 +194,10 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         return block_on_budget(&args.id, &why);
     }
 
+    let base = prompt::for_wake(&args.id, &run_path, &state);
     let mut prompt = match &args.answer {
-        Some(answer) => prompt::answer_prompt(&args.id, &run_path, answer),
-        None => prompt::user_prompt(&args.id, &run_path),
+        Some(answer) => prompt::answer_prompt(&base, answer),
+        None => base,
     };
     // Read from the same `state` the prompt is built from, so the notes marked as given below are
     // exactly the ones this wake was told — never one added a moment later.
@@ -618,6 +658,8 @@ fn plain_failure(why: &str) -> String {
         "its notes for next time grew past their size limit"
     } else if why.contains("no gate open") {
         "it said it was waiting on you without asking a question"
+    } else if why.contains("without a verdict") {
+        "it was checking whether the work was finished, and stopped without saying"
     } else {
         "it stopped part-way"
     };
@@ -1360,6 +1402,116 @@ mod tests {
         .unwrap();
         let call = exec.last_call().join(" ");
         assert!(call.contains("Approve, but rename the flag first."));
+    }
+
+    /// A scripted run of wakes: the `n`th spawn writes a handoff and then does `step(n)`. Comes with
+    /// a count of the wakes that ran.
+    fn script(id: &'static str, step: impl Fn(u32) + 'static) -> (FakeExec, std::rc::Rc<std::cell::Cell<u32>>) {
+        let count = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let seen = count.clone();
+        let mut exec = FakeExec::new();
+        exec.on_exec(move || {
+            seen.set(seen.get() + 1);
+            let path = crate::paths::run_dir(id).unwrap();
+            std::fs::write(path.join(HANDOFF_FILE), "# handoff\n## Next wake must\nCarry on.\n").unwrap();
+            step(seen.get());
+        });
+        (exec, count)
+    }
+
+    fn claim_done(id: &str) {
+        crate::state::commands::set_status(crate::state::commands::SetStatusArgs {
+            id: id.into(),
+            status: Status::Done,
+            reason: Some("all of it".into()),
+            because: None,
+        })
+        .unwrap();
+    }
+
+    fn verdict(id: &str, confirm: bool, reason: &str) {
+        crate::state::commands::verify(crate::state::commands::VerifyArgs {
+            id: id.into(),
+            confirm,
+            reopen: !confirm,
+            reason: reason.into(),
+        })
+        .unwrap();
+    }
+
+    /// A claim is checked by the next wake straight away, in the same place — not up to five
+    /// minutes later when poke notices — and that wake is told it is the checker.
+    #[test]
+    fn a_done_claim_is_checked_by_the_next_wake_straight_away() {
+        let _h = TempHome::new();
+        test_init("w-claim", "a goal").unwrap();
+        let (mut exec, count) = script("w-claim", |n| match n {
+            1 => claim_done("w-claim"),
+            _ => verdict("w-claim", true, "checked the file is there"),
+        });
+        run_wake(&args("w-claim"), &mut exec).unwrap();
+
+        assert_eq!(count.get(), 2, "the claim, then its check");
+        let state = read_run("w-claim").unwrap();
+        assert_eq!(state.status, Status::Done);
+        assert_eq!(state.wake.unwrap().n, 2);
+        let calls = exec.calls.borrow();
+        assert!(!calls[0].join(" ").contains("to check a claim"));
+        assert!(calls[1].join(" ").contains("to check a claim"), "the checker is told what it is");
+    }
+
+    /// Reopened, the fix comes next — told what was missing — and its claim is checked again.
+    #[test]
+    fn a_reopened_claim_goes_back_to_work_and_is_checked_again() {
+        let _h = TempHome::new();
+        test_init("w-again", "a goal").unwrap();
+        let (mut exec, count) = script("w-again", |n| match n {
+            1 | 3 => claim_done("w-again"),
+            2 => verdict("w-again", false, "the worktree is still there"),
+            _ => verdict("w-again", true, "it's gone now"),
+        });
+        run_wake(&args("w-again"), &mut exec).unwrap();
+
+        assert_eq!(count.get(), 4);
+        assert_eq!(read_run("w-again").unwrap().status, Status::Done);
+        let calls = exec.calls.borrow();
+        assert!(calls[2].join(" ").contains("the worktree is still there"), "the fix is told what was missing");
+    }
+
+    /// A checker that ends without a verdict has not done its one job: incomplete, and nothing more
+    /// is started on top of it.
+    #[test]
+    fn a_checker_that_never_decides_is_an_incomplete_wake() {
+        let _h = TempHome::new();
+        test_init("w-undecided", "a goal").unwrap();
+        let (mut exec, count) = script("w-undecided", |n| {
+            if n == 1 {
+                claim_done("w-undecided");
+            }
+        });
+        run_wake(&args("w-undecided"), &mut exec).unwrap();
+
+        assert_eq!(count.get(), 2);
+        let state = read_run("w-undecided").unwrap();
+        assert_eq!(state.incomplete_wakes, 1);
+        assert!(state.done_claim.is_some(), "the claim still waits, for the retry");
+        assert_eq!(state.wake.unwrap().outcome, Some(WakeOutcome::Incomplete));
+    }
+
+    /// With checking off there is nothing to follow on: one wake, and the run is done.
+    #[test]
+    fn with_checking_off_a_done_wake_is_the_last() {
+        let _h = TempHome::new();
+        test_init("w-trust", "a goal").unwrap();
+        transaction("w-trust", |_p, state| {
+            state.policy.verify_done = false;
+            Ok(())
+        })
+        .unwrap();
+        let (mut exec, count) = script("w-trust", |_| claim_done("w-trust"));
+        run_wake(&args("w-trust"), &mut exec).unwrap();
+        assert_eq!(count.get(), 1);
+        assert_eq!(read_run("w-trust").unwrap().status, Status::Done);
     }
 
     #[test]

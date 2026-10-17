@@ -50,6 +50,9 @@ pub enum BlockedCause {
     Stall,
     /// The wrapped instructions decided the run could not proceed
     Instructions,
+    /// It said it was done more than `policy.maxDoneReopens` times, and each time a fresh wake
+    /// checking the claim found it wasn't
+    Unverified,
 }
 
 impl BlockedCause {
@@ -60,8 +63,40 @@ impl BlockedCause {
             BlockedCause::Budget => "budget",
             BlockedCause::Stall => "stall",
             BlockedCause::Instructions => "instructions",
+            BlockedCause::Unverified => "unverified",
         }
     }
+}
+
+/// A wake said the run is done, and no other wake has checked yet. `done` is the one stopping
+/// state nothing ever comes back from, so it is not taken on the word of the wake that did the
+/// work: the run sleeps until now, and the next wake — cold, with none of this one's context —
+/// checks the claim against the done condition and either confirms it or reopens the run
+/// (`commands::verify`). Its presence is what makes a wake the checker, whatever the status says.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoneClaim {
+    /// The wake that made the claim (0 when no wake had run). It cannot also confirm it.
+    #[serde(rename = "byWake")]
+    pub by_wake: u32,
+    pub at: crate::clock::Timestamp,
+    /// What the claiming wake said, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Todo items still `[ ]` or `[~]` when it claimed (`crate::todo`).
+    #[serde(rename = "leftOpen", default, skip_serializing_if = "Vec::is_empty")]
+    pub left_open: Vec<String>,
+}
+
+/// What the last check of a done claim found. Kept after the claim is gone: on a reopened run it is
+/// why the run is back at work, and on a done one it is what was checked.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Verdict {
+    pub confirmed: bool,
+    /// The checker's own words: what it checked, or what is missing.
+    pub reason: String,
+    /// The wake that checked.
+    pub wake: u32,
+    pub at: crate::clock::Timestamp,
 }
 
 /// The record behind a `blocked` status. Present exactly while the run is blocked — `transaction`
@@ -384,6 +419,12 @@ fn default_max_incomplete_wakes() -> u32 {
 fn default_period_minutes() -> u64 {
     60
 }
+fn default_verify_done() -> bool {
+    true
+}
+fn default_max_done_reopens() -> u32 {
+    2
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -408,6 +449,13 @@ pub struct Policy {
     /// once it is answered, the period resumes.
     #[serde(rename = "periodMinutes", default = "default_period_minutes")]
     pub period_minutes: u64,
+    /// A wake's `set-status done` is a claim that a fresh wake checks before the run is done
+    /// (`DoneClaim`). `false`: done is done, on the word of the wake that said it.
+    #[serde(rename = "verifyDone", default = "default_verify_done")]
+    pub verify_done: bool,
+    /// How many times a check may send a done claim back before the run stops and asks the person.
+    #[serde(rename = "maxDoneReopens", default = "default_max_done_reopens")]
+    pub max_done_reopens: u32,
     /// Anything `--policy` set that isn't one of the fields above.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -424,6 +472,8 @@ impl Default for Policy {
             max_incomplete_wakes: default_max_incomplete_wakes(),
             perpetual: false,
             period_minutes: default_period_minutes(),
+            verify_done: default_verify_done(),
+            max_done_reopens: default_max_done_reopens(),
             extra: Map::new(),
         }
     }
@@ -480,6 +530,18 @@ impl Policy {
                     self.extra.insert(key, value);
                 }
             },
+            "verifyDone" => match value.as_bool() {
+                Some(b) => self.verify_done = b,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
+            "maxDoneReopens" => match value.as_u64() {
+                Some(n) => self.max_done_reopens = n as u32,
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
             _ => {
                 self.extra.insert(key, value);
             }
@@ -490,6 +552,7 @@ impl Policy {
         match key {
             "autoMergeWhenGreen" => self.auto_merge_when_green,
             "perpetual" => self.perpetual,
+            "verifyDone" => self.verify_done,
             _ => self.extra.get(key).and_then(Value::as_bool).unwrap_or(false),
         }
     }
@@ -559,6 +622,15 @@ pub struct RunState {
     /// Why `status` is `blocked`, when it is. Set through `block`; cleared by `transaction`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<Blocked>,
+    /// A done claim waiting for a fresh wake to check it. Cleared by `transaction` once the run is
+    /// over, however it got there.
+    #[serde(rename = "doneClaim", default, skip_serializing_if = "Option::is_none")]
+    pub done_claim: Option<DoneClaim>,
+    /// Times a check has sent a done claim back since the run last stopped to ask the person.
+    #[serde(rename = "doneReopens", default, skip_serializing_if = "is_zero")]
+    pub done_reopens: u32,
+    #[serde(rename = "lastVerdict", default, skip_serializing_if = "Option::is_none")]
+    pub last_verdict: Option<Verdict>,
     /// Poke's own bookkeeping, kept out of `facts` deliberately: `facts` is the wake's scratch
     /// space, and a wake that re-records what it read has been observed clobbering this with
     /// otto's own `0`, silently corrupting the backoff.
@@ -773,6 +845,11 @@ where
     if state.status != Status::Blocked {
         state.blocked = None;
     }
+    // Likewise a done claim: once the run is over — confirmed, stopped, failed — there is nothing
+    // left to check, and a claim left behind would make the next wake after a resume a checker.
+    if state.status.is_terminal() {
+        state.done_claim = None;
+    }
     write_state(&path, &mut state)?;
     Ok(result)
 }
@@ -837,6 +914,8 @@ impl RunState {
                 // has been doing.
                 self.status == Status::Sleeping
                     && self.gate.is_none()
+                    // A claim waiting to be checked is checked by a wake, whatever the world says.
+                    && self.done_claim.is_none()
                     && self.incomplete_wakes == 0
                     && self.start_failures == 0
                     && !self.usage_limited()
@@ -1005,6 +1084,9 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         start_failures: 0,
         start_failure: None,
         blocked: None,
+        done_claim: None,
+        done_reopens: 0,
+        last_verdict: None,
         spawn_attempts: 0,
         last_spawned_at: None,
         budget_warned_at: None,

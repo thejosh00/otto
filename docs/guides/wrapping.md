@@ -51,7 +51,10 @@ A skill has no idea when "done" is. otto makes it explicit:
   work (it may skip the question when the goal already says what finished means).
 - `--perpetual` says there is no done — only retirement with `otto stop`.
 
-The done-condition is re-read every wake and never changed without a gate.
+The done-condition is re-read every wake and never changed without a gate. It is also what the
+wrapped work is [checked against](../concepts.md#checking-done) when a wake says it's finished — a
+fresh wake looks at the world before the run is done — so a concrete `--until` ("merged to main and
+the worktree removed") gets a concrete check, and a vague one a vague check.
 
 ## What otto can't do
 

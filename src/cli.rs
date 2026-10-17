@@ -4,7 +4,7 @@ use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
     ArmTimerArgs, CloseGateArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
     OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
-    TickArgs,
+    TickArgs, VerifyArgs,
 };
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
 
@@ -130,6 +130,8 @@ pub enum StateCommand {
     SetPhase(SetPhaseArgs),
     /// Change status
     SetStatus(SetStatusArgs),
+    /// Answer a done claim: confirm the run is done, or send it back to work
+    Verify(VerifyArgs),
     /// Write re-derived facts
     RecordFact(RecordFactArgs),
     /// Write the gate file and stop the run on it

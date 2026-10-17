@@ -11,7 +11,7 @@ per cycle for a run that repeats — so a journal may contain names not listed h
 the run's [activity](../concepts.md#activity).
 
 `otto logs --decisions` keeps the turning points: `run-created`, `phase-changed`,
-`status-changed`, the gate events, the note events, `check-set`, `check-cleared`, `period-set`,
+`status-changed`, the done-claim events, the gate events, the note events, `check-set`, `check-cleared`, `period-set`,
 the budget events, the wake failures, and `usage-limited`.
 
 ## The run
@@ -21,6 +21,9 @@ the budget events, the wake failures, and `usage-limited`.
 | `run-created` | `wraps`, `ref`, `goal`, `doneCondition`, `perpetual`, `phase`, `target`, `launcher` | `otto run` created it |
 | `phase-changed` | `from`, `to`, `status`, `note` | A wake entered a new phase |
 | `status-changed` | `from`, `to`, `reason`, `because`, `leftOpen` | The status changed; `because` is the cause when it became `blocked`, and `leftOpen` the [todo](../concepts.md#the-todo) items still open when it became `done` |
+| `done-claimed` | `wake`, `reason`, `leftOpen` | A wake said the run is done; the next wake [checks it](../concepts.md#checking-done) before it is. `reason` is what the wake said, `leftOpen` its todo items still open |
+| `done-verified` | `reason`, `claimedBy` | The check found the claim holds: `reason` is what it checked, `claimedBy` the wake that claimed. A `status-changed` to `done` follows |
+| `done-reopened` | `reason`, `reopens` | The check found the claim doesn't hold, and the run went back to work: `reason` is what was missing, `reopens` how many times in a row |
 | `facts-recorded` | `facts` | A wake recorded facts it re-derived |
 | `renamed` | `from`, `to` | A person renamed the run (`otto rename`) |
 | `renumbered` | `from` | `otto renumber` gave a run from before numbering its number; `from` is its old id |

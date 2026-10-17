@@ -64,7 +64,6 @@ fn live_outputs() {
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
     // The wakes call `otto state publish`, which only this build has.
-    use_this_build_first_on_path();
 
     checks.step("1 - start design-flow, wrapped as an instructions file");
     let run_id = format!("outputs-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
@@ -80,7 +79,7 @@ fn live_outputs() {
     if !await_gates(&run, 1, timeout) {
         checks.bail(&run, "never asked about the design");
     }
-    checks.check(await_idle(Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the question");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the wake that asked has exited", "a wake is still running at the question");
     let made = outputs(&run);
     checks.check(made.len() >= 2, format!("{} outputs published: research and design", made.len()), format!("only {} output(s) published", made.len()));
     let stages: Vec<String> =
@@ -112,7 +111,7 @@ fn live_outputs() {
     if !await_gates(&run, 2, timeout) {
         checks.bail(&run, "never asked about the revised design");
     }
-    checks.check(await_idle(Duration::from_secs(120)), "the wake that asked again has exited", "a wake is still running");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the wake that asked again has exited", "a wake is still running");
     let design = outputs(&run).into_iter().find(|o| o["key"] == design_key.as_str()).unwrap_or(Value::Null);
     let versions = design["versions"].as_array().cloned().unwrap_or_default();
     checks.check(
@@ -137,7 +136,7 @@ fn live_outputs() {
     if !await_field(&run, "status", "done", timeout) {
         checks.bail(&run, "never finished");
     }
-    checks.check(await_idle(Duration::from_secs(120)), "the last wake has exited", "a wake is still running");
+    checks.check(await_idle(&run, Duration::from_secs(120)), "the last wake has exited", "a wake is still running");
     let made = outputs(&run);
     checks.check(made.len() >= 3, format!("{} outputs in all: research, design, greeting", made.len()), "the greeting was not published");
     let sent: Vec<Value> = std::fs::read_dir(run.dir.join("messages"))

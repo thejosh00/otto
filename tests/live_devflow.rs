@@ -55,7 +55,6 @@ fn run_devflow(stop_at: StopAt) {
 
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
-    use_this_build_first_on_path();
 
     checks.step("1 - scratch repo with a real (local) remote");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
@@ -155,7 +154,7 @@ fn run_devflow(stop_at: StopAt) {
     // for as long as the review took.
     checks.check(run.events("lock-acquired") >= 1, "prepare locked the repo", "the repo was never locked");
     checks.check(!repo_is_locked(&repo), "and released it before the gate", "the lock is held across the plan-review gate");
-    checks.check(await_idle(Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the plan gate");
+    checks.check(await_idle(&run, Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the plan gate");
     check_todo(&mut checks, &run, &[("intake", "x"), ("prepare", "x"), ("plan", "~"), ("implement", " "), ("cleanup", " ")]);
     checks.check(is_nonempty_file(&run.artifact("plan.md")), "artifacts/plan.md", "no plan was written");
     let plan_text = std::fs::read_to_string(run.artifact("plan.md")).unwrap_or_default();
@@ -183,7 +182,7 @@ fn run_devflow(stop_at: StopAt) {
     checks.check(greet_py.contains("farewell"), "greet.py has farewell()", "farewell() was never written");
     checks.check(run_make_test(&wt), "make test passes in the worktree", "the suite fails there");
     checks.check(is_nonempty_file(&run.artifact("test-report.md")), "artifacts/test-report.md", "no test report");
-    checks.check(await_idle(Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the result gate");
+    checks.check(await_idle(&run, Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the result gate");
     check_todo(&mut checks, &run, &[("plan", "x"), ("implement", "x"), ("verify", "~"), ("publish", " ")]);
 
     checks.step("5 - nothing has left this machine");
@@ -204,7 +203,7 @@ fn run_devflow(stop_at: StopAt) {
         let branch_on_origin = git(&origin, &["show-ref", "--quiet", "--verify", &branch_ref]).status.success();
         checks.check(!branch_on_origin, "still nothing on origin", "something pushed anyway");
         checks.check(!repo_is_locked(&repo), "lock released", "the lock was never released");
-        checks.check(await_idle(Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
+        checks.check(await_idle(&run, Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
         check_todo(
             &mut checks,
             &run,
@@ -314,7 +313,7 @@ fn run_devflow(stop_at: StopAt) {
     } else {
         checks.note("no summary artifact");
     }
-    checks.check(await_idle(Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
+    checks.check(await_idle(&run, Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
     // The scratch remote is a bare repo, so there is no PR host and `babysit` never happens.
     check_todo(
         &mut checks,

@@ -344,6 +344,9 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         start_failures: 0,
         start_failure: None,
         blocked: None,
+        done_claim: None,
+        done_reopens: 0,
+        last_verdict: None,
         spawn_attempts: 0,
         last_spawned_at: None,
         budget_warned_at: None,
@@ -583,7 +586,36 @@ pub struct SetStatusArgs {
 
 pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
     let id = args.id.clone();
+    let mut claimed = false;
     let left_open = transaction(&id, |path, state| {
+        if let (Some(claim), Status::Done) = (&state.done_claim, args.status) {
+            return Err(OttoError::conflict(format!(
+                "{id} already says it is done (wake {}), and that is waiting to be checked. A wake that \
+                 claimed done stops there; a wake checking the claim answers it with `otto state verify {id} \
+                 --confirm` or `--reopen`",
+                claim.by_wake
+            )));
+        }
+        // `done` is the one stop nothing comes back from, so by default a wake's `done` is a claim
+        // the next wake checks cold (`DoneClaim`, `verify`). Due now, so it is checked straight away.
+        if args.status == Status::Done && state.policy.verify_done {
+            let left_open = crate::todo::read(path).map(|t| t.open_items()).unwrap_or_default();
+            let wake = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
+            state.done_claim = Some(super::DoneClaim {
+                by_wake: wake,
+                at: Timestamp::now(),
+                reason: args.reason.clone(),
+                left_open: left_open.clone(),
+            });
+            state.status = Status::Sleeping;
+            state.next_wake_at = Some(Timestamp::now());
+            claimed = true;
+            crate::event::record(
+                path,
+                &Event::DoneClaimed { wake, reason: args.reason.clone(), left_open: left_open.clone() },
+            )?;
+            return Ok(left_open);
+        }
         let previous = status_str(state.status).to_string();
         let mut because = None;
         if args.status == Status::Blocked {
@@ -614,6 +646,13 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
         )?;
         Ok(left_open)
     })?;
+    if claimed {
+        println!(
+            "otto: recorded as a claim. The next wake starts fresh, checks it against the done condition, \
+             and only then is {id} done — or it goes back to work with what was missing. Rewrite the \
+             handoff so a stranger can check the claim, and stop."
+        );
+    }
     if !left_open.is_empty() {
         let items: Vec<String> = left_open.iter().map(|item| format!("  - {item}")).collect();
         eprintln!(
@@ -626,6 +665,128 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
         );
     }
     Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+#[command(group(clap::ArgGroup::new("verdict").required(true).args(["confirm", "reopen"])))]
+pub struct VerifyArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The claim holds: the run is done
+    #[arg(long)]
+    pub confirm: bool,
+    /// The claim does not hold: the run goes back to work, starting now
+    #[arg(long)]
+    pub reopen: bool,
+    /// With --confirm, what you checked and what showed it; with --reopen, what is missing. Recorded
+    /// verbatim, and a reopen's reason is the first thing the next wake is told
+    #[arg(long, required = true)]
+    pub reason: String,
+}
+
+/// What a check of a done claim decided, for the message after it.
+enum Verified {
+    Done,
+    Reopened,
+    /// Reopened once too often: blocked, on this gate.
+    Asked { reopens: u32, gate: String },
+}
+
+/// Answer a done claim (`DoneClaim`). Only a wake other than the one that made it may: the point
+/// is a second look by something that did not do the work.
+pub fn verify(args: VerifyArgs) -> Result<(), OttoError> {
+    let id = args.id.clone();
+    let reason = args.reason.trim().to_string();
+    if reason.is_empty() {
+        return Err(OttoError::usage("--reason must say what you checked, or what is missing"));
+    }
+    let mut verified = Verified::Done;
+    transaction(&id, |path, state| {
+        let Some(claim) = state.done_claim.clone() else {
+            return Err(OttoError::conflict(format!("{id} has no done claim to check")));
+        };
+        let wake = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
+        if wake == claim.by_wake {
+            return Err(OttoError::conflict(format!(
+                "wake {wake} made this claim, so it cannot check it — a fresh wake does that. Rewrite the \
+                 handoff and stop"
+            )));
+        }
+        let at = Timestamp::now();
+        state.last_verdict = Some(super::Verdict { confirmed: args.confirm, reason: reason.clone(), wake, at });
+        if args.confirm {
+            let previous = status_str(state.status).to_string();
+            state.status = Status::Done;
+            state.next_wake_at = None;
+            state.done_reopens = 0;
+            crate::event::record(path, &Event::DoneVerified { reason: reason.clone(), claimed_by: claim.by_wake })?;
+            let left_open = crate::todo::read(path).map(|t| t.open_items()).unwrap_or_default();
+            return crate::event::record(
+                path,
+                &Event::StatusChanged {
+                    from: previous,
+                    to: status_str(Status::Done).to_string(),
+                    reason: claim.reason.clone(),
+                    because: None,
+                    left_open,
+                },
+            );
+        }
+        state.done_claim = None;
+        state.done_reopens += 1;
+        let reopens = state.done_reopens;
+        crate::event::record(path, &Event::DoneReopened { reason: reason.clone(), reopens })?;
+        let limit = state.policy.max_done_reopens;
+        if limit > 0 && reopens > limit {
+            // A fresh allowance once a person has been asked, so their "keep going" means it.
+            state.done_reopens = 0;
+            state.block(BlockedCause::Unverified, Some(reason.clone()));
+            verified = Verified::Asked { reopens, gate: String::new() };
+        } else {
+            state.status = Status::Sleeping;
+            state.next_wake_at = Some(at);
+            verified = Verified::Reopened;
+        }
+        Ok(())
+    })?;
+    if let Verified::Asked { reopens, gate } = &mut verified {
+        *gate = open_unverified_gate(&id, *reopens, &reason)?;
+    }
+    match verified {
+        Verified::Done => println!("confirmed — {id} is done"),
+        Verified::Reopened => println!(
+            "reopened — {id} goes back to work, and the next wake starts now, told: {reason}\n\
+             Rewrite the handoff so its first action is the fix, and stop."
+        ),
+        Verified::Asked { reopens, gate } => println!(
+            "that is {reopens} times it has said done when it wasn't, so {id} is blocked on gate {gate}, \
+             asking the person how to go on. Rewrite the handoff and stop."
+        ),
+    }
+    Ok(())
+}
+
+/// `blocked` needs a gate to come back from (`wake::contract`), and this is otto's own block, so
+/// otto asks.
+fn open_unverified_gate(id: &str, reopens: u32, reason: &str) -> Result<String, OttoError> {
+    let state = read_run(id)?;
+    let finished = state.done_condition.clone().unwrap_or_else(|| state.goal.clone());
+    let question = format!(
+        "# It keeps saying it's done when it isn't\n\n\
+         I said this work was finished {reopens} times, and each time a fresh look found something still \
+         missing, so I've stopped until you say.\n\n\
+         What the last look found: {reason}\n\n\
+         What finished means for this run: {finished}\n\n\
+         ## Options\n\n\
+         - **Keep going** *(default)* — carry on with what was missing; it gets {} more tries before asking \
+         again.\n\
+         - **Stop** — retire the run as it is. Right if it is in fact finished, or if what was missing \
+         can't be done.\n\n\
+         Nothing happens until you answer.",
+        state.policy.max_done_reopens,
+    );
+    let file = super::ops::open_gate(id, "keeps-saying-done", &question, None)?;
+    Ok(read_run(id)?.gate.map(|g| g.id).unwrap_or(file))
 }
 
 #[derive(clap::Args, Debug)]
@@ -1349,8 +1510,169 @@ mod tests {
 
         super::set_status(super::SetStatusArgs { id: "s-todo".into(), status: Status::Done, reason: None, because: None })
             .unwrap();
-        assert_eq!(super::read_run("s-todo").unwrap().status, Status::Done);
+        let state = super::read_run("s-todo").unwrap();
+        assert_eq!(state.done_claim.unwrap().left_open, vec!["cleanup".to_string()], "the claim carries them");
         assert!(journal().contains(r#""leftOpen":["cleanup"]"#), "got: {}", journal());
+    }
+
+    /// Put the run's latest wake at `n`, as if wake `n` were the one calling.
+    fn as_wake(id: &str, n: u32) {
+        super::transaction(id, |_p, state| {
+            state.wake = Some(super::super::Wake {
+                n,
+                started_at: super::Timestamp::now(),
+                deadline_at: super::Timestamp::in_minutes(45),
+                launcher: "claude".into(),
+                pid: None,
+                session: None,
+                outcome: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn done(id: &str, reason: &str) -> Result<(), super::OttoError> {
+        super::set_status(super::SetStatusArgs {
+            id: id.into(),
+            status: super::Status::Done,
+            reason: Some(reason.into()),
+            because: None,
+        })
+    }
+
+    fn verify(id: &str, confirm: bool, reason: &str) -> Result<(), super::OttoError> {
+        super::verify(super::VerifyArgs { id: id.into(), confirm, reopen: !confirm, reason: reason.into() })
+    }
+
+    fn events(id: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap();
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("event").and_then(|e| e.as_str()).map(str::to_string))
+            .collect()
+    }
+
+    /// `done` is the one stop nothing comes back from, so a wake saying it is a claim: due now, and
+    /// the run is done only when a different wake has checked.
+    #[test]
+    fn a_wake_s_done_is_a_claim_a_different_wake_confirms() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-claim", "a goal").unwrap();
+        as_wake("s-claim", 3);
+
+        done("s-claim", "merged and cleaned up").unwrap();
+        let state = super::read_run("s-claim").unwrap();
+        assert_eq!(state.status, Status::Sleeping, "not done yet");
+        assert!(state.next_wake_at.is_some_and(|t| t.dt() <= crate::clock::now()), "checked straight away");
+        let claim = state.done_claim.unwrap();
+        assert_eq!((claim.by_wake, claim.reason.as_deref()), (3, Some("merged and cleaned up")));
+        assert!(events("s-claim").contains(&"done-claimed".to_string()));
+        assert!(!events("s-claim").contains(&"status-changed".to_string()), "the status hasn't really changed");
+
+        let again = done("s-claim", "really done").unwrap_err();
+        assert_eq!(again.code, 2, "one claim at a time: {}", again.message);
+        let own = verify("s-claim", true, "looks fine to me").unwrap_err();
+        assert_eq!(own.code, 2, "the wake that claimed it cannot confirm it");
+        assert!(own.message.contains("cannot check it"), "{}", own.message);
+
+        as_wake("s-claim", 4);
+        verify("s-claim", true, "origin/main has it; git worktree list shows only the main checkout").unwrap();
+        let state = super::read_run("s-claim").unwrap();
+        assert_eq!(state.status, Status::Done);
+        assert!(state.done_claim.is_none() && state.next_wake_at.is_none());
+        let verdict = state.last_verdict.unwrap();
+        assert!(verdict.confirmed && verdict.wake == 4);
+        let events = events("s-claim");
+        let at = events.iter().position(|e| e == "done-verified").expect("done-verified");
+        assert_eq!(events[at + 1], "status-changed", "the real status change follows the verdict");
+    }
+
+    /// A check that finds the claim doesn't hold sends the run straight back to work, and says why.
+    #[test]
+    fn a_check_that_reopens_puts_the_run_back_to_work_now() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-reopen", "a goal").unwrap();
+        as_wake("s-reopen", 1);
+        done("s-reopen", "merged").unwrap();
+        as_wake("s-reopen", 2);
+        verify("s-reopen", false, "the worktree at /w/x is still there").unwrap();
+
+        let state = super::read_run("s-reopen").unwrap();
+        assert_eq!(state.status, Status::Sleeping);
+        assert!(state.next_wake_at.is_some_and(|t| t.dt() <= crate::clock::now()), "back to work now, not next period");
+        assert!(state.done_claim.is_none());
+        assert_eq!(state.done_reopens, 1);
+        let verdict = state.last_verdict.unwrap();
+        assert!(!verdict.confirmed && verdict.reason == "the worktree at /w/x is still there");
+        assert!(events("s-reopen").contains(&"done-reopened".to_string()));
+
+        let nothing = verify("s-reopen", true, "fine").unwrap_err();
+        assert_eq!(nothing.code, 2, "there is no claim left to answer");
+    }
+
+    /// The bound: past `maxDoneReopens`, the run stops and asks rather than looping, and the
+    /// person's answer starts a fresh allowance.
+    #[test]
+    fn reopening_too_often_blocks_the_run_on_a_question() {
+        use super::super::{BlockedCause, Status};
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-loop", "a goal").unwrap();
+        let mut n = 0;
+        for round in 1..=3 {
+            n += 1;
+            as_wake("s-loop", n);
+            done("s-loop", "done now").unwrap();
+            n += 1;
+            as_wake("s-loop", n);
+            verify("s-loop", false, &format!("still missing, round {round}")).unwrap();
+            let state = super::read_run("s-loop").unwrap();
+            if round < 3 {
+                assert_eq!(state.status, Status::Sleeping, "round {round} is within the allowance");
+            } else {
+                assert_eq!(state.status, Status::Blocked);
+                assert_eq!(state.blocked.as_ref().unwrap().cause, BlockedCause::Unverified);
+                assert_eq!(state.gate.as_ref().unwrap().slug, "keeps-saying-done");
+                assert_eq!(state.done_reopens, 0, "the person's answer comes with a fresh allowance");
+                let question =
+                    std::fs::read_to_string(crate::paths::run_dir("s-loop").unwrap().join(&state.gate.unwrap().file))
+                        .unwrap();
+                assert!(question.contains("still missing, round 3"), "{question}");
+                assert!(question.contains("## Options"));
+            }
+        }
+    }
+
+    /// `verifyDone=false`: done is done, on the word of the wake that said it.
+    #[test]
+    fn with_verification_off_done_is_done() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-trust", "a goal").unwrap();
+        super::transaction("s-trust", |_p, state| {
+            state.policy.set("verifyDone".into(), serde_json::json!(false));
+            Ok(())
+        })
+        .unwrap();
+        done("s-trust", "finished").unwrap();
+        let state = super::read_run("s-trust").unwrap();
+        assert_eq!(state.status, Status::Done);
+        assert!(state.done_claim.is_none());
+    }
+
+    /// However the run ends, a claim does not outlive it — or a resumed run's next wake would be a
+    /// checker of work nobody is claiming any more.
+    #[test]
+    fn a_run_that_ends_drops_its_claim() {
+        use super::super::Status;
+        let _h = crate::paths::test_support::TempHome::new();
+        super::test_init("s-drop", "a goal").unwrap();
+        done("s-drop", "finished").unwrap();
+        super::set_status(super::SetStatusArgs { id: "s-drop".into(), status: Status::Stopped, reason: None, because: None })
+            .unwrap();
+        assert!(super::read_run("s-drop").unwrap().done_claim.is_none());
     }
 
     /// `set-status --status blocked` from a wake carries a cause, said or inferred, and the

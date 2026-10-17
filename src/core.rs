@@ -173,6 +173,9 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
             None => "paused until resumed".to_string(),
         };
     }
+    if state.done_claim.is_some() && !state.status.is_terminal() {
+        return "a check that it's done".to_string();
+    }
     match state.status {
         // When is its own column (`next_wake`); this one only says what the run waits on.
         Status::Sleeping => match state.next_wake_at {
@@ -768,6 +771,10 @@ pub fn blocked_explanation(state: &RunState, short: &str) -> String {
         BlockedCause::Instructions => format!(
             "blocked by its instructions{} — {gate}",
             detail.map(|d| format!(": {d}")).unwrap_or_default()
+        ),
+        BlockedCause::Unverified => format!(
+            "blocked: it kept saying it was done, and each fresh look found it wasn't{} — {gate}",
+            detail.map(|d| format!(" (last: {d})")).unwrap_or_default()
         ),
     };
     if inferred {
@@ -1755,6 +1762,9 @@ pub const DECISION_EVENTS: &[&str] = &[
     "run-created",
     "phase-changed",
     "status-changed",
+    "done-claimed",
+    "done-verified",
+    "done-reopened",
     "gate-opened",
     "gate-closed",
     "gate-expired",

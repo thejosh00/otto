@@ -32,7 +32,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
-    "stages-set",
+    "stages-set", "done-claimed", "done-verified", "done-reopened",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +69,25 @@ pub enum Event {
         /// Only when `to` is `done`: the todo items still open at that moment (`crate::todo`).
         #[serde(rename = "leftOpen", default, skip_serializing_if = "Vec::is_empty")]
         left_open: Vec<String>,
+    },
+    /// A wake said the run is done; a fresh wake checks before it is (`state::DoneClaim`).
+    DoneClaimed {
+        wake: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(rename = "leftOpen", default, skip_serializing_if = "Vec::is_empty")]
+        left_open: Vec<String>,
+    },
+    /// The check found the claim holds. A `status-changed` to `done` follows it.
+    DoneVerified {
+        reason: String,
+        #[serde(rename = "claimedBy")]
+        claimed_by: u32,
+    },
+    /// The check found the claim does not hold, and the run went back to work.
+    DoneReopened {
+        reason: String,
+        reopens: u32,
     },
     FactsRecorded {
         facts: Map<String, Value>,

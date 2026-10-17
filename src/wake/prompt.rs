@@ -47,16 +47,55 @@ pub fn user_prompt(run_id: &str, run_dir: &std::path::Path) -> String {
     )
 }
 
+/// A wake whose job is to check a done claim, not to do the work. Its own prompt, because nothing
+/// in its orientation would otherwise make it anything but one more wake carrying on — and one
+/// more wake carrying on is exactly the eye the claim was made by.
+pub fn verify_prompt(run_id: &str, run_dir: &std::path::Path, claim: &crate::state::DoneClaim) -> String {
+    let said = claim.reason.as_deref().map(|r| format!(", saying: {}", r.trim())).unwrap_or_default();
+    format!(
+        "Wake run `{run_id}` — to check a claim, not to do the work.\n\n\
+         Its directory is `{dir}`. Wake {by} said the run is done{said}. It is not done until a wake that \
+         did not do the work has checked: you. Follow \"Checking a done claim\" in your instructions, and \
+         end with `otto state verify {run_id} --confirm` or `--reopen`.",
+        dir = run_dir.display(),
+        by = claim.by_wake,
+    )
+}
+
+/// The wake after a check sent the run back: what was missing comes first, in the checker's words.
+fn reopened_prompt(base: String, verdict: &crate::state::Verdict) -> String {
+    format!(
+        "{base}\n\nThe run said it was done, and a fresh check found it isn't. What it found, verbatim:\n\n\
+         ---\n{}\n---\n\n\
+         Fix that first, then claim done again.",
+        verdict.reason.trim_end()
+    )
+}
+
+/// What this wake is told about itself, given where the run stands: a checker when a done claim
+/// is waiting, the fix first when the last wake was a check that reopened it, otherwise the plain
+/// prompt.
+pub fn for_wake(run_id: &str, run_dir: &std::path::Path, state: &crate::state::RunState) -> String {
+    if let Some(claim) = &state.done_claim {
+        return verify_prompt(run_id, run_dir, claim);
+    }
+    let base = user_prompt(run_id, run_dir);
+    let last_wake = state.wake.as_ref().map(|w| w.n);
+    match &state.last_verdict {
+        Some(verdict) if !verdict.confirmed && Some(verdict.wake) == last_wake => reopened_prompt(base, verdict),
+        _ => base,
+    }
+}
+
 /// A human answering a gate. Their words are passed through verbatim and clearly marked as
 /// theirs, because the wake must record them character-for-character before acting on them —
 /// paraphrasing a decision and then acting on the paraphrase two days later is how a run
 /// drifts from what was actually approved.
-pub fn answer_prompt(run_id: &str, run_dir: &std::path::Path, answer: &str) -> String {
+pub fn answer_prompt(base: &str, answer: &str) -> String {
     format!(
         "{base}\n\nA person has answered the open gate. Their answer, verbatim:\n\n\
          ---\n{answer}\n---\n\n\
          Record it with `otto state close-gate` before acting on it.",
-        base = user_prompt(run_id, run_dir),
         answer = answer.trim_end(),
     )
 }
@@ -120,8 +159,51 @@ mod tests {
     #[test]
     fn an_answer_is_passed_through_verbatim() {
         let answer = "Approve, but rename the flag to --dry-run first.";
-        let prompt = answer_prompt("r1", Path::new("/tmp/r1"), answer);
+        let prompt = answer_prompt(&user_prompt("r1", Path::new("/tmp/r1")), answer);
         assert!(prompt.contains(answer), "the person's words must survive intact");
         assert!(prompt.contains("close-gate"));
+    }
+
+    /// A claim makes the next wake a checker, and it has to be told — nothing else it reads first
+    /// would stop it carrying on as one more doer.
+    #[test]
+    fn a_waiting_claim_makes_the_wake_a_checker() {
+        let mut state = crate::state::test_run_state("r1");
+        state.wake = Some(crate::state::Wake {
+            n: 3,
+            started_at: crate::clock::Timestamp::now(),
+            deadline_at: crate::clock::Timestamp::now(),
+            launcher: "claude".into(),
+            pid: None,
+            session: None,
+            outcome: None,
+        });
+        assert_eq!(for_wake("r1", Path::new("/tmp/r1"), &state), user_prompt("r1", Path::new("/tmp/r1")));
+
+        state.done_claim = Some(crate::state::DoneClaim {
+            by_wake: 3,
+            at: crate::clock::Timestamp::now(),
+            reason: Some("merged and cleaned up".into()),
+            left_open: vec![],
+        });
+        let prompt = for_wake("r1", Path::new("/tmp/r1"), &state);
+        assert!(prompt.contains("Wake 3 said the run is done, saying: merged and cleaned up"));
+        assert!(prompt.contains("Checking a done claim"), "it is pointed at the procedure");
+        assert!(prompt.contains("otto state verify r1 --confirm"));
+
+        // The check reopened it (wake 4): the wake after is told what was missing, first.
+        state.done_claim = None;
+        state.wake.as_mut().unwrap().n = 4;
+        state.last_verdict = Some(crate::state::Verdict {
+            confirmed: false,
+            reason: "the worktree at /w/x is still there".into(),
+            wake: 4,
+            at: crate::clock::Timestamp::now(),
+        });
+        let prompt = for_wake("r1", Path::new("/tmp/r1"), &state);
+        assert!(prompt.contains("the worktree at /w/x is still there"));
+        // Once a wake has been told, the next one is not told again.
+        state.wake.as_mut().unwrap().n = 5;
+        assert_eq!(for_wake("r1", Path::new("/tmp/r1"), &state), user_prompt("r1", Path::new("/tmp/r1")));
     }
 }

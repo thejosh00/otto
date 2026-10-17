@@ -9,6 +9,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [The todo](#the-todo)
 - [Activity](#activity)
 - [The contract](#the-contract)
+- [Checking done](#checking-done)
 - [Statuses](#statuses)
 - [When a run wakes: the period and timers](#when-a-run-wakes-the-period-and-timers)
 - [Check scripts](#check-scripts)
@@ -127,6 +128,27 @@ model that simply stopped — and it is `wake-incomplete`: see [When things go
 wrong](#when-things-go-wrong). The check happens in the parent process, because a wake that
 crashed cannot report on itself.
 
+## Checking done
+
+`done` is the one stop nothing ever comes back from, so otto doesn't take it on the word of the wake
+that did the work. When a wake says the run is done (`otto state set-status --status done`), that is
+recorded as a **claim**, and the next wake starts straight away to check it — cold, with none of
+the claiming wake's context, the way a reviewer who wasn't there would. It reads the done condition
+and what the run wraps, looks at the world itself (the commit on `main`, the worktree gone, the
+output published, every todo item accounted for), and then either:
+
+- **confirms** it (`otto state verify --confirm`): the run is done, and what was checked is kept
+  (`otto show` prints it as `checked`); or
+- **reopens** it (`otto state verify --reopen`): the run goes straight back to work, and the next
+  wake is told exactly what was missing before anything else.
+
+The wake that made a claim can't confirm it, and a checking wake that ends without a verdict (or a
+question for you) counts as a wake that didn't finish. A run that keeps saying it's done when it
+isn't stops after `maxDoneReopens` reopens (2 by default) and asks you whether to keep going.
+
+While a claim waits, the list says the run is waiting on *a check that it's done*. Checking costs one
+wake per finished run. To trust a run's `done` as said, start it with `--policy verifyDone=false`.
+
 ## Statuses
 
 | Status | Meaning | What brings it back |
@@ -135,13 +157,13 @@ crashed cannot report on itself.
 | `sleeping` | Waiting for its wake time | poke, when `nextWakeAt` passes |
 | `awaiting_human` | A gate is open | `otto answer`, or the gate expiring |
 | `blocked` | otto stopped trying and opened a gate explaining why | a person |
-| `done` | The goal is met | nothing — the run is over |
+| `done` | The goal is met, and a wake that didn't do the work [checked](#checking-done) | nothing — the run is over |
 | `failed` | It could not do its job | `otto resume` |
 | `stopped` | Retired by a person | `otto resume` |
 
 `blocked` always records a cause: `wake-failures` (wakes kept failing), `budget` (a budget was
-spent), `stall` (ticks kept changing nothing), or `instructions` (the wrapped instructions decided
-it couldn't go on).
+spent), `stall` (ticks kept changing nothing), `instructions` (the wrapped instructions decided
+it couldn't go on), or `unverified` (it kept saying it was done, and each check found it wasn't).
 
 ## When a run wakes: the period and timers
 
@@ -303,6 +325,8 @@ gate. There is no dollar budget — nothing can price a wake on a subscription (
 | `maxTicksWithoutProgress` | 24 | Polling ticks that change nothing before `blocked`; 0 disables. A perpetual run ignores it: watching and finding nothing is its job |
 | `gateStaleAfterHours` | 48 | When an unanswered gate is notified again; 0 disables |
 | `handoffMaxBytes` | 8192 | The handoff's cap |
+| `verifyDone` | true | A wake's `done` is a claim the next wake [checks](#checking-done); `false` trusts it as said |
+| `maxDoneReopens` | 2 | How many times a check may send a claim back before the run asks you; 0 is no limit |
 | `autoMergeWhenGreen` | false | A policy flag a workflow may cite as authorization to merge |
 
 Any other key is kept in `policy` for the wrapped instructions to read.
