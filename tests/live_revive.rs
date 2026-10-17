@@ -144,11 +144,15 @@ fn live_revive() {
     // Force one now rather than waiting out the cadence; a wake started by hand is the same
     // process poke would start.
     let _ = otto(&["state", "arm-timer", &run_id, "--at", "2020-01-01T00:00:00Z"]);
+    let wakes_before: u32 = run.field_str("wake.n").parse().unwrap_or(0);
     let _ = otto(&["poke", "--grace", "0"]);
+    // Wait for the *new* wake's number, not just any pid: `wake.pid` still names the last wake,
+    // long gone, until the new one records itself — which it does with its number, in one write.
+    // Reading the pid alone once killed that dead process and left the real wake running.
     let mut pid: Option<u32> = None;
     for _ in 0..30 {
         let p = run.field_str("wake.pid");
-        if !p.is_empty() && p != "null" {
+        if run.field_str("wake.n").parse().unwrap_or(0) > wakes_before && !p.is_empty() && p != "null" {
             pid = p.parse().ok();
             break;
         }
