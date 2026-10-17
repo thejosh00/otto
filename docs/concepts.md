@@ -311,7 +311,7 @@ A crash mid-wake is the normal case, and recovery needs nobody:
 | What happens | What brings it back |
 |---|---|
 | The wake crashes, or is killed | Marked incomplete; retried after a backoff (5m, 10m, 20m… up to an hour) |
-| A wake hangs | Poke kills it at its deadline (`maxWakeMinutes`, 45 by default); incomplete path |
+| A wake hangs | Poke kills it at its deadline (`maxWakeMinutes`, 45 by default); incomplete path. Long before that, once it has said nothing for 5 minutes, `otto ls`, `otto show` and the web page say so — "Working now, though nothing new from it for 12 minutes" — without stopping it: a long build is quiet too. `otto attach` shows what it last did |
 | The machine reboots | launchd starts poke at login; any run that's due wakes |
 | A wake hits your usage limit | Not counted as a failure: the run sleeps until the limit resets (claude records when, in the session transcript), and `otto ls` says `usage limit` |
 | A wake never gets going — claude exits at once, having done nothing (an expired login, say) | Not counted as a failure either: it is the machine, not the run. Retried on the same backoff for as long as it takes; after three in a row you are notified, with what claude printed, and the list and the health line say so |

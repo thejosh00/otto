@@ -49,15 +49,21 @@ pub struct Glance {
 /// How long a question's title may be in a line.
 pub const QUESTION_TITLE_CHARS: usize = 100;
 
+/// `quiet` is how many minutes the running wake has gone without a word (`core::quiet_minutes`);
 /// `question` is the open gate's title (`gate::title`); `said` is the handoff's `Where this is`.
-pub fn glance(state: &RunState, running: bool, question: Option<&str>, said: Option<&str>) -> Glance {
+pub fn glance(state: &RunState, running: bool, quiet: Option<u64>, question: Option<&str>, said: Option<&str>) -> Glance {
     let said = said.map(str::trim).filter(|s| !s.is_empty());
     let with_said = |lead: &str| match said {
         Some(s) => format!("{lead} — {s}"),
         None => lead.to_string(),
     };
     let (mood, line) = if running {
-        (Mood::Working, "Working now".to_string())
+        // Not trouble: a long build or a slow test says nothing for minutes. But a person deciding
+        // whether to look in should know, long before the deadline kills it.
+        match quiet {
+            Some(minutes) => (Mood::Working, format!("Working now, though nothing new from it for {minutes} minutes")),
+            None => (Mood::Working, "Working now".to_string()),
+        }
     } else if let Some(question) = question.filter(|_| !state.status.is_terminal()) {
         (Mood::Waiting, format!("Asks you: {question}"))
     } else {
@@ -531,22 +537,25 @@ mod tests {
     fn the_line_says_what_matters_first() {
         let mut state = crate::state::test_run_state("g");
         state.status = Status::Sleeping;
-        assert_eq!(glance(&state, false, None, Some("Halfway.")).line, "Halfway.");
-        assert_eq!(glance(&state, false, None, None).mood, Mood::Idle);
-        assert_eq!(glance(&state, true, None, Some("Halfway.")).mood, Mood::Working);
-        let asks = glance(&state, false, Some("Approve the plan?"), Some("Halfway."));
+        assert_eq!(glance(&state, false, None, None, Some("Halfway.")).line, "Halfway.");
+        assert_eq!(glance(&state, false, None, None, None).mood, Mood::Idle);
+        assert_eq!(glance(&state, true, None, None, Some("Halfway.")).mood, Mood::Working);
+        let quiet = glance(&state, true, Some(12), None, Some("Halfway."));
+        assert_eq!(quiet.mood, Mood::Working, "quiet is worth knowing, not trouble");
+        assert!(quiet.line.contains("nothing new from it for 12 minutes"), "{}", quiet.line);
+        let asks = glance(&state, false, None, Some("Approve the plan?"), Some("Halfway."));
         assert_eq!((asks.mood, asks.line.as_str()), (Mood::Waiting, "Asks you: Approve the plan?"));
         state.start_failures = 3;
-        let trouble = glance(&state, false, None, Some("Halfway."));
+        let trouble = glance(&state, false, None, None, Some("Halfway."));
         assert_eq!(trouble.mood, Mood::Trouble);
         assert!(trouble.line.contains("3 times in a row"), "{}", trouble.line);
         state.start_failures = 0;
         state.paused = Some(crate::state::Pause { at: Timestamp::now(), until: None, reason: None });
-        assert_eq!(glance(&state, false, None, None).line, "Paused");
+        assert_eq!(glance(&state, false, None, None, None).line, "Paused");
         state.paused = Some(crate::state::Pause { at: Timestamp::now(), until: Some(Timestamp::in_minutes(-1)), reason: None });
-        assert_eq!(glance(&state, false, None, None).mood, Mood::Idle, "a pause that has run out holds nothing");
+        assert_eq!(glance(&state, false, None, None, None).mood, Mood::Idle, "a pause that has run out holds nothing");
         state.status = Status::Done;
-        assert_eq!(glance(&state, false, None, Some("Merged.")).line, "Merged.");
+        assert_eq!(glance(&state, false, None, None, Some("Merged.")).line, "Merged.");
     }
 
     #[test]

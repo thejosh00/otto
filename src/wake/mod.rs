@@ -1035,7 +1035,7 @@ mod tests {
             "what claude said is what tells a person what to fix"
         );
         assert!(!state.check_gates_wake(), "the retry is a real wake, not a check's opinion");
-        let glance = crate::story::glance(&state, false, None, None);
+        let glance = crate::story::glance(&state, false, None, None, None);
         assert!(glance.line.contains("Log in again"), "{}", glance.line);
         let journal = std::fs::read_to_string(crate::paths::run_dir("w-auth").unwrap().join("journal.jsonl")).unwrap();
         assert!(journal.contains(r#""event":"start-failed""#));

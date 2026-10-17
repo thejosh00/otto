@@ -485,7 +485,8 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             .as_ref()
             .and_then(|d| std::fs::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
             .and_then(|handoff| where_this_is(&handoff));
-        let glance = crate::story::glance(&state, running, question_title.as_deref(), said.as_deref());
+        let quiet = running.then(|| quiet_minutes(&state)).flatten();
+        let glance = crate::story::glance(&state, running, quiet, question_title.as_deref(), said.as_deref());
         rows.push(LsRow {
             todo_left_open: todo_left_open(&state, todo.as_ref()),
             todo,
@@ -704,7 +705,13 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let todo = crate::todo::read(&dir);
     let question_title = gate.as_ref().map(|g| question_title_of(&g.question, &g.slug));
     let glance =
-        crate::story::glance(&state, running, question_title.as_deref(), handoff.as_deref().and_then(where_this_is).as_deref());
+        crate::story::glance(
+            &state,
+            running,
+            running.then(|| quiet_minutes(&state)).flatten(),
+            question_title.as_deref(),
+            handoff.as_deref().and_then(where_this_is).as_deref(),
+        );
     let messages = crate::messages::history(&dir)
         .into_iter()
         .take(MESSAGES_SHOWN)
@@ -2205,6 +2212,22 @@ const LIVE_LOG_LINES: usize = 200;
 /// How much of the running wake's activity the live view carries.
 const LIVE_ACTIVITY: usize = 150;
 
+/// How long a running wake has to say nothing before a person is told so.
+pub const QUIET_AFTER_MINUTES: u64 = 5;
+
+/// Minutes since the wake in progress last wrote to its session transcript, once that is at least
+/// `QUIET_AFTER_MINUTES`. Paperclip shows the same for a run gone silent, without killing it: a
+/// long build says nothing too, so it is a thing to know, not a failure. `None` when there is no
+/// wake in progress, it spoke recently, or its transcript can't be found — a sandbox that hides
+/// `~/.claude` must not make every wake look silent.
+pub fn quiet_minutes(state: &RunState) -> Option<u64> {
+    let session = state.wake.as_ref().filter(|w| w.outcome.is_none())?.session.as_deref()?;
+    let path = crate::wake::transcript::find_transcript(session)?;
+    let silent = std::fs::metadata(path).ok()?.modified().ok()?.elapsed().ok()?;
+    let minutes = silent.as_secs() / 60;
+    (minutes >= QUIET_AFTER_MINUTES).then_some(minutes)
+}
+
 /// The running wake's activity so far, from its transcript — `None` when no wake is running, or
 /// its transcript can't be read (a sandbox that hides `~/.claude`).
 pub fn live_activity(id: &str) -> Option<Vec<crate::wake::transcript::Activity>> {
@@ -2259,6 +2282,35 @@ mod tests {
     }
 
     const SCRIPT: &str = "#!/bin/sh\nexit 0\n";
+
+    /// Quiet is read off the running wake's transcript, and said only once it has lasted.
+    #[test]
+    fn a_running_wake_is_quiet_once_its_transcript_has_gone_still() {
+        let _h = TempHome::new();
+        test_init("c-quiet", "a goal").unwrap();
+        assert_eq!(quiet_minutes(&read_run("c-quiet").unwrap()), None, "no wake in progress");
+        crate::state::transaction("c-quiet", |_p, s| {
+            let now = crate::clock::Timestamp::now();
+            s.wake = Some(crate::state::Wake {
+                n: 1,
+                started_at: now,
+                deadline_at: now,
+                launcher: "claude".into(),
+                pid: None,
+                session: Some("sess-quiet".into()),
+                outcome: None,
+            });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(quiet_minutes(&read_run("c-quiet").unwrap()), None, "no transcript to read, so nothing to say");
+        let project = crate::paths::claude_projects_dir().join("-w-work");
+        std::fs::create_dir_all(&project).unwrap();
+        let transcript = std::fs::File::create(project.join("sess-quiet.jsonl")).unwrap();
+        assert_eq!(quiet_minutes(&read_run("c-quiet").unwrap()), None, "it just spoke");
+        transcript.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(12 * 60 + 5)).unwrap();
+        assert_eq!(quiet_minutes(&read_run("c-quiet").unwrap()), Some(12));
+    }
 
     fn sleeping_after_a_wake(id: &str, started_minutes_ago: i64, next_in_minutes: i64) {
         crate::state::transaction(id, |_p, s| {
