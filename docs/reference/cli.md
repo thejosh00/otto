@@ -59,6 +59,11 @@ When it is done:
           
           [default: 0]
 
+      --budget-tokens <N>
+          Block with a gate once its wakes have used this many tokens, counted as `otto usage` counts them — input, output and cache: `500k`, `50M` (0: unlimited)
+          
+          [default: 0]
+
 Where it runs:
       --launcher <NAME>
           What runs the model: plain `claude`, or a launcher named in $OTTO_HOME/config.json — a sandbox is the right choice for anything unattended. A unique prefix of the name will do
@@ -880,6 +885,11 @@ When it is done:
 
       --budget-hours <H>
           Block with a gate after this many hours since creation (0: unlimited)
+          
+          [default: 0]
+
+      --budget-tokens <N>
+          Block with a gate once its wakes have used this many tokens, counted as `otto usage` counts them — input, output and cache: `500k`, `50M` (0: unlimited)
           
           [default: 0]
 

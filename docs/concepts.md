@@ -322,10 +322,12 @@ half done whatever the world outside has been doing.
 
 ## Budgets and policy
 
-**Budgets** are outer bounds for runs that could go on for a long time: `--budget-wakes N` and
-`--budget-hours H`. At 80% of either, otto notifies you once; at 100%, the run is `blocked` with a
-gate. There is no dollar budget — nothing can price a wake on a subscription (see
-[cost](#what-a-wake-costs)).
+**Budgets** are outer bounds for runs that could go on for a long time: `--budget-tokens N`,
+`--budget-wakes N` and `--budget-hours H`. At 80% of any, otto notifies you once; at 100%, the run
+is `blocked` with a gate. Tokens are counted the way `otto usage` totals them — input, output, and
+cache read and written — so `--budget-tokens 50M` is a number you can check against that report; a
+wake whose transcript otto can't read (a sandbox hiding `~/.claude`) adds nothing. There is no
+dollar budget — nothing can price a wake on a subscription (see [cost](#what-a-wake-costs)).
 
 **Policy** knobs tune the engine per run (`otto run --policy key=value`):
 

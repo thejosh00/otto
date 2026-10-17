@@ -2563,6 +2563,7 @@ mod tests {
                 crate::event::Event::WakeSpent {
                     turns,
                     spent_wakes: 1,
+                    spent_tokens: 0,
                     input_tokens: 0,
                     output_tokens: 100,
                     cache_read: 0,

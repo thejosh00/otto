@@ -17,6 +17,20 @@ pub const HANDOFF_FILE: &str = "handoff.md";
 /// DESIGN.md §6. Enforced, not advisory — see `handoff()`.
 pub const HANDOFF_MAX_BYTES: usize = 8192;
 
+/// `2000000`, `500k` or `50M` — the way `otto usage` writes tokens, read back.
+pub fn parse_tokens(text: &str) -> Result<u64, String> {
+    let text = text.trim();
+    let (digits, scale) = match text.chars().last() {
+        Some('k' | 'K') => (&text[..text.len() - 1], 1_000.0),
+        Some('m' | 'M') => (&text[..text.len() - 1], 1_000_000.0),
+        _ => (text, 1.0),
+    };
+    match digits.trim().parse::<f64>() {
+        Ok(n) if n >= 0.0 && n.is_finite() => Ok((n * scale).round() as u64),
+        _ => Err(format!("`{text}` is not a token count: a number, or one like 500k or 50M")),
+    }
+}
+
 pub fn kind_str(kind: WrapKind) -> &'static str {
     match kind {
         WrapKind::Skill => "skill",
@@ -95,6 +109,10 @@ pub struct InitArgs {
     /// Block with a gate after this many hours since creation (0: unlimited)
     #[arg(long = "budget-hours", value_name = "H", default_value_t = 0, help_heading = "When it is done")]
     pub budget_hours: u32,
+    /// Block with a gate once its wakes have used this many tokens, counted as `otto usage` counts
+    /// them — input, output and cache: `500k`, `50M` (0: unlimited)
+    #[arg(long = "budget-tokens", value_name = "N", default_value = "0", value_parser = parse_tokens, help_heading = "When it is done")]
+    pub budget_tokens: u64,
     /// Refused if set: nothing can price a wake on a subscription. Kept declared so the refusal
     /// can say why (see `Budget`)
     #[arg(long = "budget-usd", default_value_t = 0.0, hide = true)]
@@ -174,6 +192,7 @@ impl Default for InitArgs {
             detach: Detach::Tmux,
             budget_wakes: 0,
             budget_hours: 0,
+            budget_tokens: 0,
             budget_usd: 0.0,
             fact: vec![],
             policy: vec![],
@@ -318,7 +337,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         return Err(OttoError::usage(
             "--budget-usd cannot be enforced: measuring per-wake cost needed `claude -p`, which \
              otto no longer runs because print mode bills SDK credits rather than the \
-             subscription. Use --budget-wakes or --budget-hours, or the maxWakeMinutes policy to \
+             subscription. Use --budget-tokens, --budget-wakes or --budget-hours, or the maxWakeMinutes policy to \
              cap a single wake."
                 .to_string(),
         ));
@@ -375,6 +394,8 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
             hours: args.budget_hours,
             usd: args.budget_usd,
             spent_wakes: 0,
+            tokens: args.budget_tokens,
+            spent_tokens: 0,
             spent_usd: 0.0,
         },
         policy,
@@ -2172,6 +2193,16 @@ mod tests {
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         let err = set_check(set_check_args("run-sc4", Some("artifacts/plain.sh"))).unwrap_err();
         assert!(err.to_string().contains("not executable"));
+    }
+
+    #[test]
+    fn a_token_count_reads_the_way_otto_usage_writes_it() {
+        assert_eq!(parse_tokens("2000000"), Ok(2_000_000));
+        assert_eq!(parse_tokens("500k"), Ok(500_000));
+        assert_eq!(parse_tokens("50M"), Ok(50_000_000));
+        assert_eq!(parse_tokens("1.5M"), Ok(1_500_000));
+        assert!(parse_tokens("lots").is_err());
+        assert!(parse_tokens("-3k").is_err());
     }
 
     /// otto counts the wakes that change nothing itself (`progress`), so a plain tick only tells

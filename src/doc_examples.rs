@@ -219,7 +219,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         Tick { ticks_without_progress: 0, note: some() },
         NoopTick { ticks_without_progress: 0, note: some() },
         WakeStarted { wake: 1, deadline_at: at, launcher: s() },
-        WakeSpent { turns: 0, spent_wakes: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, tool_errors: 0 },
+        WakeSpent { turns: 0, spent_wakes: 0, spent_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, tool_errors: 0 },
         UsageUnavailable { note: s() },
         WakeReportedError { exit_code: 1, timed_out: false, turns: 0 },
         BudgetWarning { fraction_spent: 0.8, budget: crate::state::test_run_state("x").budget },

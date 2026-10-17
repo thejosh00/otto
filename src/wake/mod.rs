@@ -107,6 +107,13 @@ fn budget_exceeded(state: &RunState) -> Option<String> {
     if budget.hours > 0 && hours >= budget.hours as f64 {
         return Some(format!("time budget spent: {:.1}h of {}h", hours, budget.hours));
     }
+    if budget.tokens > 0 && budget.spent_tokens >= budget.tokens {
+        return Some(format!(
+            "token budget spent: {} of {}",
+            crate::core::humanise(budget.spent_tokens),
+            crate::core::humanise(budget.tokens)
+        ));
+    }
     None
 }
 
@@ -310,11 +317,14 @@ fn finish_wake(
     let usage_found = result.usage.is_some();
     transaction(id, |path, state| {
         state.budget.spent_wakes += 1;
+        // The same total `otto usage` shows, so a budget and the report never disagree.
+        state.budget.spent_tokens += used.input_tokens + used.output_tokens + used.cache_read + used.cache_creation;
         crate::event::record(
             path,
             &Event::WakeSpent {
                 turns: used.turns,
                 spent_wakes: state.budget.spent_wakes,
+                spent_tokens: state.budget.spent_tokens,
                 input_tokens: used.input_tokens,
                 output_tokens: used.output_tokens,
                 cache_read: used.cache_read,
@@ -1256,6 +1266,43 @@ mod tests {
         let blocked = state.blocked.as_ref().expect("a blocked run says why");
         assert_eq!(blocked.cause, crate::state::BlockedCause::Budget);
         assert_eq!(blocked.detail.as_deref(), Some("wake budget spent: 2 of 2"));
+    }
+
+    /// Tokens add up across wakes, as `otto usage` totals them, and a spent token budget stops the
+    /// next wake before it launches, the way a spent wake budget does.
+    #[test]
+    fn a_token_budget_counts_what_wakes_used_and_stops_the_run_when_spent() {
+        let _h = TempHome::new();
+        test_init("w-tokens", "a goal").unwrap();
+        transaction("w-tokens", |_p, state| {
+            state.budget.tokens = 2_500;
+            Ok(())
+        })
+        .unwrap();
+        for _ in 0..2 {
+            let mut exec = FakeExec::new();
+            exec.on_exec(|| {
+                leave_transcript("w-tokens", 1, 400, 800, 0);
+                behave_well("w-tokens");
+            });
+            run_wake(&args("w-tokens"), &mut exec).unwrap();
+        }
+        let state = read_run("w-tokens").unwrap();
+        assert_eq!(state.budget.spent_tokens, 2_400, "input and output, twice");
+        assert!(state.budget.worst_fraction(0.0).is_some_and(|f| f > 0.9));
+
+        transaction("w-tokens", |_p, state| {
+            state.budget.spent_tokens = 2_600;
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        let err = run_wake(&args("w-tokens"), &mut exec).expect_err("must refuse");
+        assert_eq!(err.code, 2);
+        assert!(exec.calls.borrow().is_empty(), "nothing may be spawned once the budget is gone");
+        let state = read_run("w-tokens").unwrap();
+        assert_eq!(state.status, Status::Blocked);
+        assert_eq!(state.blocked.as_ref().and_then(|b| b.detail.as_deref()), Some("token budget spent: 2600 of 2500"));
     }
 
     fn budget_warnings(id: &str) -> usize {

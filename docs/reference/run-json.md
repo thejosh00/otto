@@ -48,7 +48,7 @@ what the ideas mean.
 |---|---|
 | `launcher` | `{kind, detach, repos, workdir}`: the launcher's name, `tmux` or `none`, the `--repo` directories, and the absolute directory every wake starts in (absent on runs from before working directories, which use the configured default) |
 | `permission` | `{mode, allowedTools, disallowedTools}`, passed to claude on every wake |
-| `budget` | `{wakes, hours, spentWakes}` — 0 means unlimited. (`usd`/`spentUsd` are vestigial and always 0) |
+| `budget` | `{wakes, hours, tokens, spentWakes, spentTokens}` — 0 means unlimited. Tokens are counted as `otto usage` totals them: input, output, cache read and written. (`usd`/`spentUsd` are vestigial and always 0) |
 | `policy` | `periodMinutes`, `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, `verifyDone`, `maxDoneReopens`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
 | `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |

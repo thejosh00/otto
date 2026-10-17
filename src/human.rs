@@ -810,6 +810,12 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
     if state.budget.wakes > 0 {
         print!(" of {}", state.budget.wakes);
     }
+    if state.budget.spent_tokens > 0 || state.budget.tokens > 0 {
+        print!(", {} tokens", crate::core::humanise(state.budget.spent_tokens));
+        if state.budget.tokens > 0 {
+            print!(" of {}", crate::core::humanise(state.budget.tokens));
+        }
+    }
     if state.budget.hours > 0 {
         print!(", {}h budget", state.budget.hours);
     }

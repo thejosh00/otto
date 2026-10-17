@@ -148,6 +148,9 @@ pub enum Event {
         turns: u64,
         #[serde(rename = "spentWakes")]
         spent_wakes: u32,
+        /// The run's tokens so far, this wake's included — what a token budget is measured against.
+        #[serde(rename = "spentTokens", default)]
+        spent_tokens: u64,
         #[serde(rename = "inputTokens")]
         input_tokens: u64,
         #[serde(rename = "outputTokens")]

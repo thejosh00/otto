@@ -241,6 +241,13 @@ pub struct Budget {
     pub usd: f64,
     #[serde(rename = "spentWakes", default)]
     pub spent_wakes: u32,
+    /// Tokens, counted the way `otto usage` totals them: input, output, and cache read and
+    /// written. Not dollars — nothing can price a wake on a subscription — but a unit otto measures
+    /// for every wake whose transcript it can read.
+    #[serde(default)]
+    pub tokens: u64,
+    #[serde(rename = "spentTokens", default)]
+    pub spent_tokens: u64,
     /// Never incremented — nothing can price a wake on a subscription.
     #[serde(rename = "spentUsd", default)]
     pub spent_usd: f64,
@@ -260,6 +267,7 @@ impl Budget {
         };
         consider(self.spent_wakes as f64, self.wakes as f64);
         consider(elapsed_hours, self.hours as f64);
+        consider(self.spent_tokens as f64, self.tokens as f64);
         worst
     }
 }
@@ -1104,7 +1112,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         said_progress: None,
         launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![], workdir: None },
         permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
-        budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, spent_usd: 0.0 },
+        budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, tokens: 0, spent_tokens: 0, spent_usd: 0.0 },
         policy: Policy::default(),
         facts: Map::new(),
         created_at: now,
