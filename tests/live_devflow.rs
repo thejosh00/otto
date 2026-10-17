@@ -6,8 +6,9 @@
 //!
 //! Run from a normal terminal. Measured on a two-file repo for a one-function change: intake
 //! 1min, prepare 2min, plan ~1min — but the first run of all took 50min before the workflow
-//! told the conductor to size its effort to the change. Budget an hour and raise the timeouts
-//! (below) rather than concluding a run is stuck.
+//! told the conductor to size its effort to the change. Both variants side by side, each claim
+//! of done checked by a fresh wake: 9.5min (2026-10-17). Raise the timeouts (below) rather than
+//! concluding a run is stuck.
 //!
 //! The remote is a local bare clone, so the push and the merge are real operations against a
 //! throwaway — no network, no gh, no chance of touching a real PR. That is also a case the
@@ -29,6 +30,16 @@ enum StopAt {
     Verify,
     /// The whole pipeline: push and merge too (4 gates).
     Merge,
+}
+
+impl StopAt {
+    /// In the run id and the scratch dir, so the two variants can run side by side.
+    fn label(self) -> &'static str {
+        match self {
+            StopAt::Verify => "devflow-verify",
+            StopAt::Merge => "devflow-merge",
+        }
+    }
 }
 
 fn env_secs(key: &str, default: u64) -> Duration {
@@ -58,7 +69,7 @@ fn run_devflow(stop_at: StopAt) {
 
     checks.step("1 - scratch repo with a real (local) remote");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let mut scratch = ScratchRepo::new(&workspace_dir(), "devflow");
+    let mut scratch = ScratchRepo::new(&workspace_dir(), stop_at.label());
     let origin = scratch.origin_path();
     let repo = scratch.repo_path("greeter");
     git_ok(scratch.path(), &["init", "--quiet", "--bare", "--initial-branch=main", origin.to_str().unwrap()]);
@@ -93,7 +104,7 @@ fn run_devflow(stop_at: StopAt) {
     checks.check(make_test_baseline, "its baseline is green", "the scratch repo starts red");
 
     checks.step("2 - start dev-flow (push gated: askBeforePush=true)");
-    let run_id = format!("devflow-{stamp}");
+    let run_id = format!("{}-{stamp}", stop_at.label());
     let instructions = repo_path("workflows/dev-flow.md");
     let request = format!(
         "In {}: add a farewell(name) function to greet.py returning \"Goodbye, <name>!\", mirroring greet() \

@@ -102,7 +102,7 @@ otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --targ
 ```bash
 cargo test                    # the whole engine: no tmux, no model, no money
 test/live.sh                  # live tests against a real claude, side by side: ~5 min, real tokens
-test/live.sh live_devflow     # the hour-long one, dev-flow from ticket to merge
+test/live.sh live_devflow     # dev-flow from ticket to merge, and stopped at ready-to-push: ~10 min
 ```
 
 Everything is unit-testable because the two things that touch the outside world are injected:
