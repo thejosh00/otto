@@ -5,8 +5,8 @@
 **Policy** `maxTicksWithoutProgress` (default 24)
 
 Sleeps, wakes, and does nothing useful `ticksRequired` times, then finishes. Its job is to
-prove the parts of the engine that only fail *over time*: a chained one-shot cron, a
-`nextWakeAt` the reviver can act on, tick accounting, and survival of `kill -9` and a reboot.
+prove the parts of the engine that only fail *over time*: a `nextWakeAt` the reviver can act
+on, tick accounting, and survival of `kill -9` and a reboot.
 
 Every tick is deliberately trivial — one `otto state tick`, no `git`, no `gh`, no subagent —
 because a tick that costs real tokens is a workflow that cannot be left running for a week.
@@ -32,13 +32,10 @@ the thing that might not happen.
 2. Reconcile: nothing external to re-derive in this workflow. A real workflow does its
    `gh pr view` here.
 3. `otto state record-fact <id> ticksDone=<n+1>` then `otto state tick <id>` (no `--progress`:
-   nothing was achieved, which is the honest signal). Read the JSON it prints; if
-   `exhausted` is true, `set-status --status blocked` and open a **human** gate instead of
-   sleeping again.
+   nothing was achieved, which is the honest signal).
 4. If `ticksDone >= ticksRequired` → `set-phase <id> --phase wake` and continue to phase 1 in
    this same turn. Otherwise re-arm:
-   - `otto state arm-timer <id> --in <tickSeconds>` — writes `nextWakeAt` and
-     prints the matching one-shot cron expression.
+   - `otto state arm-timer <id> --in <tickSeconds>` — writes `nextWakeAt`.
    - Stop. Say which tick this was and when the next one is due.
 
 ## Phase 1 — `wake`
@@ -56,7 +53,7 @@ the thing that might not happen.
 ## What a green run looks like
 
 `journal.jsonl`: `run-created`, `phase-changed`(→nap), then per tick a `timer-armed` (carrying
-its `cron`) and a `noop-tick` (carrying `ticksWithoutProgress`), then `phase-changed`(→wake)
+its `nextWakeAt`) and a `noop-tick` (carrying `ticksWithoutProgress`), then `phase-changed`(→wake)
 and `status-changed`(→done). A run that was killed mid-nap also carries one `revived` line per
 recovery — and its tick count still lands exactly on `ticksRequired`, because the count lives
 on disk rather than in a session's memory.
