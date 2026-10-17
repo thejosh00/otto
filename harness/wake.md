@@ -37,7 +37,8 @@ doing nothing is the right response.
 
 **If a gate is open**, settle it before anything else. An answer arrives in your prompt as the
 human's own words — record it verbatim with `otto state close-gate` *before* acting on it,
-then continue. No answer present (you were started by a timer, or by poke) means re-ask: print
+then continue. (Answered with `otto answer`, it is already recorded and the gate closed; your
+prompt says so, and there is nothing to close.) No answer present (you were started by a timer, or by poke) means re-ask: print
 the question from the gate file exactly as written. Never re-derive a question already on disk.
 If the gate has an `expiresAt` that has passed, `otto state close-gate <id> --expired` and
 carry on as the instructions say silence means.

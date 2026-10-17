@@ -196,7 +196,7 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
 
     let base = prompt::for_wake(&args.id, &run_path, &state);
     let mut prompt = match &args.answer {
-        Some(answer) => prompt::answer_prompt(&base, answer),
+        Some(answer) => prompt::answer_prompt(&base, answer, state.gate.is_some()),
         None => base,
     };
     // Read from the same `state` the prompt is built from, so the notes marked as given below are

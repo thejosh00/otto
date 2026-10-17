@@ -88,14 +88,24 @@ pub fn for_wake(run_id: &str, run_dir: &std::path::Path, state: &crate::state::R
 }
 
 /// A human answering a gate. Their words are passed through verbatim and clearly marked as
-/// theirs, because the wake must record them character-for-character before acting on them —
+/// theirs, because they must be recorded character-for-character before anything acts on them —
 /// paraphrasing a decision and then acting on the paraphrase two days later is how a run
-/// drifts from what was actually approved.
-pub fn answer_prompt(base: &str, answer: &str) -> String {
+/// drifts from what was actually approved. `otto answer` records them itself before the wake
+/// starts, and then the gate is closed and there is nothing to close: telling the wake to
+/// `close-gate` anyway sent it into "no gate is open", an exit 2 the harness says means stop —
+/// three wakes reported it the day feedback landed. Only a wake started by hand with `--answer`
+/// still has the gate open.
+pub fn answer_prompt(base: &str, answer: &str, gate_open: bool) -> String {
+    let record = if gate_open {
+        "Record it with `otto state close-gate` before acting on it."
+    } else {
+        "otto has already recorded it, verbatim, and closed the gate (`gates/`): there is nothing to \
+         close. Act on it."
+    };
     format!(
         "{base}\n\nA person has answered the open gate. Their answer, verbatim:\n\n\
          ---\n{answer}\n---\n\n\
-         Record it with `otto state close-gate` before acting on it.",
+         {record}",
         answer = answer.trim_end(),
     )
 }
@@ -159,9 +169,12 @@ mod tests {
     #[test]
     fn an_answer_is_passed_through_verbatim() {
         let answer = "Approve, but rename the flag to --dry-run first.";
-        let prompt = answer_prompt(&user_prompt("r1", Path::new("/tmp/r1")), answer);
+        let prompt = answer_prompt(&user_prompt("r1", Path::new("/tmp/r1")), answer, true);
         assert!(prompt.contains(answer), "the person's words must survive intact");
         assert!(prompt.contains("close-gate"));
+        let recorded = answer_prompt(&user_prompt("r1", Path::new("/tmp/r1")), answer, false);
+        assert!(recorded.contains(answer));
+        assert!(!recorded.contains("otto state close-gate"), "a closed gate is not the wake's to close");
     }
 
     /// A claim makes the next wake a checker, and it has to be told — nothing else it reads first
