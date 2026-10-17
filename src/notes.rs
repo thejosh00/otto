@@ -103,10 +103,7 @@ pub fn for_wake(run_dir: &Path, state: &RunState) -> Option<Given> {
     if state.notes.is_empty() {
         return None;
     }
-    let render = |note: &Note| {
-        let kind = if note.standing { "standing" } else { "one-off" };
-        format!("--- note {} ({kind}, added {}) ---\n{}\n---", note.id, note.added_at, read_text(run_dir, note).trim_end())
-    };
+    let render = |note: &Note| render(run_dir, note);
     let standing: Vec<String> = state.notes.iter().filter(|n| n.standing).map(render).collect();
     let once: Vec<String> = state.notes.iter().filter(|n| !n.standing).map(render).collect();
 
@@ -124,6 +121,57 @@ pub fn for_wake(run_dir: &Path, state: &RunState) -> Option<Given> {
         block.push_str(&once.join("\n\n"));
     }
     Some(Given { block, ids: state.notes.iter().map(|n| n.id.clone()).collect() })
+}
+
+fn render(run_dir: &Path, note: &Note) -> String {
+    let kind = if note.standing { "standing" } else { "one-off" };
+    format!("--- note {} ({kind}, added {}) ---\n{}\n---", note.id, note.added_at, read_text(run_dir, note).trim_end())
+}
+
+/// Notes the wake in progress was never given: added after its prompt was written.
+fn late(state: &RunState) -> Vec<&Note> {
+    match state.wake.as_ref().filter(|w| w.outcome.is_none()) {
+        Some(wake) => state.notes.iter().filter(|note| note.given_to_wake != Some(wake.n)).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Refuse, once, a wake about to hand the run on without a note that arrived while it ran: a
+/// question for a person (`before` is `gate`), a done for a checker (`done`), or a done for good
+/// (`confirm`). Asked
+/// without it, the person is asked what they already said; claimed without it, the note goes to
+/// the wake checking the claim, which does no work, and is delivered unread. The refusal carries
+/// the notes verbatim and marks them given to this wake, so the same command goes through the
+/// second time and this wake completing delivers them. A person acting by hand, with no wake in
+/// progress, reads the notes themselves.
+pub fn refuse_if_late(run_id: &str, before: &str) -> Result<(), OttoError> {
+    if late(&crate::state::read_run(run_id)?).is_empty() {
+        return Ok(());
+    }
+    let block = crate::state::transaction(run_id, |path, state| {
+        let late: Vec<Note> = late(state).into_iter().cloned().collect();
+        let Some(n) = state.wake.as_ref().map(|w| w.n).filter(|_| !late.is_empty()) else {
+            return Ok(None);
+        };
+        let ids: Vec<String> = late.iter().map(|note| note.id.clone()).collect();
+        mark_given(state, &ids, n);
+        crate::event::record(path, &Event::NotesGivenLate { notes: ids, wake: n, before: before.to_string() })?;
+        Ok(Some(late.iter().map(|note| render(path, note)).collect::<Vec<_>>().join("\n\n")))
+    })?;
+    let done = match before {
+        "gate" => "asked",
+        "confirm" => "confirmed done",
+        _ => "said to be done",
+    };
+    match block {
+        Some(block) => Err(OttoError::conflict(format!(
+            "not yet: a person left a note while this wake was running, after its prompt was written, so \
+             this was {done} without it. Here it is, verbatim — follow the Notes section of your \
+             instructions. It may answer the question, or mean more work. If you still mean to, run \
+             the same command again: it goes through this time.\n\n{block}"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Record that wake `n`'s prompt carried `ids`. Called in the transaction that starts the wake.
@@ -267,6 +315,41 @@ mod tests {
         let left: Vec<String> = read_run("n-deliver").unwrap().notes.iter().map(|n| n.id.clone()).collect();
         assert_eq!(left, vec!["002", "003"], "the standing note and the late one remain");
         assert!(journal("n-deliver").contains("\"event\":\"notes-delivered\",\"notes\":[\"001\"]"));
+    }
+
+    /// A question asked while a note waits unread is refused once, with the note; asked again, it
+    /// goes through. With no wake in progress there is nobody to refuse.
+    #[test]
+    fn a_note_that_arrived_mid_wake_is_handed_over_before_a_question() {
+        let _h = TempHome::new();
+        test_init("n-late", "a goal").unwrap();
+        add("n-late", "Not before Monday.", false).unwrap();
+        assert!(refuse_if_late("n-late", "gate").is_ok(), "no wake is running: a person reads the notes themselves");
+        crate::state::transaction("n-late", |_p, s| {
+            let now = Timestamp::now();
+            s.wake = Some(crate::state::Wake {
+                n: 4,
+                started_at: now,
+                deadline_at: now,
+                launcher: "claude".into(),
+                pid: None,
+                session: None,
+                outcome: None,
+            });
+            mark_given(s, &["001".to_string()], 4);
+            Ok(())
+        })
+        .unwrap();
+        assert!(refuse_if_late("n-late", "gate").is_ok(), "its prompt carried that one");
+
+        add("n-late", "Use the staging db, not prod.", false).unwrap();
+        let err = refuse_if_late("n-late", "gate").unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("Use the staging db, not prod."), "{}", err.message);
+        assert!(!err.message.contains("Not before Monday."), "only what it was never given");
+        assert!(refuse_if_late("n-late", "gate").is_ok(), "refused once: it has the note now");
+        assert_eq!(read_run("n-late").unwrap().notes[1].given_to_wake, Some(4), "so its completing delivers it");
+        assert!(journal("n-late").contains("\"event\":\"notes-given-late\",\"notes\":[\"002\"],\"wake\":4,\"before\":\"gate\""));
     }
 
     #[test]

@@ -219,6 +219,8 @@ the next one gets it again.
 - `--standing` gives a note to every wake until you `--drop` it, for guidance that should hold
   for the life of the run.
 - `--now` starts a wake to read it, if none is running and no gate is open.
+- A note you leave while a wake is working reaches that wake before it asks you anything or says
+  it's done: otto refuses the question or the done once, with your note in the refusal.
 - A note steers *how* the run works. It never changes the goal or the done-condition, and never
   authorizes a push; a wake opens a gate for anything like that.
 

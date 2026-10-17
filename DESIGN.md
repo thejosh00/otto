@@ -439,7 +439,11 @@ sleeping run was to wait for it to ask, or to stop and resume it.
   records which (`givenToWake`). Only that wake *completing* delivers a one-off note
   (`notes-delivered`, and it leaves `run.json`). A wake that crashes or is killed never completes,
   so the next wake is given the note again: at-least-once, with no ack for a wake to forget. A
-  note added while a wake runs was never in its prompt, and waits for the next one.
+  note added while a wake runs was never in its prompt, and waits for the next one — unless that
+  wake hands the run on first: opens a gate, claims done, or confirms a claim. That is refused
+  once, the refusal carrying the note, which is then given to the wake (`notes-given-late`).
+  Asked without it, the person is asked what they may have just said; claimed without it, the note
+  goes to the checking wake (§5.4), which does no work, and is delivered unread.
 - **Standing notes** (`--standing`) are given to every wake until `--drop`ped, for guidance that
   must hold for the life of the run. Otherwise it would live in the handoff, which the model
   rewrites every wake — a paraphrase every wake. Together they are capped at 4KB, like the handoff.

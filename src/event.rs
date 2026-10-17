@@ -29,7 +29,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "gate-expired", "timer-armed", "tick", "noop-tick", "wake-started", "wake-spent", "usage-unavailable",
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
-    "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "note-dropped",
+    "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
     "stages-set", "done-claimed", "done-verified", "done-reopened",
@@ -249,6 +249,14 @@ pub enum Event {
     NotesDelivered {
         notes: Vec<String>,
         wake: u32,
+    },
+    /// A wake was about to ask a question (`gate`), claim done (`done`) or confirm a claim
+    /// (`confirm`) without these notes, added while it ran. Refused once, with the notes, which are
+    /// now given to it.
+    NotesGivenLate {
+        notes: Vec<String>,
+        wake: u32,
+        before: String,
     },
     /// A person withdrew a note before delivery, or retired a standing one.
     NoteDropped {

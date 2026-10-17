@@ -123,6 +123,9 @@ there would.
    says must be true at the end: a cleanup step, a report, a ticket updated. Read it; don't run it.
    A person can move the finish line at a gate: an answer in `gates/` like "stop at ready-to-push"
    makes that what finished means, and what they said not to do is not missing. Nothing else can.
+   A one-off note in your prompt came after the claim, so no wake doing the work has seen it: if
+   it bears on the work and the work doesn't follow it, reopen quoting it — your reason is how
+   the next wake gets it.
 3. **Check each part against the world, now.** For every part of finished, look at the thing
    itself: the file exists and says what it should, the commit is on the branch it belongs on, the
    PR is merged, the worktree is gone, the lock is released, the output is published. `git`, `gh`,
@@ -458,6 +461,10 @@ verbatim, numbered. A gate is the run asking; a note is the person telling.
   quoting it rather than restating it.
 
 You never add, drop or acknowledge notes yourself: completing this wake is what delivers them.
+
+A note can arrive while you work. If otto refuses a gate or a done with `not yet: a person left a
+note…`, the note is in the refusal: read it as if it had been in your prompt — it may answer your
+question, or mean more work — and ask or claim again only if you still mean to.
 
 ## Things that cannot be undone
 

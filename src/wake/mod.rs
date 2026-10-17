@@ -1478,6 +1478,39 @@ mod tests {
         assert!(calls[2].join(" ").contains("the worktree is still there"), "the fix is told what was missing");
     }
 
+    /// A note a person leaves while a wake works was never in its prompt. Its done is refused once,
+    /// with the note, so the wake doing the work reads it — not the checker, which does no work
+    /// and would deliver it unread.
+    #[test]
+    fn a_note_left_mid_wake_reaches_it_before_its_done() {
+        let _h = TempHome::new();
+        test_init("w-late", "a goal").unwrap();
+        let refused = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let said = refused.clone();
+        let (mut exec, count) = script("w-late", move |n| match n {
+            1 => {
+                crate::notes::add("w-late", "Use the staging db, not prod.", false).unwrap();
+                let done = crate::state::commands::SetStatusArgs {
+                    id: "w-late".into(),
+                    status: Status::Done,
+                    reason: Some("all of it".into()),
+                    because: None,
+                };
+                *said.borrow_mut() = crate::state::commands::set_status(done).unwrap_err().message;
+                claim_done("w-late");
+            }
+            _ => verdict("w-late", true, "checked"),
+        });
+        run_wake(&args("w-late"), &mut exec).unwrap();
+
+        assert!(refused.borrow().contains("Use the staging db, not prod."), "{}", refused.borrow());
+        assert_eq!(count.get(), 2);
+        assert_eq!(read_run("w-late").unwrap().status, Status::Done);
+        assert!(!exec.calls.borrow()[1].join(" ").contains("staging db"), "delivered by the wake that read it");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-late").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("\"event\":\"notes-delivered\",\"notes\":[\"001\"],\"wake\":1"), "{journal}");
+    }
+
     /// A checker that ends without a verdict has not done its one job: incomplete, and nothing more
     /// is started on top of it.
     #[test]

@@ -586,6 +586,9 @@ pub struct SetStatusArgs {
 
 pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
     let id = args.id.clone();
+    if args.status == Status::Done {
+        crate::notes::refuse_if_late(&id, "done")?;
+    }
     let mut claimed = false;
     let left_open = transaction(&id, |path, state| {
         if let (Some(claim), Status::Done) = (&state.done_claim, args.status) {
@@ -699,6 +702,9 @@ pub fn verify(args: VerifyArgs) -> Result<(), OttoError> {
     let reason = args.reason.trim().to_string();
     if reason.is_empty() {
         return Err(OttoError::usage("--reason must say what you checked, or what is missing"));
+    }
+    if args.confirm {
+        crate::notes::refuse_if_late(&id, "confirm")?;
     }
     let mut verified = Verified::Done;
     transaction(&id, |path, state| {
@@ -855,6 +861,7 @@ pub fn open_gate(args: OpenGateArgs) -> Result<(), OttoError> {
         (None, Some(seconds)) => Some(Timestamp::in_seconds(seconds)),
         (None, None) => None,
     };
+    crate::notes::refuse_if_late(&args.id, "gate")?;
     let gate_file_path = super::ops::open_gate_about(&args.id, &args.slug, &question, expires, args.about.as_deref())?;
     println!("{gate_file_path}");
     Ok(())
