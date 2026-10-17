@@ -244,6 +244,7 @@ you are wrapping assumes something a wake cannot provide, translate it:
 |---|---|
 | "ask the user", "confirm with them", or names `AskUserQuestion` | Open a gate and stop. The answer arrives in a later wake |
 | "wait", "poll", "check back in an hour", "keep watching" | Stop; the period brings a wake back. `otto state arm-timer --in` if it needs a different gap |
+| "run it in the background", "kick it off and check back" | Start it writing its result to a file, arm a timer, stop. It may die with this wake: the next wake trusts the file, not the process (Waiting, below) |
 | "remember this", "keep track of", "note for later" | Write it — the handoff for one wake, an artifact for longer |
 | "tell me", "let me know", "notify me", "report back" | Send a message (below): it lands in the person's inbox and notifies them |
 | "write a report", "produce a document", "generate a summary" — anything they'd want to find again | Publish it as an output (below), and send a message pointing at it |
@@ -376,6 +377,14 @@ watching and finding nothing is its job.
 Whenever you set `blocked` yourself, say why with `--because` (`instructions` when your own
 instructions decided the run cannot proceed) and `--reason`. `otto ls` and `otto show` tell the
 person what happened and what to do from exactly that.
+
+**A background job is not a way back.** Anything you start with `&`, `nohup`, a background
+shell or a watcher can die when this wake ends, or outlive it with nobody watching; its process
+id and its log are evidence, never a promise. When a job must run past this wake, start it
+writing its result somewhere durable — under `artifacts/`, with its exit status — say where in
+the handoff, and arm a timer. The next wake reads the result. No result and no process means it
+died: start it again, or say so. Better, wait on something that outlives every wake — CI, a
+scheduled job — rather than on a process of your own.
 
 **A missed window is one wake, not a backlog.** However long the run was down, reconcile once
 and carry on. Never replay the ticks you missed.

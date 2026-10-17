@@ -507,6 +507,14 @@ has none.
 days — it gets one reconcile. A closed lid through six ticks is one catch-up, because a run has
 one `nextWakeAt`, not a queue.
 
+**A background job is never the way back.** A wake that starts a build with `&` and arms a timer
+to "check the build I started" is waiting on a process that may have died with the wake — the
+session exits, and a sleep, a reboot or a kill at the deadline takes its children too. Paperclip
+learned the same: a backgrounded job, its pid and its log count as evidence, never as a
+continuation. So the harness says: the job writes its result and exit status under `artifacts/`,
+the handoff says where, and the next wake trusts the file, treating no file and no process as a
+job that died.
+
 ### 8.1 Check scripts — opt-in, and cheaper than a tick
 
 A tick is still a wake: cold Claude session, ~$0.38 and 11 turns in the measured steady state
