@@ -91,7 +91,7 @@ fn run_case(cleaned_up: bool) {
         "--fact",
         &repo_fact,
     ]);
-    checks.check(created.status.success(), format!("created {run_id}"), String::from_utf8_lossy(&created.stderr).to_string());
+    checks.check(created.status.success(), format!("created {run_id}"), String::from_utf8_lossy(&created.stderr));
     let run = Run::new(&run_id);
     // The claiming wake's own account, and it is the same either way: it says it cleaned up.
     write_file(
@@ -118,13 +118,13 @@ fn run_case(cleaned_up: bool) {
         .unwrap_or(false);
     checks.check(wrote, "the handoff says it is all done", "could not write the handoff");
     let claimed = otto(&["state", "set-status", &run_id, "--status", "done", "--reason", "merged the note and cleaned up"]);
-    checks.check(claimed.status.success(), "claimed done", String::from_utf8_lossy(&claimed.stderr).to_string());
+    checks.check(claimed.status.success(), "claimed done", String::from_utf8_lossy(&claimed.stderr));
     checks.check(run.status() == "sleeping", "a claim, not done: the run waits to be checked", format!("status={}", run.status()));
     checks.check(run.field_str("doneClaim.byWake") == "0", "doneClaim recorded", "no doneClaim in run.json");
 
     checks.step(&format!("3 - wake it: the checker, and whatever follows (up to {}min)", timeout.as_secs() / 60));
     let woke = otto(&["wake", &run_id]);
-    checks.check(woke.status.success(), "the checking wake started", String::from_utf8_lossy(&woke.stderr).to_string());
+    checks.check(woke.status.success(), "the checking wake started", String::from_utf8_lossy(&woke.stderr));
     if !await_over(&run, timeout) {
         scratch.keep();
         checks.bail(&run, &format!("not over within {}min (status={})", timeout.as_secs() / 60, run.status()));
