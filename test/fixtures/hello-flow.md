@@ -57,9 +57,12 @@ with the note in hand. Past `maxAttempts`, set `blocked` and open a gate instead
 
 ## What a green run looks like
 
-The journal, in order: `run-created`, `wake-started`, `gate-opened` (001), `gate-closed` (001,
-carrying the answer verbatim), `wake-complete`, `wake-started`, `status-changed` (→ done),
-`wake-complete`.
+The journal, in order — the events that mark the flow; bookkeeping like `wake-spent` and
+`timer-armed` falls between them: `run-created`, `wake-started`, `phase-changed` (→ greet),
+`gate-opened` (001), `wake-complete`, `gate-closed` (001, carrying the answer verbatim — `otto
+answer` records it before the next wake starts), `wake-started`, `phase-changed` (→ farewell),
+`done-claimed`, `wake-complete`, then the check of that claim: `wake-started`, `done-verified`,
+`status-changed` (→ done), `wake-complete`.
 
 `run.json`: `status: done`, `gate: null`, `nextWakeAt: null`. Both artifacts present. The
 handoff rewritten by each wake and under its cap.
