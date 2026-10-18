@@ -1330,6 +1330,12 @@ Options:
       --check-script <CHECK_SCRIPT>
           Path, relative to the run dir, to an opt-in script poke runs directly when this sleep comes due, instead of waking the run — DESIGN.md §8.1. "Nothing new" sleeps again for the same length of time; anything else wakes the run
 
+      --waiting-for <WHAT>
+          What this sleep waits on, in a few words: `CI on 3f2a1c0`. Re-arm the same wait with the same words — it keeps when it started, and its limit
+
+      --give-up-after <AGE>
+          How long that wait may take in all: `2h`, `1d`. Past it, otto refuses another sleep for it and the next wake must decide
+
   -h, --help
           Print help
 ```

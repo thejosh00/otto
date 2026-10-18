@@ -187,6 +187,13 @@ A wake can say something different for one sleep: `otto state arm-timer --in 600
 takes ten minutes, or `--at` for tomorrow morning. That lasts one sleep; after it the run is back
 on its period. An open gate takes precedence over both.
 
+A wait can carry a limit: `arm-timer --in 600 --waiting-for "CI on 3f2a1c0" --give-up-after 2h`.
+Re-armed with the same words it keeps when it started and its limit, so the limit can't creep
+later one sleep at a time. Once it passes, otto refuses another sleep for it and tells the next
+wake first thing to decide — usually by asking you. `otto show` says what a run is waiting on. A
+sleep for anything else ends the wait, and so does your answer to a question: "keep waiting"
+starts it afresh.
+
 A run whose machine was asleep, or whose reviver was off, gets **one** catch-up wake when it comes
 back — never a replay of every wake it missed.
 

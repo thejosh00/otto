@@ -32,7 +32,8 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
-    "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent",
+    "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "waiting",
+    "wait-overdue",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +270,21 @@ pub enum Event {
         report: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         wake: Option<u32>,
+    },
+    /// A wake started waiting on something with a limit (`arm-timer --waiting-for`).
+    Waiting {
+        #[serde(rename = "for")]
+        what: String,
+        #[serde(rename = "giveUpAt", skip_serializing_if = "Option::is_none")]
+        give_up_at: Option<Timestamp>,
+    },
+    /// A wake tried to sleep again for a wait whose limit had passed, and otto refused.
+    WaitOverdue {
+        #[serde(rename = "for")]
+        what: String,
+        since: Timestamp,
+        #[serde(rename = "giveUpAt")]
+        give_up_at: Timestamp,
     },
     /// A person withdrew a note before delivery, or retired a standing one.
     NoteDropped {

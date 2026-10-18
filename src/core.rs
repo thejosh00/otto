@@ -2364,6 +2364,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: None,
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let state = read_run("2026-09-25-ci").unwrap();
@@ -2460,6 +2462,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/other.sh".into()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let check = read_run("2026-09-25-keep").unwrap().check.unwrap();

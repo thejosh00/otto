@@ -110,6 +110,12 @@ pub fn answer_prompt(base: &str, answer: &str, gate_open: bool) -> String {
     )
 }
 
+/// A wake's prompt when the run's wait has run out (`state::Wait`): told first, since what it was
+/// waiting on is the first thing it would otherwise check, and sleep on again.
+pub fn with_overdue_wait(prompt: &str, wait: &crate::state::Wait) -> String {
+    format!("{prompt}\n\nBefore anything else: {}.", crate::state::commands::overdue_wait(wait))
+}
+
 /// A wake's prompt with the person's notes appended (see `notes::for_wake`). Last, so that an
 /// answer's "record it before acting" instruction is not buried under them.
 pub fn with_notes(prompt: &str, notes: &str) -> String {

@@ -49,6 +49,8 @@ the budget events, the wake failures, and `usage-limited`.
 | Event | Fields | When |
 |---|---|---|
 | `timer-armed` | `nextWakeAt`, `note` | A sleep was scheduled — by a wake, the period (`note: period`), or a retry backoff |
+| `waiting` | `for`, `giveUpAt` | A wake started waiting on something, with a limit (`arm-timer --waiting-for --give-up-after`) |
+| `wait-overdue` | `for`, `since`, `giveUpAt` | A wake tried to sleep again for a wait whose limit had passed; otto refused, and armed nothing |
 | `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A wake said it moved the run where otto can't see (`--progress`) / said what a look found. otto counts wakes that change nothing itself, so a plain tick adds nothing to the count |
 | `period-set` | `periodMinutes`, `previousMinutes` | A person changed the period |
 | `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |

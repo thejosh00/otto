@@ -37,6 +37,7 @@ what the ideas mean.
 | `wake` | The current or last wake: `{n, startedAt, deadlineAt, launcher, pid, session, outcome}`. `session` is the claude session id its usage is read from |
 | `incompleteWakes` | Wakes in a row that didn't finish; reset by one that does |
 | `startFailures`, `startFailure` | Wakes in a row that never got going — claude exited at once, having done nothing — and the first line it printed the last time. Retried for as long as it takes, never counted toward blocking the run; reset by a wake that gets going |
+| `wait` | What a wake said the run is waiting on, with a limit (`arm-timer --waiting-for`): `{for, since, giveUpAt}`. Re-arming the same wait keeps both times; past `giveUpAt`, otto refuses another sleep for it |
 | `paused` | While a person has paused it (`otto pause`): `{at, until, reason}`, `until` absent for "until resumed". Poke starts no scheduled wake meanwhile |
 | `ticksWithoutProgress` | Wakes in a row that changed nothing otto could see and didn't say `tick --progress`; at `policy.maxTicksWithoutProgress`, otto blocks the run (`stall`) and asks |
 | `progressMark` | otto's mark of the run's work after the last wake that finished: phase, facts, gates, outputs, messages, `artifacts/`, and the `--repo`s' branches and worktrees. A wake that leaves it as it was changed nothing |

@@ -334,6 +334,28 @@ pub struct OpenMessage {
     pub sent_at: crate::clock::Timestamp,
 }
 
+/// What the run is waiting on, when a wake said so with a limit (`arm-timer --waiting-for`): CI on
+/// a commit, a review, a deploy. The stall guard bounds a run that has stopped moving at all; this
+/// bounds one wait, the way paperclip's scheduled checks carry a timeout ("wait for CI up to 2h,
+/// then escalate"). Re-arming the same wait keeps its start and its limit, so the limit can't drift
+/// later one sleep at a time. Once `giveUpAt` passes, otto refuses another sleep for it and tells
+/// the next wake to decide. A sleep armed for anything else ends it, and so does an answered gate:
+/// a person saying "keep waiting" starts it afresh.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Wait {
+    #[serde(rename = "for")]
+    pub what: String,
+    pub since: crate::clock::Timestamp,
+    #[serde(rename = "giveUpAt", default, skip_serializing_if = "Option::is_none")]
+    pub give_up_at: Option<crate::clock::Timestamp>,
+}
+
+impl Wait {
+    pub fn is_overdue(&self) -> bool {
+        self.give_up_at.is_some_and(|at| at.is_past())
+    }
+}
+
 /// A person has paused the run: poke starts no wake for it — not the period's, not a timer's, not
 /// a check script's — until `until`, or until they resume it. A wake already running finishes, and
 /// a person can still answer, note or wake it by hand; a pause holds back only what is scheduled.
@@ -688,6 +710,9 @@ pub struct RunState {
     /// Set while a person has paused the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused: Option<Pause>,
+    /// What a wake said the run is waiting on, with a limit (`Wait`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<Wait>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1122,6 +1147,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         notes: Vec::new(),
         messages: Vec::new(),
         paused: None,
+        wait: None,
     }
 }
 

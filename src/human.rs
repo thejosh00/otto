@@ -804,6 +804,14 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
                 .unwrap_or_default()
         );
     }
+    if let Some(wait) = &state.wait {
+        let limit = match wait.give_up_at {
+            Some(at) if at.is_past() => format!("; its limit passed {}", crate::clock::local_clock(at)),
+            Some(at) => format!("; gives up {}", crate::clock::local_clock(at)),
+            None => String::new(),
+        };
+        println!("  waiting   for {} since {}{limit}", wait.what, crate::clock::local_clock(wait.since));
+    }
     // No dollar figure: nothing measures one without `-p`. Per-wake tokens are journaled, so
     // `otto logs` is where a question about what a wake used gets answered.
     print!("  used      {} wake(s)", state.budget.spent_wakes);

@@ -13,7 +13,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-tests=${*:-live_gate live_todo live_message live_note live_feedback live_background live_outputs live_verify live_revive}
+tests=${*:-live_gate live_todo live_message live_note live_feedback live_background live_wait live_outputs live_verify live_revive}
 logs=$(mktemp -d "${TMPDIR:-/tmp}/otto-live.XXXXXX")
 
 # Build once, then run the test binaries themselves. Not one `cargo test` each: every cargo that

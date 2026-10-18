@@ -378,6 +378,14 @@ Whenever you set `blocked` yourself, say why with `--because` (`instructions` wh
 instructions decided the run cannot proceed) and `--reason`. `otto ls` and `otto show` tell the
 person what happened and what to do from exactly that.
 
+**A wait can have a limit.** When you sleep on something specific — CI on a commit, a review, a
+deploy — and the instructions (or sense) say how long is too long, say so:
+`otto state arm-timer <id> --in 600 --waiting-for "CI on 3f2a1c0" --give-up-after 2h`. Re-arm
+with the same words each time; the wait keeps its start and its limit. Once the limit passes,
+otto refuses another sleep for it and the next wake is told first: decide then — what the
+instructions say silence means, or a gate with what you waited for and what you saw. A person
+saying "keep waiting" starts it afresh.
+
 **A background job is not a way back.** Anything you start with `&`, `nohup`, a background
 shell or a watcher can die when this wake ends, or outlive it with nobody watching; its process
 id and its log are evidence, never a promise. When a job must run past this wake, start it

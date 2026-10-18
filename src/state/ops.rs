@@ -142,6 +142,8 @@ pub fn close_gate(id: &str, answer: Option<&str>, status: Status) -> Result<(), 
             &gate_file,
             &format!("{}\n\n### {answered} (verbatim)\n\n{}\n", body.trim_end(), answer_text.trim_end()),
         )?;
+        // The person has spoken: whatever the run was waiting on starts afresh from here.
+        state.wait = None;
         state.gate = None;
         state.status = status;
         state.next_wake_at = None;

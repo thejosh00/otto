@@ -206,6 +206,9 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         Some(answer) => prompt::answer_prompt(&base, answer, state.gate.is_some()),
         None => base,
     };
+    if let Some(wait) = state.wait.as_ref().filter(|w| w.is_overdue()) {
+        prompt = prompt::with_overdue_wait(&prompt, wait);
+    }
     // Read from the same `state` the prompt is built from, so the notes marked as given below are
     // exactly the ones this wake was told — never one added a moment later.
     let notes = crate::notes::for_wake(&run_path, &state);
@@ -1305,6 +1308,28 @@ mod tests {
         assert_eq!(state.blocked.as_ref().and_then(|b| b.detail.as_deref()), Some("token budget spent: 2600 of 2500"));
     }
 
+    /// What the run was waiting on is the first thing the next wake would check, and sleep on
+    /// again; once its limit has passed, that wake is told before anything else.
+    #[test]
+    fn a_wait_that_has_run_out_is_the_first_thing_the_next_wake_hears() {
+        let _h = TempHome::new();
+        test_init("w-wait", "a goal").unwrap();
+        transaction("w-wait", |_p, state| {
+            state.wait = Some(crate::state::Wait {
+                what: "CI on 3f2a1c0".into(),
+                since: Timestamp::in_minutes(-180),
+                give_up_at: Some(Timestamp::in_minutes(-60)),
+            });
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-wait"));
+        run_wake(&args("w-wait"), &mut exec).unwrap();
+        let call = exec.last_call().join(" ");
+        assert!(call.contains("Before anything else: the wait for \"CI on 3f2a1c0\" has run out"), "{call}");
+    }
+
     fn budget_warnings(id: &str) -> usize {
         let journal = std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap();
         journal.matches("\"event\":\"budget-warning\"").count()
@@ -1813,6 +1838,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/ci.sh".into()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let mut exec = FakeExec::new();

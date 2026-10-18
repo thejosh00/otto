@@ -507,6 +507,15 @@ has none.
 days — it gets one reconcile. A closed lid through six ticks is one catch-up, because a run has
 one `nextWakeAt`, not a queue.
 
+**One wait can carry its own limit.** The stall guard bounds a run that has stopped moving
+altogether; it says nothing about one wait that is moving the facts every hour — a CI status
+flipping between pending states — but should have ended long ago. Paperclip's scheduled checks
+carry a timeout for that ("wait for CI up to 2h, then escalate"). `arm-timer --waiting-for <what>
+--give-up-after <age>` records `wait: {for, since, giveUpAt}`; re-arming with the same words keeps
+both times, so the limit can't creep one sleep at a time, and past it the sleep is refused
+(`wait-overdue`) and the next wake's prompt opens with it. A sleep for anything else ends the
+wait, and an answered gate does too — the person has spoken, so "keep waiting" starts afresh.
+
 **A background job is never the way back.** A wake that starts a build with `&` and arms a timer
 to "check the build I started" is waiting on a process that may have died with the wake — the
 session exits, and a sleep, a reboot or a kill at the deadline takes its children too. Paperclip

@@ -407,6 +407,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         notes: Vec::new(),
         messages: Vec::new(),
         paused: None,
+        wait: None,
     };
     Ok(PlannedRun { state, path })
 }
@@ -946,12 +947,27 @@ pub struct ArmTimerArgs {
     /// same length of time; anything else wakes the run
     #[arg(long = "check-script")]
     pub check_script: Option<String>,
+    /// What this sleep waits on, in a few words: `CI on 3f2a1c0`. Re-arm the same wait with the
+    /// same words — it keeps when it started, and its limit
+    #[arg(long = "waiting-for", value_name = "WHAT")]
+    pub waiting_for: Option<String>,
+    /// How long that wait may take in all: `2h`, `1d`. Past it, otto refuses another sleep for it
+    /// and the next wake must decide
+    #[arg(long = "give-up-after", value_name = "AGE", requires = "waiting_for")]
+    pub give_up_after: Option<String>,
 }
 
 pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
     if args.at.is_some() && args.seconds.is_some() {
         return Err(OttoError::usage("give at most one of --at or --in"));
     }
+    let limit = match &args.give_up_after {
+        Some(age) => Some(crate::clock::parse_age(age).ok_or_else(|| {
+            OttoError::usage(format!("--give-up-after {age}: give an age like 45m, 2h or 3d"))
+        })?),
+        None => None,
+    };
+    let waiting_for = args.waiting_for.as_deref().map(str::trim).filter(|w| !w.is_empty());
     // Only an explicit time is the wake's own; no time at all is the period's sleep.
     let explicit = args.at.is_some() || args.seconds.is_some();
     let wake = match (&args.at, args.seconds) {
@@ -980,7 +996,28 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
         _ => None,
     };
     let id = args.id.clone();
+    let mut overdue = None;
     let kept_pinned = transaction(&id, |path, state| {
+        match waiting_for {
+            Some(what) => match state.wait.clone().filter(|w| w.what == what) {
+                // Refused, and nothing armed: the wake that sees this decides, now.
+                Some(wait) if wait.is_overdue() => {
+                    let give_up_at = wait.give_up_at.unwrap_or(wait.since);
+                    crate::event::record(path, &Event::WaitOverdue { what: wait.what.clone(), since: wait.since, give_up_at })?;
+                    overdue = Some(wait);
+                    return Ok(false);
+                }
+                // The same wait: its start and its limit are kept.
+                Some(_) => {}
+                None => {
+                    let give_up_at = limit.map(|d| Timestamp::at(crate::clock::now() + d));
+                    crate::event::record(path, &Event::Waiting { what: what.to_string(), give_up_at })?;
+                    state.wait = Some(super::Wait { what: what.to_string(), since: Timestamp::now(), give_up_at });
+                }
+            },
+            // A sleep for anything else: whatever the run was waiting on is over.
+            None => state.wait = None,
+        }
         state.next_wake_at = Some(wake);
         state.armed_wake_at = explicit.then_some(wake);
         state.status = args.status;
@@ -992,6 +1029,9 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
         crate::event::record(path, &Event::TimerArmed { next_wake_at: wake, note: args.note.clone() })?;
         Ok(pinned)
     })?;
+    if let Some(wait) = overdue {
+        return Err(OttoError::conflict(overdue_wait(&wait)));
+    }
     println!("{wake}");
     if kept_pinned && check.is_some() {
         eprintln!(
@@ -1000,6 +1040,18 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
         );
     }
     Ok(())
+}
+
+/// Said to a wake whose wait ran out — refusing its sleep, or at the start of the next wake
+/// (`wake::prompt`).
+pub fn overdue_wait(wait: &super::Wait) -> String {
+    let limit = wait.give_up_at.map(|at| format!(", and the limit set for it passed at {at}")).unwrap_or_default();
+    format!(
+        "the wait for \"{}\" has run out: waiting since {}{limit}. Don't sleep for it again. Decide what \
+         that means — the instructions may say; otherwise ask the person at a gate, with what you \
+         waited for and what you saw. If they say to keep waiting, that starts it afresh",
+        wait.what, wait.since
+    )
 }
 
 #[derive(clap::Args, Debug)]
@@ -1955,6 +2007,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let state = read_run("run-check").unwrap();
@@ -1969,6 +2023,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let state = read_run("run-check").unwrap();
@@ -1992,6 +2048,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: None,
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let at = read_run("run-period").unwrap().next_wake_at.unwrap();
@@ -2033,6 +2091,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let check = read_run("run-check-3").unwrap().check.expect("check must be persisted");
@@ -2053,6 +2113,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         arm_timer(ArmTimerArgs {
@@ -2062,6 +2124,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: None,
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         assert!(read_run("run-check-4").unwrap().check.is_none(), "a plain re-arm must not leave a stale check");
@@ -2078,6 +2142,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         let before = read_run("run-check-5").unwrap().next_wake_at.unwrap();
@@ -2105,6 +2171,8 @@ mod tests {
             status: Status::Sleeping,
             note: None,
             check_script: Some("artifacts/check.sh".to_string()),
+            waiting_for: None,
+            give_up_after: None,
         })
         .unwrap();
         record_check("run-check-6", CheckResult::NoChange, None, true).unwrap();
@@ -2143,7 +2211,7 @@ mod tests {
         assert_eq!(check.retry_seconds, None, "it retries on the period");
 
         // A plain re-arm keeps it, as it keeps a person's.
-        arm_timer(ArmTimerArgs { id: "run-sc".into(), at: None, seconds: Some(600), status: Status::Sleeping, note: None, check_script: None }).unwrap();
+        arm_timer(ArmTimerArgs { id: "run-sc".into(), at: None, seconds: Some(600), status: Status::Sleeping, note: None, check_script: None, waiting_for: None, give_up_after: None }).unwrap();
         assert!(read_run("run-sc").unwrap().check.is_some());
 
         write_script("run-sc", "artifacts/pr2.sh");
@@ -2193,6 +2261,63 @@ mod tests {
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
         let err = set_check(set_check_args("run-sc4", Some("artifacts/plain.sh"))).unwrap_err();
         assert!(err.to_string().contains("not executable"));
+    }
+
+    fn sleep_for(id: &str, waiting_for: Option<&str>, give_up_after: Option<&str>) -> Result<(), OttoError> {
+        arm_timer(ArmTimerArgs {
+            id: id.into(),
+            at: None,
+            seconds: Some(600),
+            status: Status::Sleeping,
+            note: None,
+            check_script: None,
+            waiting_for: waiting_for.map(Into::into),
+            give_up_after: give_up_after.map(Into::into),
+        })
+    }
+
+    /// A wait keeps its start and its limit however often it is re-armed, and once the limit has
+    /// passed no sleep for it is armed. Waiting on something else is a new wait; a plain sleep ends it.
+    #[test]
+    fn a_wait_keeps_its_limit_and_is_refused_once_it_has_run_out() {
+        let _home = TempHome::new();
+        test_init("run-wait", "g").unwrap();
+        sleep_for("run-wait", Some("CI on 3f2a1c0"), Some("2h")).unwrap();
+        let first = read_run("run-wait").unwrap().wait.expect("a wait with a limit");
+        assert!(first.give_up_at.is_some());
+        sleep_for("run-wait", Some("CI on 3f2a1c0"), Some("9h")).unwrap();
+        let again = read_run("run-wait").unwrap().wait.unwrap();
+        assert_eq!((again.since, again.give_up_at), (first.since, first.give_up_at), "re-arming can't move the limit");
+
+        transaction("run-wait", |_p, state| {
+            state.wait.as_mut().unwrap().give_up_at = Some(Timestamp::in_minutes(-1));
+            Ok(())
+        })
+        .unwrap();
+        let armed = read_run("run-wait").unwrap().next_wake_at;
+        let err = sleep_for("run-wait", Some("CI on 3f2a1c0"), None).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("has run out") && err.message.contains("ask the person"), "{}", err.message);
+        assert_eq!(read_run("run-wait").unwrap().next_wake_at, armed, "nothing armed");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("run-wait").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("\"event\":\"wait-overdue\""), "{journal}");
+
+        sleep_for("run-wait", Some("the release review"), None).unwrap();
+        let other = read_run("run-wait").unwrap().wait.unwrap();
+        assert_eq!((other.what.as_str(), other.give_up_at), ("the release review", None));
+        sleep_for("run-wait", None, None).unwrap();
+        assert!(read_run("run-wait").unwrap().wait.is_none(), "a sleep for anything else ends it");
+    }
+
+    /// A person answering — "keep waiting", say — starts the wait afresh.
+    #[test]
+    fn an_answered_gate_starts_a_wait_afresh() {
+        let _home = TempHome::new();
+        test_init("run-wait2", "g").unwrap();
+        sleep_for("run-wait2", Some("CI on 3f2a1c0"), Some("2h")).unwrap();
+        super::super::ops::open_gate("run-wait2", "ci-slow", "CI is slow. Keep waiting?", None).unwrap();
+        super::super::ops::close_gate("run-wait2", Some("Keep waiting."), Status::Running).unwrap();
+        assert!(read_run("run-wait2").unwrap().wait.is_none());
     }
 
     #[test]
