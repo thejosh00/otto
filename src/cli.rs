@@ -56,6 +56,10 @@ pub enum Command {
     Stop(crate::human::StopArgs),
     /// Lift a pause, or bring a stopped or failed run back and wake it.
     Resume(crate::human::ResumeArgs),
+    /// Delete runs for good: everything otto keeps for them, after stopping any still going. It
+    /// asks first.
+    #[command(visible_alias = "rm")]
+    Delete(crate::human::DeleteArgs),
     /// Run one wake: spawn the model, then validate what it left behind.
     Wake(crate::wake::WakeArgs),
     /// Start the wakes that are due, and clean up after the ones that are over. Run this from

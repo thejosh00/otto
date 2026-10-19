@@ -82,6 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/rename", post(handlers::rename))
         .route("/runs/{id}/stop", post(handlers::stop))
         .route("/runs/{id}/resume", post(handlers::resume))
+        .route("/runs/{id}/delete", post(handlers::delete))
         .route("/runs/{id}/wake", post(handlers::wake))
         .route("/runs/{id}/pause", post(handlers::pause))
         .route("/runs/{id}/messages/{message}", get(handlers::message))
@@ -294,6 +295,17 @@ mod tests {
 
         let (status, _) = rt().block_on(send(post_req("/api/runs/noted/notes", serde_json::json!({"text": "  "}))));
         assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn a_run_deleted_from_the_page_is_gone() {
+        let _h = TempHome::new();
+        crate::state::commands::test_init("2026-10-19-deleted-from-the-page", "a goal").unwrap();
+        let (status, body) = rt().block_on(send(post_req("/api/runs/deleted-from-the-page/delete", serde_json::json!({}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["id"], "2026-10-19-deleted-from-the-page");
+        let (status, _) = rt().block_on(send(get_req("/api/runs/2026-10-19-deleted-from-the-page")));
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[test]

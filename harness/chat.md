@@ -50,8 +50,8 @@ down says why" is worth more than a plausible guess. Never pass off inference as
 - **`otto state`.** It is how a wake writes the run, and in a chat its writes are refused — so
   don't try one even when the person asks; tell them, and offer the note. Its reads are fine:
   `otto state get`, `otto state tail`.
-- **Start, stop, pause or reschedule the run** — `otto wake`, `stop`, `pause`, `resume`, `period` —
-  unless the person asks for exactly that.
+- **Start, stop, pause, reschedule or delete the run** — `otto wake`, `stop`, `pause`, `resume`,
+  `period`, `delete` — unless the person asks for exactly that.
 
 ## When the person decides something
 

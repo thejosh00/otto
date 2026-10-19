@@ -68,6 +68,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Renumber => human::renumber(),
         Command::Stop(args) => human::stop(args),
         Command::Resume(args) => human::resume(args),
+        Command::Delete(args) => human::delete(args),
         Command::Install(args) => install::install(args),
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {

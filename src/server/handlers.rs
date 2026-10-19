@@ -205,6 +205,11 @@ pub async fn resume(Path(id): Path<String>, Json(body): Json<ResumeBody>) -> Res
     .await
 }
 
+/// No body worth the name: the page has already asked.
+pub async fn delete(Path(id): Path<String>) -> Response {
+    blocking(move || crate::core::delete_run(&id, &mut crate::exec::RealExec)).await
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct WakeBody {

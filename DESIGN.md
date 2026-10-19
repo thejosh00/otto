@@ -1013,7 +1013,7 @@ classes. Only the first is supposed to happen.
 
 Every command and flag is in the generated [CLI reference](docs/reference/cli.md); this section
 keeps only the shape. There are three groups: the commands a person uses (`run`, `ls`, `show`,
-`answer`, `note`, `chat`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`, `feedback`), the machinery
+`answer`, `note`, `chat`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`, `delete`, `feedback`), the machinery
 (`poke`, `agent`, `serve`, `service`, `install`), and `otto state`, the wake's writer surface.
 
 `otto state` is unchanged in role: the only writer, used by a wake, atomic per call. The human

@@ -1480,6 +1480,82 @@ pub fn stop_run(id: &str, reason: Option<String>, failed: bool, exec: &mut dyn c
 }
 
 // ---------------------------------------------------------------------------
+// delete
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Deleted {
+    pub id: String,
+    /// How a person knew it — `#7 legenda` — read before it went.
+    pub label: String,
+    /// Its status when it went, or `unreadable` for a run whose `run.json` couldn't be read.
+    pub was: String,
+    pub killed_wake: bool,
+}
+
+/// How long a delete waits for a wake it has just killed to let go of its lock.
+const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Delete a run: its directory, and with it everything otto kept for it — the journal, its
+/// questions and their answers, notes, messages and outputs, and what it used. Nothing outside
+/// it: the working directory, the wakes' transcripts and whatever the run did in the world stay
+/// where they are. Its number is never given to another run (`paths::claim_next_run_id`).
+///
+/// A run still going is stopped first, as `otto stop` would: its wake killed, its repo locks
+/// released. The directory goes only once the wake lock is free, and the lock is held until the
+/// directory is out of `runs/`, so no wake can start in a run on its way out.
+pub fn delete_run(id: &str, exec: &mut dyn crate::exec::Exec) -> Result<Deleted, OttoError> {
+    delete_run_waiting(id, exec, DELETE_WAIT)
+}
+
+fn delete_run_waiting(id: &str, exec: &mut dyn crate::exec::Exec, wait: std::time::Duration) -> Result<Deleted, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let label = crate::paths::label_of(&id);
+    // A run whose `run.json` can't be read is one a person may well want gone, so it isn't
+    // needed: without it there is no status to stop and no pid to kill, only a tmux session.
+    let state = read_run(&id).ok();
+    let was = state.as_ref().map_or("unreadable", |s| crate::state::commands::status_str(s.status)).to_string();
+    let stopping = state.as_ref().is_some_and(|s| !s.status.is_terminal());
+    let killed_wake = if stopping {
+        stop_run(&id, Some("deleted".to_string()), false, exec)?.killed_wake
+    } else {
+        let _ = crate::state::locks::unlock(crate::state::locks::UnlockArgs { id: id.clone(), repo: None });
+        match &state {
+            Some(state) => crate::spawner::kill(state, &id, exec).did_anything(),
+            None => {
+                let session = crate::detach::session_name(&id);
+                crate::detach::session_exists(exec, &session) && crate::detach::kill_session(exec, &session)
+            }
+        }
+    };
+    // `otto wake` holds its lock until it has written its last word, so a wake killed above is
+    // only gone once the lock is free.
+    let deadline = std::time::Instant::now() + wait;
+    let lock = loop {
+        match crate::liveness::WakeLock::acquire(&id) {
+            Ok(lock) => break lock,
+            Err(e) if e.code != 2 => return Err(e),
+            Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(200)),
+            Err(_) => {
+                return Err(OttoError::conflict(format!(
+                    "{label}{} its wake hasn't exited yet — try again in a moment",
+                    if stopping { " is stopped, but" } else { ":" }
+                )))
+            }
+        }
+    };
+    crate::paths::retire_run_number(&id)?;
+    let gone = crate::paths::deleting_dir()?.join(format!("{id}-{}", crate::clock::now().unix_timestamp()));
+    std::fs::rename(crate::paths::run_dir(&id)?, &gone)?;
+    drop(lock);
+    std::fs::remove_dir_all(&gone).map_err(|e| {
+        OttoError::new(format!("{label} is gone, but not all of its files could be removed ({e}): they're in {}", gone.display()), 4)
+    })?;
+    Ok(Deleted { id, label, was, killed_wake })
+}
+
+// ---------------------------------------------------------------------------
 // resume
 // ---------------------------------------------------------------------------
 
@@ -2886,6 +2962,67 @@ mod tests {
         exec.queue(crate::exec::Output { code: 1, ..Default::default() });
         stop_run("broke", None, true, &mut exec).unwrap();
         assert_eq!(resume_run("broke", None, true).unwrap().status, Status::Sleeping);
+    }
+
+    #[test]
+    fn a_deleted_run_is_gone_and_its_number_never_comes_back() {
+        let _h = TempHome::new();
+        test_init("4", "a goal").unwrap();
+        stopped("4");
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() }); // has-session: no
+        let deleted = delete_run("4", &mut exec).unwrap();
+        assert_eq!((deleted.was.as_str(), deleted.killed_wake), ("stopped", false));
+        assert!(!crate::paths::runs_dir().join("4").exists());
+        assert_eq!(crate::paths::resolve_run_id("4").expect_err("gone").code, 3);
+        assert_eq!(crate::paths::peek_next_run_id(), 5, "a new run must not answer to a deleted one's number");
+        let leftovers = std::fs::read_dir(crate::paths::deleting_dir().unwrap()).unwrap().count();
+        assert_eq!(leftovers, 0, "nothing is left on its way out");
+    }
+
+    #[test]
+    fn a_run_still_going_is_stopped_and_lets_go_of_its_repos_before_it_goes() {
+        let _h = TempHome::new();
+        test_init("2026-10-19-going", "a goal").unwrap();
+        crate::state::locks::lock(crate::state::locks::LockArgs {
+            id: "2026-10-19-going".into(),
+            repo: "/tmp/otto-delete-repo".into(),
+            force: false,
+        })
+        .unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() }); // has-session: no
+        let deleted = delete_run("going", &mut exec).unwrap();
+        assert_ne!(deleted.was, "stopped", "it was still going");
+        let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
+        assert!(calls.iter().any(|c| c.contains("otto-2026-10-19-going")), "its session must be looked for: {calls:?}");
+        let locks = std::fs::read_dir(crate::paths::repo_locks_dir().unwrap()).unwrap().count();
+        assert_eq!(locks, 0, "a deleted run must not hold a repo");
+        assert!(crate::paths::resolve_run_id("going").is_err());
+    }
+
+    #[test]
+    fn a_run_whose_wake_will_not_let_go_is_left_stopped_not_deleted() {
+        let _h = TempHome::new();
+        test_init("2026-10-19-held", "a goal").unwrap();
+        let _wake = crate::liveness::WakeLock::acquire("2026-10-19-held").unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() });
+        let err = delete_run_waiting("held", &mut exec, std::time::Duration::from_millis(300)).expect_err("a wake holds it");
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("is stopped"), "got: {}", err.message);
+        assert_eq!(read_run("2026-10-19-held").unwrap().status, Status::Stopped);
+    }
+
+    #[test]
+    fn a_run_whose_run_json_cannot_be_read_can_still_be_deleted() {
+        let _h = TempHome::new();
+        test_init("2026-10-19-mangled", "a goal").unwrap();
+        std::fs::write(crate::paths::runs_dir().join("2026-10-19-mangled").join("run.json"), "{ not json").unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() });
+        assert_eq!(delete_run("2026-10-19-mangled", &mut exec).unwrap().was, "unreadable");
+        assert!(!crate::paths::runs_dir().join("2026-10-19-mangled").exists());
     }
 
     #[test]

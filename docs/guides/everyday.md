@@ -152,12 +152,19 @@ otto pause my-run --for 2d      # hold back its scheduled wakes; --until 09:00, 
 otto stop my-run                # retire it (stopped); --failed if it couldn't do its job
 otto resume my-run              # lift a pause; or bring a stopped or failed run back, and wake it
 otto resume my-run --no-wake    # back on its schedule, no wake now
+otto delete my-run              # gone for good, after asking; several at once, --yes not to ask
 ```
 
 A pause holds back everything scheduled — the period, timers, check scripts — while a wake already
 running finishes and questions stay open. Answering, a note with `--now`, and `otto wake` still work.
 
 Stopping a run kills any wake in progress and releases its repo locks.
+
+Deleting one removes its directory: the journal, its questions and answers, notes, messages and
+outputs, and with them its line in `otto usage`. A run still going is stopped first. Its working
+directory, its wakes' transcripts, and anything it did in the world — commits, branches, PRs — are
+left as they are, and its number is never given to another run. There is no undo: `otto stop` is
+the way to retire a run you might want back.
 
 `otto attach` (and the web UI's **Live** tab) follows the wake's session transcript as it's
 written: what the model says (●), each tool call it makes (▸ — the command, the file, the query),
@@ -193,7 +200,7 @@ it, and a gate is a *question*:
   them, its stages as a track, or one card per question with the reply to copy — a strip of its last
   week (each run, what it made, when it waited on you), its checklist when it keeps one, what
   happened lately in words, one box to tell it something (pin it to keep it), and the `otto chat`
-  command to copy, for asking it something in a terminal. Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
+  command to copy, for asking it something in a terminal. Pause, run now and stop are at the top, rename and delete beside its name; the handoff, the log, a live view, cost and
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
 - **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —

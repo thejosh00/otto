@@ -571,6 +571,25 @@ Options:
           Print help
 ```
 
+## `otto delete`
+
+```text
+Delete runs for good: everything otto keeps for them, after stopping any still going. It asks first
+
+Usage: otto delete [OPTIONS] <IDS>...
+
+Arguments:
+  <IDS>...
+          The runs: each its number or name (a unique prefix of the name will do)
+
+Options:
+  -y, --yes
+          Don't ask first. With no terminal there is nobody to ask, so it is needed there
+
+  -h, --help
+          Print help
+```
+
 ## `otto wake`
 
 ```text

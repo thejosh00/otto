@@ -7,6 +7,7 @@
 //! ~/.otto/
 //!   runs/<run-id>/...          run state — unchanged internal shape
 //!   runs/.locks/repo-*.json    per-repo locks — run-adjacent, as today
+//!   deleting/<run-id>-<secs>/  a deleted run on its way out (`otto delete`); empty but for a failure
 //!   locks/poke.lock            the reviver's whole-pass advisory lock (not run state)
 //!   logs/poke.log              the reviver's launchd stdout/stderr
 //!   logs/serve.log             the web service's launchd stdout/stderr
@@ -116,9 +117,13 @@ fn next_id_path() -> PathBuf {
     runs_dir().join(".last-id")
 }
 
+fn issued_run_number() -> u64 {
+    std::fs::read_to_string(next_id_path()).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
+}
+
 /// The number the next run would get, without claiming it — `otto run --dry-run`'s answer.
 pub fn peek_next_run_id() -> u64 {
-    let issued = std::fs::read_to_string(next_id_path()).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+    let issued = issued_run_number();
     let existing = all_run_ids().iter().filter_map(|id| id.parse::<u64>().ok()).max().unwrap_or(0);
     issued.max(existing) + 1
 }
@@ -141,6 +146,15 @@ pub fn claim_next_run_id() -> Result<(String, PathBuf), OttoError> {
         }
     }
     Err(OttoError::conflict(format!("could not claim a run number near {n} after 1000 tries")))
+}
+
+/// Keep a run's number from being handed out again once its directory is gone. Only needed for a
+/// number `.last-id` doesn't already cover: one given before it was kept.
+pub fn retire_run_number(id: &str) -> Result<(), OttoError> {
+    match id.parse::<u64>() {
+        Ok(n) if n > issued_run_number() => Ok(std::fs::write(next_id_path(), n.to_string())?),
+        _ => Ok(()),
+    }
 }
 
 /// How a person can refer to one run, read from its `run.json`.
@@ -325,6 +339,14 @@ fn otto_locks_dir() -> Result<PathBuf, OttoError> {
 
 pub fn poke_lock_path() -> Result<PathBuf, OttoError> {
     Ok(otto_locks_dir()?.join("poke.lock"))
+}
+
+/// Where `otto delete` moves a run's directory before removing it: out of `runs/` in one rename,
+/// so nothing that lists or resolves runs ever sees one half gone. Created on demand.
+pub fn deleting_dir() -> Result<PathBuf, OttoError> {
+    let path = otto_home().join("deleting");
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
 }
 
 fn logs_dir() -> Result<PathBuf, OttoError> {

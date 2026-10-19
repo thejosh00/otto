@@ -67,6 +67,7 @@ otto inbox                    # questions waiting on you, and what runs have sen
 otto outputs <id>             # what a run has made: its reports and documents, every version
 otto ls                       # every run, and a line on what each is doing
 otto pause <id> --for 2d      # hold back its schedule; `otto resume <id>` lifts it
+otto delete <id>              # gone for good, after asking — `otto stop` retires it instead
 otto show                     # the one that needs you, and its question in full
 otto answer --choice Approve  # answer it
 otto chat <id>                # ask it about its work; what you decide, it leaves as a note

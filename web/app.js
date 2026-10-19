@@ -1284,7 +1284,8 @@ function runView(id, opened) {
     head.replaceChildren(h("div.agent-top",
       h("div.who",
         h("div.row.title", h("h1", d.name || s.id),
-          h("button.ghost.small", { title: "Rename it", onclick: () => renameInPlace(d) }, "Rename")),
+          h("button.ghost.small", { title: "Rename it", onclick: () => renameInPlace(d) }, "Rename"),
+          deleteControl(d)),
         h("p.goal", s.goal),
         h("div.status-line", glyph(d.glance.mood), h("span", d.glance.line)),
         when ? h("div.when-line", when) : null),
@@ -1329,6 +1330,28 @@ function runView(id, opened) {
           }),
         }, "Stop it")));
     wrap.append(h("button.small.ghost", { onclick: () => { menu.hidden = !menu.hidden; if (!menu.hidden) reason.focus(); } }, "Stop…"), menu);
+    return wrap;
+  }
+
+  // Gone for good, so it asks first, and says what goes and what stays.
+  function deleteControl(d) {
+    const wrap = h("div.menu-wrap");
+    const live = !["done", "stopped", "failed"].includes(d.state.status);
+    const menu = h("div.menu.wide", { hidden: true },
+      h("b", "Delete it for good?"),
+      h("p.faint", "Everything otto keeps for it goes — what it did, its questions and your answers, notes, messages and what it made — and can't be brought back."
+        + (live ? " It's stopped first, and anything running now is stopped too." : "")),
+      h("p.faint", "Its working directory, and anything it did there, stay as they are."),
+      h("div.row.end",
+        h("button.ghost.small", { onclick: () => { menu.hidden = true; } }, "Cancel"),
+        h("button.danger.small", {
+          onclick: (e) => busy(e.currentTarget, async () => {
+            await api(path + "/delete", {});
+            toast(`Deleted ${d.name || d.state.id}`);
+            location.hash = "#/";
+          }),
+        }, "Delete it")));
+    wrap.append(h("button.ghost.small", { title: "Delete it", onclick: () => { menu.hidden = !menu.hidden; } }, "Delete…"), menu);
     return wrap;
   }
 

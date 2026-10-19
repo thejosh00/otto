@@ -1438,6 +1438,82 @@ fn stop_with(args: StopArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), Ott
 }
 
 #[derive(clap::Args, Debug)]
+pub struct DeleteArgs {
+    /// The runs: each its number or name (a unique prefix of the name will do)
+    #[arg(required = true)]
+    pub ids: Vec<String>,
+    /// Don't ask first. With no terminal there is nobody to ask, so it is needed there
+    #[arg(long, short)]
+    pub yes: bool,
+}
+
+pub fn delete(args: DeleteArgs) -> Result<(), OttoError> {
+    let mut exec = crate::exec::RealExec;
+    delete_with(args, &mut exec)
+}
+
+/// Every id is resolved before anything is deleted, so a typo in the third deletes none of them.
+fn delete_with(args: DeleteArgs, exec: &mut dyn crate::exec::Exec) -> Result<(), OttoError> {
+    let mut ids: Vec<String> = Vec::new();
+    for input in &args.ids {
+        let id = crate::paths::resolve_run_id(input)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if !args.yes {
+        if !stdin_is_terminal() {
+            return Err(OttoError::usage(
+                "otto delete asks before it deletes, and there is no terminal to ask on — pass --yes",
+            ));
+        }
+        for id in &ids {
+            println!("{}", deleting_line(id));
+        }
+        let (them, their) = if ids.len() == 1 { ("it", "Its working directory") } else { ("them", "Their working directories") };
+        println!(
+            "\nDelete {them} for good? Everything otto keeps for {them} goes — the journal, questions and answers, \
+             notes, messages, outputs — and can't be brought back. {their}, and anything done there, stay as they are."
+        );
+        print!("[y/N] ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("nothing deleted");
+            return Ok(());
+        }
+    }
+    for id in &ids {
+        let deleted = crate::core::delete_run(id, exec)?;
+        if deleted.killed_wake {
+            println!("killed the live wake for {}", deleted.label);
+        }
+        println!("deleted {} (it was {})", deleted.label, deleted.was);
+    }
+    Ok(())
+}
+
+/// One run as the delete prompt shows it: enough to be sure it is the right one.
+fn deleting_line(id: &str) -> String {
+    let Ok(state) = crate::state::read_run(id) else {
+        return format!("  {} — its run.json can't be read", crate::paths::label_of(id));
+    };
+    let wakes = state.wake.as_ref().map_or(0, |w| w.n);
+    let mut line = format!(
+        "  {} — {}, {wakes} wake{}: {}",
+        state.label(),
+        crate::state::commands::status_str(state.status),
+        if wakes == 1 { "" } else { "s" },
+        state.goal
+    );
+    if LockLiveness.probe(id).is_busy() {
+        line.push_str("\n    a wake is running now — it will be killed");
+    }
+    line
+}
+
+#[derive(clap::Args, Debug)]
 pub struct ResumeArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
@@ -1703,6 +1779,23 @@ mod tests {
             calls.iter().any(|c| c.contains("otto-2026-09-11-verify-1789130664")),
             "must probe the real session name, not one named after the prefix: {calls:?}"
         );
+    }
+
+    #[test]
+    fn a_delete_with_nobody_to_ask_needs_yes_and_one_bad_id_deletes_nothing() {
+        let _h = TempHome::new();
+        test_init("2026-10-19-keep", "a goal").unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        let err = delete_with(DeleteArgs { ids: vec!["keep".into()], yes: false }, &mut exec).expect_err("nobody to ask");
+        assert_eq!(err.code, 1);
+        assert!(err.message.contains("--yes"), "got: {}", err.message);
+        let err = delete_with(DeleteArgs { ids: vec!["keep".into(), "nothing-like-it".into()], yes: true }, &mut exec)
+            .expect_err("no such run");
+        assert_eq!(err.code, 3);
+        assert!(read_run("2026-10-19-keep").is_ok(), "nothing is deleted until every id is known");
+
+        delete_with(DeleteArgs { ids: vec!["keep".into(), "2026-10-19-keep".into()], yes: true }, &mut exec).unwrap();
+        assert!(read_run("2026-10-19-keep").is_err());
     }
 
     #[test]
