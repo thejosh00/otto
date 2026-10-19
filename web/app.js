@@ -86,6 +86,15 @@ function heard(r) {
   return r.deliveryPlain || r.delivery;
 }
 
+/** "0 B", "64 KB", "1.2 MB" — as `cleanup::size` says it. */
+function sizeText(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let n = bytes / 1024, unit = 0;
+  while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++; }
+  return `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[unit]}`;
+}
+
 /** "1 run" / "3 runs". */
 const count = (n, one) => `${n} ${n === 1 ? one : one + "s"}`;
 
@@ -1337,17 +1346,19 @@ function runView(id, opened) {
   function deleteControl(d) {
     const wrap = h("div.menu-wrap");
     const live = !["done", "stopped", "failed"].includes(d.state.status);
+    const withData = h("input", { type: "checkbox" });
+    const name = d.name || d.state.id;
     const menu = h("div.menu.wide", { hidden: true },
       h("b", "Delete it for good?"),
-      h("p.faint", "Everything otto keeps for it goes — what it did, its questions and your answers, notes, messages and what it made — and can't be brought back."
-        + (live ? " It's stopped first, and anything running now is stopped too." : "")),
-      h("p.faint", "Its working directory, and anything it did there, stay as they are."),
+      h("p.faint", `It's gone from your agents${live ? " — stopped first, and anything running now is stopped too" : ""}. Its working directory, and anything it did there, stay as they are.`),
+      h("p.faint", "Its data — what it did, its questions and your answers, notes, messages and what it made — is kept until you clean it up on the otto itself page."),
+      h("label.check", withData, "Delete its data now too"),
       h("div.row.end",
         h("button.ghost.small", { onclick: () => { menu.hidden = true; } }, "Cancel"),
         h("button.danger.small", {
           onclick: (e) => busy(e.currentTarget, async () => {
-            await api(path + "/delete", {});
-            toast(`Deleted ${d.name || d.state.id}`);
+            const r = await api(path + "/delete", { data: withData.checked ? "delete" : "keep" });
+            toast(r.kept ? `Deleted ${name} — its data is kept until you clean it up` : `Deleted ${name} and its data`);
             location.hash = "#/";
           }),
         }, "Delete it")));
@@ -1979,6 +1990,7 @@ function newRunView() {
 
 function systemView() {
   const healthBox = h("div");
+  const unusedBox = h("div");
   const card = h("div.card");
   const output = h("div");
   view.replaceChildren(
@@ -1988,7 +2000,45 @@ function systemView() {
     h("h2", "The reviver"),
     h("p.muted", "The background job that wakes your agents on schedule, every five minutes. Without it, a sleeping agent never wakes on its own."),
     card, output,
+    h("h2", "Data no agent uses"),
+    h("p.muted", "What otto still keeps for agents you deleted, and anything else left over. No agent reads any of it."),
+    unusedBox,
     h("p", { style: "margin-top:24px" }, h("a", { href: "#/usage" }, "What your agents have used →")));
+
+  async function refreshUnused() {
+    let list;
+    try { list = await api("/cleanup"); } catch (err) { unusedBox.replaceChildren(h("p", err.message)); return; }
+    if (!list.length) { unusedBox.replaceChildren(h("p.faint", "Nothing — everything otto keeps belongs to an agent.")); return; }
+    const remove = (paths, button) => busy(button, async () => {
+      const removed = await api("/cleanup", { paths });
+      toast(`Deleted ${count(removed.length, "item")} — ${sizeText(removed.reduce((n, u) => n + u.bytes, 0))} freed`);
+      refreshUnused();
+    });
+    const allLabel = `Delete all — ${sizeText(list.reduce((n, u) => n + u.bytes, 0))}`;
+    unusedBox.replaceChildren(
+      h("table.table",
+        h("thead", h("tr", ["What", "Size", "Last used", ""].map((c) => h("th", c)))),
+        h("tbody", list.map((u) => h("tr",
+          h("td", h("div", u.what), h("div.mono.faint", u.path)),
+          h("td", { dataset: { label: "size" } }, sizeText(u.bytes)),
+          h("td", { dataset: { label: "last used" } }, u.lastUsed ? h("span", { title: localTime(u.lastUsed) }, relative(u.lastUsed)) : "never"),
+          h("td", h("button.small.danger", { onclick: (e) => remove([u.path], e.currentTarget) }, "Delete")))))),
+      h("div.row", { style: "margin-top:10px" },
+        // Everything at once is the one click that could be a slip, so it takes two.
+        h("button.danger", {
+          onclick: (e) => {
+            const button = e.currentTarget;
+            if (!button.dataset.sure) {
+              button.dataset.sure = "1";
+              button.textContent = `Delete all ${list.length}? Click again`;
+              setTimeout(() => { delete button.dataset.sure; button.textContent = allLabel; }, 4000);
+              return;
+            }
+            remove(list.map((u) => u.path), button);
+          },
+        }, allLabel)));
+  }
+  refreshUnused();
 
   async function refresh() {
     try {

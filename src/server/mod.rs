@@ -73,6 +73,7 @@ pub fn router(state: AppState) -> Router {
         .route("/meta", get(handlers::meta))
         .route("/usage", get(handlers::usage))
         .route("/config/workdir", post(handlers::set_workdir))
+        .route("/cleanup", get(handlers::unused).post(handlers::cleanup))
         .route("/runs", get(handlers::list_runs).post(handlers::start_run))
         .route("/runs/{id}", get(handlers::run_detail))
         .route("/runs/{id}/answer", post(handlers::answer))
@@ -306,6 +307,28 @@ mod tests {
         assert_eq!(body["id"], "2026-10-19-deleted-from-the-page");
         let (status, _) = rt().block_on(send(get_req("/api/runs/2026-10-19-deleted-from-the-page")));
         assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["kept"], "archive/2026-10-19-deleted-from-the-page", "the page keeps the data unless told");
+
+        let (status, unused) = rt().block_on(send(get_req("/api/cleanup")));
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(unused[0]["path"], "archive/2026-10-19-deleted-from-the-page");
+        let (status, _) = rt().block_on(send(post_req("/api/cleanup", serde_json::json!({"paths": ["config.json"]}))));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let paths = serde_json::json!({"paths": ["archive/2026-10-19-deleted-from-the-page"]});
+        let (status, removed) = rt().block_on(send(post_req("/api/cleanup", paths)));
+        assert_eq!(status, StatusCode::OK, "{removed}");
+        assert_eq!(rt().block_on(send(get_req("/api/cleanup"))).1, serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_run_deleted_from_the_page_with_its_data_leaves_nothing() {
+        let _h = TempHome::new();
+        crate::state::commands::test_init("2026-10-19-deleted-whole", "a goal").unwrap();
+        let (status, body) =
+            rt().block_on(send(post_req("/api/runs/deleted-whole/delete", serde_json::json!({"data": "delete"}))));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["kept"].is_null());
+        assert_eq!(rt().block_on(send(get_req("/api/cleanup"))).1, serde_json::json!([]));
     }
 
     #[test]

@@ -56,10 +56,13 @@ pub enum Command {
     Stop(crate::human::StopArgs),
     /// Lift a pause, or bring a stopped or failed run back and wake it.
     Resume(crate::human::ResumeArgs),
-    /// Delete runs for good: everything otto keeps for them, after stopping any still going. It
-    /// asks first.
+    /// Delete runs for good, after stopping any still going. It asks first, and whether to keep
+    /// their data until `otto cleanup`.
     #[command(visible_alias = "rm")]
     Delete(crate::human::DeleteArgs),
+    /// What otto keeps that no agent uses — deleted agents' data, and anything else left over —
+    /// with its size and when it was last used, to delete.
+    Cleanup(crate::human::CleanupArgs),
     /// Run one wake: spawn the model, then validate what it left behind.
     Wake(crate::wake::WakeArgs),
     /// Start the wakes that are due, and clean up after the ones that are over. Run this from

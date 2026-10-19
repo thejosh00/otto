@@ -458,6 +458,7 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
     outputs/<key>/v<n>.md        each version's text, verbatim
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
+  archive/<id>/                  a deleted run's directory, kept until `otto cleanup`
   feedback.jsonl                 what wakes have said about otto itself — `otto feedback`
   logs/poke.log, serve.log       the launchd jobs' output
 ```

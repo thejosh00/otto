@@ -574,7 +574,7 @@ Options:
 ## `otto delete`
 
 ```text
-Delete runs for good: everything otto keeps for them, after stopping any still going. It asks first
+Delete runs for good, after stopping any still going. It asks first, and whether to keep their data until `otto cleanup`
 
 Usage: otto delete [OPTIONS] <IDS>...
 
@@ -583,8 +583,33 @@ Arguments:
           The runs: each its number or name (a unique prefix of the name will do)
 
 Options:
+      --data <DATA>
+          Their data in $OTTO_HOME — the journal, questions and answers, notes, messages, outputs: kept in archive/ until `otto cleanup`, or deleted now. Asked when not given; kept with --yes
+
+          Possible values:
+          - keep:   Moved to `archive/`, where `otto cleanup` finds it — the default, because it can be undone by hand and deleting it cannot
+          - delete: Removed, now
+
   -y, --yes
           Don't ask first. With no terminal there is nobody to ask, so it is needed there
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `otto cleanup`
+
+```text
+What otto keeps that no agent uses — deleted agents' data, and anything else left over — with its size and when it was last used, to delete
+
+Usage: otto cleanup [OPTIONS]
+
+Options:
+      --older-than <AGE>
+          Only what nothing has used for at least this long: `12h`, `30d`
+
+  -y, --yes
+          Delete everything listed, without asking
 
   -h, --help
           Print help

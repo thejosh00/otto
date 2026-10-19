@@ -1483,6 +1483,18 @@ pub fn stop_run(id: &str, reason: Option<String>, failed: bool, exec: &mut dyn c
 // delete
 // ---------------------------------------------------------------------------
 
+/// What becomes of a deleted run's directory in `$OTTO_HOME`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, Default, clap::ValueEnum)]
+#[serde(rename_all = "camelCase")]
+pub enum DataChoice {
+    /// Moved to `archive/`, where `otto cleanup` finds it — the default, because it can be undone
+    /// by hand and deleting it cannot.
+    #[default]
+    Keep,
+    /// Removed, now.
+    Delete,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Deleted {
@@ -1492,24 +1504,33 @@ pub struct Deleted {
     /// Its status when it went, or `unreadable` for a run whose `run.json` couldn't be read.
     pub was: String,
     pub killed_wake: bool,
+    /// Where its data is now, when it was kept: `archive/7`, under `$OTTO_HOME`.
+    pub kept: Option<String>,
 }
 
 /// How long a delete waits for a wake it has just killed to let go of its lock.
 const DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Delete a run: its directory, and with it everything otto kept for it — the journal, its
-/// questions and their answers, notes, messages and outputs, and what it used. Nothing outside
-/// it: the working directory, the wakes' transcripts and whatever the run did in the world stay
-/// where they are. Its number is never given to another run (`paths::claim_next_run_id`).
+/// Delete a run. It leaves `runs/`, so nothing lists, resolves or wakes it again, and its
+/// directory — the journal, its questions and their answers, notes, messages and outputs — is
+/// either kept in `archive/` until `otto cleanup` or removed now. Nothing outside it is touched:
+/// the working directory, the wakes' transcripts and whatever the run did in the world stay where
+/// they are. Its number is never given to another run (`paths::claim_next_run_id`).
 ///
 /// A run still going is stopped first, as `otto stop` would: its wake killed, its repo locks
-/// released. The directory goes only once the wake lock is free, and the lock is held until the
-/// directory is out of `runs/`, so no wake can start in a run on its way out.
-pub fn delete_run(id: &str, exec: &mut dyn crate::exec::Exec) -> Result<Deleted, OttoError> {
-    delete_run_waiting(id, exec, DELETE_WAIT)
+/// released. The directory moves only once the wake lock is free, and the lock is held until it is
+/// out of `runs/`, so no wake can start in a run on its way out. Out in one rename either way, so
+/// nothing ever reads a run half gone.
+pub fn delete_run(id: &str, data: DataChoice, exec: &mut dyn crate::exec::Exec) -> Result<Deleted, OttoError> {
+    delete_run_waiting(id, data, exec, DELETE_WAIT)
 }
 
-fn delete_run_waiting(id: &str, exec: &mut dyn crate::exec::Exec, wait: std::time::Duration) -> Result<Deleted, OttoError> {
+fn delete_run_waiting(
+    id: &str,
+    data: DataChoice,
+    exec: &mut dyn crate::exec::Exec,
+    wait: std::time::Duration,
+) -> Result<Deleted, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
     let label = crate::paths::label_of(&id);
     // A run whose `run.json` can't be read is one a person may well want gone, so it isn't
@@ -1546,13 +1567,23 @@ fn delete_run_waiting(id: &str, exec: &mut dyn crate::exec::Exec, wait: std::tim
         }
     };
     crate::paths::retire_run_number(&id)?;
+    let dir = crate::paths::run_dir(&id)?;
+    if data == DataChoice::Keep {
+        let kept = crate::paths::archive_path(&id)?;
+        std::fs::rename(&dir, &kept)?;
+        let kept = crate::paths::under_home(&kept);
+        return Ok(Deleted { id, label, was, killed_wake, kept: Some(kept) });
+    }
     let gone = crate::paths::deleting_dir()?.join(format!("{id}-{}", crate::clock::now().unix_timestamp()));
-    std::fs::rename(crate::paths::run_dir(&id)?, &gone)?;
+    std::fs::rename(&dir, &gone)?;
     drop(lock);
     std::fs::remove_dir_all(&gone).map_err(|e| {
-        OttoError::new(format!("{label} is gone, but not all of its files could be removed ({e}): they're in {}", gone.display()), 4)
+        OttoError::new(
+            format!("{label} is gone, but not all of its files could be removed ({e}) — `otto cleanup` lists what's left"),
+            4,
+        )
     })?;
-    Ok(Deleted { id, label, was, killed_wake })
+    Ok(Deleted { id, label, was, killed_wake, kept: None })
 }
 
 // ---------------------------------------------------------------------------
@@ -2971,7 +3002,7 @@ mod tests {
         stopped("4");
         let mut exec = crate::exec::fake::FakeExec::new();
         exec.queue(crate::exec::Output { code: 1, ..Default::default() }); // has-session: no
-        let deleted = delete_run("4", &mut exec).unwrap();
+        let deleted = delete_run("4", DataChoice::Delete, &mut exec).unwrap();
         assert_eq!((deleted.was.as_str(), deleted.killed_wake), ("stopped", false));
         assert!(!crate::paths::runs_dir().join("4").exists());
         assert_eq!(crate::paths::resolve_run_id("4").expect_err("gone").code, 3);
@@ -2992,7 +3023,7 @@ mod tests {
         .unwrap();
         let mut exec = crate::exec::fake::FakeExec::new();
         exec.queue(crate::exec::Output { code: 1, ..Default::default() }); // has-session: no
-        let deleted = delete_run("going", &mut exec).unwrap();
+        let deleted = delete_run("going", DataChoice::Delete, &mut exec).unwrap();
         assert_ne!(deleted.was, "stopped", "it was still going");
         let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
         assert!(calls.iter().any(|c| c.contains("otto-2026-10-19-going")), "its session must be looked for: {calls:?}");
@@ -3008,7 +3039,7 @@ mod tests {
         let _wake = crate::liveness::WakeLock::acquire("2026-10-19-held").unwrap();
         let mut exec = crate::exec::fake::FakeExec::new();
         exec.queue(crate::exec::Output { code: 1, ..Default::default() });
-        let err = delete_run_waiting("held", &mut exec, std::time::Duration::from_millis(300)).expect_err("a wake holds it");
+        let err = delete_run_waiting("held", DataChoice::Keep, &mut exec, std::time::Duration::from_millis(300)).expect_err("a wake holds it");
         assert_eq!(err.code, 2);
         assert!(err.message.contains("is stopped"), "got: {}", err.message);
         assert_eq!(read_run("2026-10-19-held").unwrap().status, Status::Stopped);
@@ -3021,7 +3052,7 @@ mod tests {
         std::fs::write(crate::paths::runs_dir().join("2026-10-19-mangled").join("run.json"), "{ not json").unwrap();
         let mut exec = crate::exec::fake::FakeExec::new();
         exec.queue(crate::exec::Output { code: 1, ..Default::default() });
-        assert_eq!(delete_run("2026-10-19-mangled", &mut exec).unwrap().was, "unreadable");
+        assert_eq!(delete_run("2026-10-19-mangled", DataChoice::Delete, &mut exec).unwrap().was, "unreadable");
         assert!(!crate::paths::runs_dir().join("2026-10-19-mangled").exists());
     }
 

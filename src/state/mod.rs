@@ -829,7 +829,7 @@ impl Drop for RunLock {
     }
 }
 
-fn read_state(path: &Path) -> Result<RunState, OttoError> {
+pub(crate) fn read_state(path: &Path) -> Result<RunState, OttoError> {
     let run_json = path.join("run.json");
     let text = match std::fs::read_to_string(&run_json) {
         Ok(t) => t,

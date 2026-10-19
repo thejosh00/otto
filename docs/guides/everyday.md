@@ -153,6 +153,9 @@ otto stop my-run                # retire it (stopped); --failed if it couldn't d
 otto resume my-run              # lift a pause; or bring a stopped or failed run back, and wake it
 otto resume my-run --no-wake    # back on its schedule, no wake now
 otto delete my-run              # gone for good, after asking; several at once, --yes not to ask
+otto delete my-run --data delete   # and its data in ~/.otto with it, rather than kept
+otto cleanup                    # what otto keeps that no agent uses: size, last used, pick what to delete
+otto cleanup --older-than 30d --yes   # everything unused for a month, without asking
 ```
 
 A pause holds back everything scheduled — the period, timers, check scripts — while a wake already
@@ -160,11 +163,21 @@ running finishes and questions stay open. Answering, a note with `--now`, and `o
 
 Stopping a run kills any wake in progress and releases its repo locks.
 
-Deleting one removes its directory: the journal, its questions and answers, notes, messages and
-outputs, and with them its line in `otto usage`. A run still going is stopped first. Its working
-directory, its wakes' transcripts, and anything it did in the world — commits, branches, PRs — are
-left as they are, and its number is never given to another run. There is no undo: `otto stop` is
-the way to retire a run you might want back.
+Deleting one takes it out of otto for good: nothing lists it, answers to its name or wakes it, and
+its number is never given to another run. A run still going is stopped first. Its working directory,
+its wakes' transcripts, and anything it did in the world — commits, branches, PRs — are left as they
+are. `otto stop` is the way to retire a run you might want back.
+
+Its data — the journal, its questions and answers, notes, messages and outputs — is either kept or
+deleted with it. `otto delete` asks which; `--data keep` or `--data delete` says up front, and
+`--yes` on its own keeps it. Kept data moves to `~/.otto/archive/<id>/`, where no agent reads it and
+`otto usage` no longer counts it, until `otto cleanup` deletes it.
+
+`otto cleanup` lists everything in `~/.otto` that no agent uses — kept data, what a delete couldn't
+finish removing, and any directory in `runs/` that isn't a run — with its size and when it was last
+used, and asks which to delete (numbers, or `all`). It only ever offers those: an agent's own
+directory, `config.json` and the logs are never on the list. The web UI has the same list on the
+**otto itself** page.
 
 `otto attach` (and the web UI's **Live** tab) follows the wake's session transcript as it's
 written: what the model says (●), each tool call it makes (▸ — the command, the file, the query),
@@ -204,7 +217,7 @@ it, and a gate is a *question*:
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
 - **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —
-  with the reviver's controls and **usage** a click away.
+  with the reviver's controls, the data no agent uses (to delete), and **usage** a click away.
 
 The server is a view over the run directory, not an owner of it — every button calls the same
 code as the matching command, and runs carry on waking under poke whether it is running or not.

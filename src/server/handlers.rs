@@ -205,9 +205,31 @@ pub async fn resume(Path(id): Path<String>, Json(body): Json<ResumeBody>) -> Res
     .await
 }
 
-/// No body worth the name: the page has already asked.
-pub async fn delete(Path(id): Path<String>) -> Response {
-    blocking(move || crate::core::delete_run(&id, &mut crate::exec::RealExec)).await
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeleteBody {
+    /// Kept unless the page says otherwise, as with `otto delete --yes`.
+    data: crate::core::DataChoice,
+}
+
+/// The page has already asked.
+pub async fn delete(Path(id): Path<String>, Json(body): Json<DeleteBody>) -> Response {
+    blocking(move || crate::core::delete_run(&id, body.data, &mut crate::exec::RealExec)).await
+}
+
+pub async fn unused() -> Response {
+    blocking(|| Ok::<_, OttoError>(crate::cleanup::find())).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct CleanupBody {
+    /// As `GET /cleanup` lists them.
+    paths: Vec<String>,
+}
+
+pub async fn cleanup(Json(body): Json<CleanupBody>) -> Response {
+    blocking(move || crate::cleanup::remove(&body.paths)).await
 }
 
 #[derive(Deserialize, Default)]

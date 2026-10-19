@@ -1,4 +1,5 @@
 mod chat;
+mod cleanup;
 mod cli;
 mod clock;
 mod config;
@@ -69,6 +70,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Stop(args) => human::stop(args),
         Command::Resume(args) => human::resume(args),
         Command::Delete(args) => human::delete(args),
+        Command::Cleanup(args) => human::cleanup(args),
         Command::Install(args) => install::install(args),
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {

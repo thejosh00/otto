@@ -68,6 +68,7 @@ otto outputs <id>             # what a run has made: its reports and documents, 
 otto ls                       # every run, and a line on what each is doing
 otto pause <id> --for 2d      # hold back its schedule; `otto resume <id>` lifts it
 otto delete <id>              # gone for good, after asking — `otto stop` retires it instead
+otto cleanup                  # what otto keeps that no agent uses, to delete
 otto show                     # the one that needs you, and its question in full
 otto answer --choice Approve  # answer it
 otto chat <id>                # ask it about its work; what you decide, it leaves as a note
@@ -123,6 +124,7 @@ src/
   messages.rs    what a run sends you; inbox.rs gathers them, with its questions, across runs
   feedback.rs    what wakes say about otto itself
   chat.rs        `otto chat`: asking a run about its work, in a session that changes nothing
+  cleanup.rs     `otto cleanup`: what `~/.otto` keeps that no agent uses, and removing it
   outputs.rs     what a run makes, kept: keys, versions, stages, drafts, your reviews
   story.rs       a run in plain words: its line, its week, what happened lately
   poke.rs        the reviver

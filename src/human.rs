@@ -11,7 +11,7 @@
 //! to find out a run is waiting, and `otto answer` works from a script, over ssh, or from a phone.
 //! tmux becomes somewhere to *look* rather than the interface.
 
-use crate::core::{Caller, LogQuery};
+use crate::core::{Caller, DataChoice, LogQuery};
 use crate::error::OttoError;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::commands::InitArgs;
@@ -1442,6 +1442,10 @@ pub struct DeleteArgs {
     /// The runs: each its number or name (a unique prefix of the name will do)
     #[arg(required = true)]
     pub ids: Vec<String>,
+    /// Their data in $OTTO_HOME — the journal, questions and answers, notes, messages, outputs:
+    /// kept in archive/ until `otto cleanup`, or deleted now. Asked when not given; kept with --yes
+    #[arg(long, value_enum)]
+    pub data: Option<DataChoice>,
     /// Don't ask first. With no terminal there is nobody to ask, so it is needed there
     #[arg(long, short)]
     pub yes: bool,
@@ -1461,6 +1465,7 @@ fn delete_with(args: DeleteArgs, exec: &mut dyn crate::exec::Exec) -> Result<(),
             ids.push(id);
         }
     }
+    let mut data = args.data;
     if !args.yes {
         if !stdin_is_terminal() {
             return Err(OttoError::usage(
@@ -1470,28 +1475,53 @@ fn delete_with(args: DeleteArgs, exec: &mut dyn crate::exec::Exec) -> Result<(),
         for id in &ids {
             println!("{}", deleting_line(id));
         }
-        let (them, their) = if ids.len() == 1 { ("it", "Its working directory") } else { ("them", "Their working directories") };
+        let (them, they, their) = if ids.len() == 1 { ("it", "It's", "Its") } else { ("them", "They're", "Their") };
         println!(
-            "\nDelete {them} for good? Everything otto keeps for {them} goes — the journal, questions and answers, \
-             notes, messages, outputs — and can't be brought back. {their}, and anything done there, stay as they are."
+            "\nDelete {them}? {they} stopped first if still going, and gone from otto for good. Working \
+             directories, and anything done in them, stay as they are."
         );
-        print!("[y/N] ");
-        std::io::stdout().flush().ok();
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line)?;
-        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
+        if !matches!(read_answer("[y/N] ")?.as_str(), "y" | "yes") {
             println!("nothing deleted");
             return Ok(());
         }
+        if data.is_none() {
+            let bytes: u64 = ids.iter().filter_map(|id| crate::paths::run_dir(id).ok()).map(|d| crate::cleanup::walk(&d).0).sum();
+            println!(
+                "\n{their} data ({}) — the journal, questions and answers, notes, messages, outputs — can be kept in \
+                 {} until `otto cleanup`, or deleted now, for good.",
+                crate::cleanup::size(bytes),
+                crate::paths::otto_home().join("archive").display()
+            );
+            let delete = matches!(read_answer("[K]eep it / [d]elete it: ")?.as_str(), "d" | "delete");
+            data = Some(if delete { DataChoice::Delete } else { DataChoice::Keep });
+        }
     }
+    let data = data.unwrap_or_default();
     for id in &ids {
-        let deleted = crate::core::delete_run(id, exec)?;
+        let deleted = crate::core::delete_run(id, data, exec)?;
         if deleted.killed_wake {
             println!("killed the live wake for {}", deleted.label);
         }
-        println!("deleted {} (it was {})", deleted.label, deleted.was);
+        match &deleted.kept {
+            Some(kept) => println!(
+                "deleted {} (it was {}) — its data is in {} until `otto cleanup`",
+                deleted.label,
+                deleted.was,
+                crate::paths::otto_home().join(kept).display()
+            ),
+            None => println!("deleted {} and its data (it was {})", deleted.label, deleted.was),
+        }
     }
     Ok(())
+}
+
+/// One line from the terminal, trimmed and lowercased.
+fn read_answer(prompt: &str) -> Result<String, OttoError> {
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim().to_lowercase())
 }
 
 /// One run as the delete prompt shows it: enough to be sure it is the right one.
@@ -1511,6 +1541,74 @@ fn deleting_line(id: &str) -> String {
         line.push_str("\n    a wake is running now — it will be killed");
     }
     line
+}
+
+// ---------------------------------------------------------------------------
+// otto cleanup
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+pub struct CleanupArgs {
+    /// Only what nothing has used for at least this long: `12h`, `30d`
+    #[arg(long, value_name = "AGE")]
+    pub older_than: Option<String>,
+    /// Delete everything listed, without asking
+    #[arg(long, short)]
+    pub yes: bool,
+}
+
+pub fn cleanup(args: CleanupArgs) -> Result<(), OttoError> {
+    let older_than = args.older_than.as_deref().map(|t| parse_duration("--older-than", t)).transpose()?;
+    let mut found = crate::cleanup::find();
+    if let Some(age) = older_than {
+        let cutoff = crate::clock::Timestamp::at(crate::clock::now() - age);
+        found.retain(|u| u.last_used.is_some_and(|at| at <= cutoff));
+    }
+    let home = crate::paths::otto_home();
+    if found.is_empty() {
+        let lately = if older_than.is_some() { " for that long" } else { "" };
+        println!("nothing in {} goes unused by an agent{lately}", home.display());
+        return Ok(());
+    }
+    let total: u64 = found.iter().map(|u| u.bytes).sum();
+    let items = if found.len() == 1 { "1 item".to_string() } else { format!("{} items", found.len()) };
+    println!("Used by no agent, in {} — {items}, {}:\n", home.display(), crate::cleanup::size(total));
+    let width = found.iter().map(|u| u.path.len()).max().unwrap_or(0);
+    for (n, u) in found.iter().enumerate() {
+        let last = u.last_used.map_or("never used".to_string(), |at| format!("last used {}", crate::clock::relative(at)));
+        println!("  {:>2}  {:<width$}  {:>7}  {last:<18}  {}", n + 1, u.path, crate::cleanup::size(u.bytes), u.what);
+    }
+    let chosen: Vec<String> = if args.yes {
+        found.iter().map(|u| u.path.clone()).collect()
+    } else if !stdin_is_terminal() {
+        println!("\n`otto cleanup --yes` deletes them all");
+        return Ok(());
+    } else {
+        pick(&read_answer("\nDelete which? Numbers (1 3), \"all\", or Enter for none: ")?, &found)?
+    };
+    if chosen.is_empty() {
+        println!("nothing deleted");
+        return Ok(());
+    }
+    let removed = crate::cleanup::remove(&chosen)?;
+    let freed: u64 = removed.iter().map(|u| u.bytes).sum();
+    println!("deleted {} — {} freed", removed.iter().map(|u| u.path.as_str()).collect::<Vec<_>>().join(", "), crate::cleanup::size(freed));
+    Ok(())
+}
+
+/// The cleanup prompt's answer as the paths it picks: `all`, or the numbers shown.
+fn pick(answer: &str, found: &[crate::cleanup::Unused]) -> Result<Vec<String>, OttoError> {
+    if matches!(answer, "a" | "all") {
+        return Ok(found.iter().map(|u| u.path.clone()).collect());
+    }
+    answer
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|w| !w.is_empty())
+        .map(|w| match w.parse::<usize>() {
+            Ok(n) if (1..=found.len()).contains(&n) => Ok(found[n - 1].path.clone()),
+            _ => Err(OttoError::usage(format!("\"{w}\" isn't one of the numbers shown — nothing deleted"))),
+        })
+        .collect()
 }
 
 #[derive(clap::Args, Debug)]
@@ -1786,16 +1884,37 @@ mod tests {
         let _h = TempHome::new();
         test_init("2026-10-19-keep", "a goal").unwrap();
         let mut exec = crate::exec::fake::FakeExec::new();
-        let err = delete_with(DeleteArgs { ids: vec!["keep".into()], yes: false }, &mut exec).expect_err("nobody to ask");
+        let err = delete_with(DeleteArgs { ids: vec!["keep".into()], data: None, yes: false }, &mut exec).expect_err("nobody to ask");
         assert_eq!(err.code, 1);
         assert!(err.message.contains("--yes"), "got: {}", err.message);
-        let err = delete_with(DeleteArgs { ids: vec!["keep".into(), "nothing-like-it".into()], yes: true }, &mut exec)
+        let err = delete_with(DeleteArgs { ids: vec!["keep".into(), "nothing-like-it".into()], data: None, yes: true }, &mut exec)
             .expect_err("no such run");
         assert_eq!(err.code, 3);
         assert!(read_run("2026-10-19-keep").is_ok(), "nothing is deleted until every id is known");
 
-        delete_with(DeleteArgs { ids: vec!["keep".into(), "2026-10-19-keep".into()], yes: true }, &mut exec).unwrap();
+        delete_with(DeleteArgs { ids: vec!["keep".into(), "2026-10-19-keep".into()], data: None, yes: true }, &mut exec).unwrap();
         assert!(read_run("2026-10-19-keep").is_err());
+        assert!(crate::paths::otto_home().join("archive/2026-10-19-keep").is_dir(), "--yes alone keeps the data");
+    }
+
+    #[test]
+    fn the_cleanup_prompt_picks_by_number_or_all_and_refuses_anything_else() {
+        let found: Vec<crate::cleanup::Unused> = ["archive/1", "archive/2", "runs/9"]
+            .iter()
+            .map(|p| crate::cleanup::Unused {
+                path: p.to_string(),
+                kind: crate::cleanup::Kind::Kept,
+                what: String::new(),
+                bytes: 0,
+                last_used: None,
+            })
+            .collect();
+        assert_eq!(pick("", &found).unwrap(), Vec::<String>::new());
+        assert_eq!(pick("all", &found).unwrap().len(), 3);
+        assert_eq!(pick("1 3", &found).unwrap(), vec!["archive/1", "runs/9"]);
+        assert_eq!(pick("2,3", &found).unwrap(), vec!["archive/2", "runs/9"]);
+        assert_eq!(pick("1 4", &found).expect_err("no 4").code, 1);
+        assert_eq!(pick("archive/1", &found).expect_err("numbers only").code, 1);
     }
 
     #[test]

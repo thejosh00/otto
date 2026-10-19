@@ -7,6 +7,7 @@
 //! ~/.otto/
 //!   runs/<run-id>/...          run state — unchanged internal shape
 //!   runs/.locks/repo-*.json    per-repo locks — run-adjacent, as today
+//!   archive/<run-id>/          a deleted run's directory, kept (`otto delete --data keep`)
 //!   deleting/<run-id>-<secs>/  a deleted run on its way out (`otto delete`); empty but for a failure
 //!   locks/poke.lock            the reviver's whole-pass advisory lock (not run state)
 //!   logs/poke.log              the reviver's launchd stdout/stderr
@@ -347,6 +348,32 @@ pub fn deleting_dir() -> Result<PathBuf, OttoError> {
     let path = otto_home().join("deleting");
     std::fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+/// Where a deleted run's directory goes when its data is kept: out of `runs/`, so nothing lists,
+/// resolves or wakes it, until `otto cleanup` removes it. Created on demand.
+pub fn archive_dir() -> Result<PathBuf, OttoError> {
+    let path = otto_home().join("archive");
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// A free place in `archive/` for `id`: `archive/<id>`, or `<id>-2`, `<id>-3`… when a run that
+/// had the same id was kept before. A number is never reused, but an id given by hand can be.
+pub fn archive_path(id: &str) -> Result<PathBuf, OttoError> {
+    let dir = archive_dir()?;
+    let mut path = dir.join(id);
+    let mut n = 2;
+    while path.exists() {
+        path = dir.join(format!("{id}-{n}"));
+        n += 1;
+    }
+    Ok(path)
+}
+
+/// `path` as a person names it under `$OTTO_HOME` — `archive/7` — or whole, if it isn't under it.
+pub fn under_home(path: &Path) -> String {
+    path.strip_prefix(otto_home()).unwrap_or(path).display().to_string()
 }
 
 fn logs_dir() -> Result<PathBuf, OttoError> {
