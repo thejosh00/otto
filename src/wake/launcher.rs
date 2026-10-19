@@ -49,6 +49,10 @@
 //! On macOS every launcher is wrapped in `caffeinate` — see `sleep_guard`. That is a property of
 //! the machine, not of the launcher, which is why it sits in front of whichever one runs. So is
 //! what a wake must not inherit from whoever started it — `env_guard` — and it sits there too.
+//!
+//! One command line here is not a wake's: `chat_argv`, for `otto chat`. It shares everything up
+//! to claude's flags — guard, launcher, grants, the prompt first — and swaps the tail, for the
+//! reasons on it.
 
 use crate::config::LauncherDef;
 use crate::error::OttoError;
@@ -110,7 +114,11 @@ fn sleep_guard() -> Vec<String> {
 ///   too low". A launcher that does want API billing can set it again; it runs after this.
 /// - **What a Claude Code session hands its children** — its id, its IDE port, its messaging
 ///   socket and token. They describe that session, and a wake is not part of it: it outlives it.
+/// - **`OTTO_CHAT`**, which marks a chat (`crate::chat`) and refuses its `otto state` writes. A
+///   wake started from inside one — `otto note --now`, `otto answer` — must not carry it, or every
+///   write that wake made would be refused.
 const UNINHERITED: &[&str] = &[
+    crate::chat::CHAT_ENV,
     "ANTHROPIC_API_KEY",
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
@@ -146,6 +154,50 @@ pub fn resolve(state: &RunState) -> Result<LauncherDef, OttoError> {
 /// The full command line for one wake. `session_id` is where the wake's usage will be read from
 /// afterwards, so it is chosen by the caller before the spawn and recorded in `wake.session`.
 pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str) -> Vec<String> {
+    let mut argv = sleep_guard();
+    argv.extend(launch(state, launcher, &[], prompt));
+    argv.extend(claude_tail(state, session_id));
+    argv
+}
+
+/// The command line for a chat about a run (`crate::chat`): the run's own launcher, sandbox and
+/// grants, so a chat sees exactly what its wakes see — and a tail of its own, because a chat is
+/// not a wake. A person is there, so there is no `caffeinate`, and permission prompts are theirs
+/// to answer — all but otto's own reads (`chat::READS`), and with no terminal (`attended` false),
+/// `otto note`; Edit and Write are refused outright, because the work is the wakes' to do; and
+/// `CHAT_ENV` is set, so the `otto state` writes a wake makes are refused too. A wake's own
+/// pre-approvals are not passed: they were decided for nobody being there.
+pub fn chat_argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str, attended: bool) -> Vec<String> {
+    let mut argv = launch(state, launcher, &[format!("{}={}", crate::chat::CHAT_ENV, state.id)], prompt);
+    let mut allowed: Vec<&str> = crate::chat::READS.to_vec();
+    if !attended {
+        allowed.push(crate::chat::UNATTENDED_NOTE);
+    }
+    let mut refused: Vec<String> = crate::chat::REFUSED_TOOLS.iter().map(|t| t.to_string()).collect();
+    for tool in &state.permission.disallowed_tools {
+        if !refused.contains(tool) {
+            refused.push(tool.clone());
+        }
+    }
+    argv.extend([
+        "--session-id".to_string(),
+        session_id.to_string(),
+        "--permission-mode".to_string(),
+        crate::state::PermissionMode::Manual.as_claude_arg().to_string(),
+        "--append-system-prompt".to_string(),
+        crate::chat::HARNESS.to_string(),
+        "--allowed-tools".to_string(),
+        allowed.join(","),
+        "--disallowed-tools".to_string(),
+        refused.join(","),
+    ]);
+    argv
+}
+
+/// Everything up to claude's own flags, a wake's and a chat's alike: the env guard, then `env`
+/// (`NAME=value`, set after the guard has cleared), the launcher with its grants, the prompt, and
+/// the directories claude is told about.
+fn launch(state: &RunState, launcher: &LauncherDef, env: &[String], prompt: &str) -> Vec<String> {
     // The run directory is not optional. `$OTTO_HOME` is normally outside the working directory,
     // so without this the wake cannot read its own `run.json` or write its handoff — and nobody
     // is attached to widen the grant, so the wake burns its whole deadline achieving nothing.
@@ -161,9 +213,9 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|d| seen.insert(d.clone()));
 
-    // The guards lead, so what follows is the launcher's own command line.
-    let mut argv = sleep_guard();
-    argv.extend(env_guard());
+    // The guard leads, so what follows is the launcher's own command line.
+    let mut argv = env_guard();
+    argv.extend(env.iter().cloned());
     let mut command = launcher.command_words();
     if let Some(flag) = &launcher.grant_flag {
         // A sandbox only opens paths it was told about, so `--add-dir` alone would let claude try
@@ -183,7 +235,6 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
         argv.push("--add-dir".to_string());
         argv.push(dir.clone());
     }
-    argv.extend(claude_tail(state, session_id));
     argv
 }
 
@@ -408,7 +459,7 @@ mod tests {
             assert!(at < launcher_at, "{}: the guard runs before the launcher", launcher.name);
             let cleared: Vec<&str> =
                 argv[at + 1..launcher_at].chunks(2).filter(|pair| pair[0] == "-u").map(|pair| pair[1].as_str()).collect();
-            for var in ["ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN"] {
+            for var in ["ANTHROPIC_API_KEY", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_TOKEN", "OTTO_CHAT"] {
                 assert!(cleared.contains(&var), "{}: {var} must be cleared", launcher.name);
             }
         }
@@ -425,6 +476,72 @@ mod tests {
         let refs: Vec<&str> = command.iter().map(String::as_str).collect();
         let out = crate::exec::Exec::exec(&mut crate::exec::RealExec, &refs, Some(&env), std::time::Duration::from_secs(10));
         assert_eq!(out.stdout, "cleared|kept", "everything else passes through");
+    }
+
+    /// A chat runs where the run's wakes run — the same launcher, sandbox and grants — with the
+    /// prompt still ahead of every variadic flag, and nothing of print mode.
+    #[test]
+    fn a_chat_goes_under_the_runs_launcher_with_the_prompt_first() {
+        for launcher in all() {
+            let mut s = state();
+            s.launcher.repos = vec!["/w/a".into()];
+            let argv = chat_argv(&s, &launcher, "about r1", SID, true);
+            let name = &launcher.name;
+            let prompt = argv.iter().position(|a| a == "about r1").expect("the prompt must be there");
+            for variadic in ["--add-dir", "--allowed-tools", "--disallowed-tools"] {
+                let idx = argv.iter().position(|a| a == variadic).unwrap_or_else(|| panic!("{name}: {variadic}"));
+                assert!(prompt < idx, "{name}: {variadic} would swallow a prompt that follows it");
+            }
+            assert!(!argv.iter().any(|a| a == "-p" || a == "--print"), "{name}: a chat must not print");
+            let words = launcher.command_words();
+            let at = argv.iter().position(|a| a == &words[0]).expect("the launcher is there");
+            assert_eq!(&argv[at..at + words.len().min(2)], &words[..words.len().min(2)], "{name}");
+            if launcher.grant_flag.is_some() {
+                assert!(joined(&argv).contains("/w/a"), "{name}: the repo is granted to a chat as to a wake");
+            }
+        }
+    }
+
+    /// Someone is at the keyboard: no `caffeinate`, prompts on for all but otto's own reads, and no
+    /// tool a wake was pre-approved for. Edit and Write are refused whatever the mode, on top of
+    /// anything the run refuses.
+    #[test]
+    fn a_chat_asks_first_and_can_not_edit() {
+        let mut s = state();
+        s.permission.allowed_tools = vec!["Bash".into()];
+        s.permission.disallowed_tools = vec!["WebFetch".into(), "Write".into()];
+        let argv = chat_argv(&s, &claude(), "about r1", SID, true);
+        assert_ne!(argv[0], "caffeinate", "a person is there; nothing needs keeping awake");
+        let line = joined(&argv);
+        assert!(line.contains("--permission-mode manual"), "{line}");
+        assert!(line.contains("--disallowed-tools Edit,Write,NotebookEdit,WebFetch"), "{line}");
+        let idx = argv.iter().position(|a| a == "--allowed-tools").unwrap();
+        assert_eq!(argv[idx + 1], crate::chat::READS.join(","), "only otto's reads, not a wake's pre-approvals");
+        assert!(!argv[idx + 1].contains("otto note *)"), "with a terminal, leaving a note is the person's to approve");
+        assert!(line.contains(&format!("--session-id {SID}")), "what a chat used is read back by session id");
+        let idx = argv.iter().position(|a| a == "--append-system-prompt").unwrap();
+        assert_eq!(argv[idx + 1], crate::chat::HARNESS, "a chat is told it is a chat, not a wake");
+    }
+
+    /// With no terminal nobody can approve a note, so the chat may leave one — the harness says only
+    /// when the question asks.
+    #[test]
+    fn a_chat_with_no_terminal_may_leave_a_note_unasked() {
+        let argv = chat_argv(&state(), &claude(), "about r1", SID, false);
+        let idx = argv.iter().position(|a| a == "--allowed-tools").unwrap();
+        assert!(argv[idx + 1].ends_with(",Bash(otto note *)"), "{}", argv[idx + 1]);
+    }
+
+    /// `OTTO_CHAT` is set after the guard has cleared it — so a chat has it, whatever started it —
+    /// and before the launcher, so it reaches claude and every `otto state` claude runs.
+    #[test]
+    fn a_chat_is_marked_after_the_guard_and_before_the_launcher() {
+        let chat = chat_argv(&state(), &nono(), "about r1", SID, true);
+        let set = chat.iter().position(|a| a == "OTTO_CHAT=r1").expect("the chat is marked with its run");
+        let cleared = chat.iter().rposition(|a| a == "-u").unwrap();
+        let launcher = chat.iter().position(|a| a == "nono").unwrap();
+        assert!(cleared < set && set < launcher, "{}", joined(&chat));
+        assert!(!argv(&state(), &nono(), "wake r1", SID).iter().any(|a| a.starts_with("OTTO_CHAT=")), "a wake is never marked");
     }
 
     #[test]

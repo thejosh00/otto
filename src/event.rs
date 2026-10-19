@@ -33,7 +33,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
     "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "waiting",
-    "wait-overdue",
+    "wait-overdue", "chat-started", "chat-ended",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +144,10 @@ pub enum Event {
         #[serde(rename = "deadlineAt")]
         deadline_at: Timestamp,
         launcher: String,
+        /// The claude session the wake runs as, so its transcript can be found after the next wake
+        /// has replaced `wake.session` in `run.json` — `otto chat` lists them. Absent before 2026-10.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
     },
     WakeSpent {
         turns: u64,
@@ -386,6 +390,29 @@ pub enum Event {
     /// A wake declared the steps its work moves through (`otto state stages`).
     StagesSet {
         stages: Vec<String>,
+    },
+    /// A person opened a chat about the run (`otto chat`). Not a wake: it changes nothing but the
+    /// notes the person leaves from it.
+    ChatStarted {
+        session: String,
+        launcher: String,
+    },
+    /// The chat ended. What it used, read from its transcript the way a wake's is — absent when
+    /// that can't be read — and the notes left while it was open.
+    ChatEnded {
+        session: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turns: Option<u64>,
+        #[serde(rename = "inputTokens", skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(rename = "outputTokens", skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        #[serde(rename = "cacheRead", skip_serializing_if = "Option::is_none")]
+        cache_read: Option<u64>,
+        #[serde(rename = "cacheCreation", skip_serializing_if = "Option::is_none")]
+        cache_creation: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        notes: Vec<String>,
     },
 }
 

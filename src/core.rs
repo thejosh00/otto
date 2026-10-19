@@ -1807,13 +1807,15 @@ pub fn humanise(n: u64) -> String {
 // usage
 // ---------------------------------------------------------------------------
 
-/// Tokens used by some set of wakes, as journaled in each wake's `wake-spent` line.
+/// Tokens used by some set of wakes, as journaled in each wake's `wake-spent` line — and by the
+/// chats a person had about them (`chat-ended`), which are the run's cost too, though no budget's.
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TokenTotals {
     pub wakes: u64,
-    /// Wakes whose transcript couldn't be read (`usage-unavailable`): counted, but their tokens
-    /// are unknown rather than zero.
+    pub chats: u64,
+    /// Wakes and chats whose transcript couldn't be read (`usage-unavailable`, or a `chat-ended`
+    /// with no tokens): counted, but their tokens are unknown rather than zero.
     pub unmeasured: u64,
     pub turns: u64,
     pub input_tokens: u64,
@@ -1837,8 +1839,24 @@ impl TokenTotals {
         self.cache_read += n("cacheRead");
     }
 
+    /// A `chat-ended` line: its tokens when its transcript could be read, and unmeasured when not.
+    fn add_chat(&mut self, v: &Value) {
+        self.chats += 1;
+        if v.get("inputTokens").is_none() {
+            self.unmeasured += 1;
+            return;
+        }
+        let n = |key: &str| v.get(key).and_then(Value::as_u64).unwrap_or(0);
+        self.turns += n("turns");
+        self.input_tokens += n("inputTokens");
+        self.output_tokens += n("outputTokens");
+        self.cache_creation += n("cacheCreation");
+        self.cache_read += n("cacheRead");
+    }
+
     fn add(&mut self, other: &TokenTotals) {
         self.wakes += other.wakes;
+        self.chats += other.chats;
         self.unmeasured += other.unmeasured;
         self.turns += other.turns;
         self.input_tokens += other.input_tokens;
@@ -1849,8 +1867,9 @@ impl TokenTotals {
 
     /// One line a person reads: the total, then where it went.
     pub fn summary(&self) -> String {
+        let chats = if self.chats > 0 { format!(" and {} chat(s)", self.chats) } else { String::new() };
         let mut line = format!(
-            "{} tokens over {} wake(s) — {} in, {} out, {} cache write, {} cache read",
+            "{} tokens over {} wake(s){chats} — {} in, {} out, {} cache write, {} cache read",
             humanise(self.total()),
             self.wakes,
             humanise(self.input_tokens),
@@ -1865,12 +1884,13 @@ impl TokenTotals {
     }
 }
 
-/// Every `wake-spent` and `usage-unavailable` line in one run's journal, with its instant.
+/// Every `wake-spent`, `usage-unavailable` and `chat-ended` line in one run's journal, with its
+/// instant.
 fn usage_lines(dir: &std::path::Path) -> Vec<Line> {
     let Ok(journal) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
     journal
         .lines()
-        .filter(|l| l.contains("\"wake-spent\"") || l.contains("\"usage-unavailable\""))
+        .filter(|l| l.contains("\"wake-spent\"") || l.contains("\"usage-unavailable\"") || l.contains("\"chat-ended\""))
         .filter_map(parse_line)
         .collect()
 }
@@ -1879,11 +1899,12 @@ fn tally(totals: &mut TokenTotals, line: &Line) {
     match line.value.get("event").and_then(Value::as_str) {
         Some("wake-spent") => totals.add_spent(&line.value),
         Some("usage-unavailable") => totals.unmeasured += 1,
+        Some("chat-ended") => totals.add_chat(&line.value),
         _ => {}
     }
 }
 
-/// Everything a run's wakes have used, over its whole life.
+/// Everything a run's wakes, and chats about it, have used over its whole life.
 pub fn run_usage(dir: &std::path::Path) -> TokenTotals {
     let mut totals = TokenTotals::default();
     for line in usage_lines(dir) {
@@ -2534,6 +2555,39 @@ mod tests {
         assert_eq!(detail.usage.wakes, 2);
         assert_eq!(detail.usage.total(), 20);
         assert!(detail.usage.summary().starts_with("20 tokens over 2 wake(s)"));
+    }
+
+    /// A chat about a run is that run's cost: counted beside its wakes, never as one, and never
+    /// against its budget — which `wake-spent` alone carries.
+    #[test]
+    fn a_chat_is_counted_beside_the_runs_wakes() {
+        let _h = TempHome::new();
+        test_init("2026-09-20-talk", "a goal").unwrap();
+        let now = crate::clock::Timestamp::now().to_string();
+        spent("2026-09-20-talk", &now, 1, 2, 3, 4);
+        for usage in [Some(10), None] {
+            crate::state::log_event(
+                "2026-09-20-talk",
+                crate::event::Event::ChatEnded {
+                    session: "s".into(),
+                    turns: usage.map(|_| 2),
+                    input_tokens: usage,
+                    output_tokens: usage,
+                    cache_read: usage,
+                    cache_creation: usage,
+                    notes: vec![],
+                },
+            )
+            .unwrap();
+        }
+        let detail = run_detail(Some("talk")).unwrap();
+        assert_eq!((detail.usage.wakes, detail.usage.chats), (1, 2));
+        assert_eq!(detail.usage.total(), 10 + 40);
+        assert_eq!(detail.usage.unmeasured, 1, "a chat whose transcript couldn't be read is counted, not zeroed");
+        assert!(detail.usage.summary().starts_with("50 tokens over 1 wake(s) and 2 chat(s)"), "{}", detail.usage.summary());
+        assert_eq!(detail.state.budget.spent_wakes, 0, "no budget is spent by a chat");
+        let week = usage(Some("7d"), UsageBy::Run, time::UtcOffset::UTC).unwrap();
+        assert_eq!(week.totals.chats, 2);
     }
 
     /// The working directory is only worth a line when it isn't the one a person would assume.

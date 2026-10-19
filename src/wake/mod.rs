@@ -117,13 +117,13 @@ fn budget_exceeded(state: &RunState) -> Option<String> {
     None
 }
 
-/// The command a wake would run, for a person to read. The harness is printed as a length
-/// rather than inline: it is several KB and would bury the part a human is actually checking.
+/// The command a wake — or a chat — would run, for a person to read. The harness is printed as a
+/// length rather than inline: it is several KB and would bury the part a human is actually checking.
 pub fn dry_run_line(argv: &[String]) -> String {
     let shown: Vec<String> = argv
         .iter()
         .map(|a| {
-            if a == prompt::HARNESS {
+            if a == prompt::HARNESS || a == crate::chat::HARNESS {
                 format!("<harness: {} bytes>", a.len())
             } else {
                 a.clone()
@@ -288,6 +288,7 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
                 wake: wake_number,
                 deadline_at: deadline,
                 launcher: launcher_name.clone(),
+                session: Some(session.clone()),
             },
         )
     })?;

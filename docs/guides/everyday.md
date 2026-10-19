@@ -86,6 +86,19 @@ otto note my-run --drop 2
 
 A note changes how the run works, not what it's for — see [notes](../concepts.md#notes).
 
+## Asking it something
+
+```bash
+otto chat my-run                                    # a conversation: it says where things stand, then asks you
+otto chat my-run "why did you skip refund-qa?"      # start with a question
+otto chat my-run "what's left?" > answer.md         # from a script: answered once, and it ends
+```
+
+A [chat](../concepts.md#chats) reads everything the run has done — the handoff, the journal, its
+questions and your answers, what it sent and made, and each wake's own transcript — and changes
+none of it. When you settle on something, it drafts a note and leaves it once you say so; nothing
+else said in a chat reaches the run. It's fine to chat while a wake is working.
+
 ## Changing how often it wakes
 
 ```bash
@@ -119,6 +132,9 @@ otto usage --by day         # the same, one row per day
 otto usage --since 30d      # or a date: --since 2026-09-01
 otto usage --all --json     # everything, exact counts, for a script
 ```
+
+A chat about a run counts toward that run's tokens, and the report says how many chats it includes —
+but never toward a budget, which bounds what a run spends on its own.
 
 `otto show <id>` has a `tokens` line with what that run has used over its whole life, and the web
 UI has the same on each run page and a **Usage** page with the table above. A wake whose transcript
@@ -176,7 +192,8 @@ it, and a gate is a *question*:
   shaped by what it makes: a dated list of reports, a document's versions and what changed between
   them, its stages as a track, or one card per question with the reply to copy — a strip of its last
   week (each run, what it made, when it waited on you), its checklist when it keeps one, what
-  happened lately in words, and one box to tell it something (pin it to keep it). Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
+  happened lately in words, one box to tell it something (pin it to keep it), and the `otto chat`
+  command to copy, for asking it something in a terminal. Pause, run now and stop are at the top; the handoff, the log, a live view, cost and
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
 - **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —

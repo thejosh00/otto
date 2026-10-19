@@ -43,7 +43,8 @@ sitting, and *silently* assume it — which is exactly the assumption that break
 1. **A run is driven from the CLI.** `otto run …` from a shell, not `/otto start` typed into a
    session. Gates are answered with `otto answer`. You can watch a wake in tmux if you want to;
    nothing requires you to.
-2. **No session outlives a wake.** One wake, one process, and it exits.
+2. **No session outlives a wake.** One wake, one process, and it exits. (A chat, §7, is a
+   session a person holds, not one of the run's: nothing in it reaches the run but a note.)
 3. **Human gates are questions with answers on disk.** No Slack, no inbox, no side channel, and
    no terminal that has to be read to notice one is open.
 
@@ -453,6 +454,44 @@ sleeping run was to wait for it to ask, or to stop and resume it.
   is open waits for the wake after the answer, and `otto note` says so.
 - **When.** By default the next wake that would happen anyway; `--now` starts one if nothing is
   running and no gate is open.
+
+### Chats
+
+A gate is the run asking and a note is the person telling; neither answers a question the person
+has. `otto chat <run>` does: an interactive claude session, in the run's working directory under
+its launcher, told by its own harness (`harness/chat.md`) that it is not a wake and given the
+transcripts of the run's recent wakes. Those are the reason it can answer *why*: the handoff is
+what a wake chose to write down, and the transcript is what it actually saw and did. `wake-started`
+records each wake's session so they can still be found after `run.json` has moved on.
+
+- **It is not a wake.** No wake number, no wake lock, no contract at exit, no budget, no tick. It
+  can sit beside a running wake because it changes nothing. The principle of §3 holds as stated: a
+  chat is a session, it holds a conversation, and it is gone when it ends.
+- **It must not become an unchecked wake.** "Just fix it" done inside a chat is work with no repo
+  lock, no handoff and no authorization, and a next wake that cannot see why the world moved. So it
+  is held to reading three ways, each behind the last: the harness says so; Edit, Write and
+  NotebookEdit are refused and the mode is `manual`, so everything but otto's own reads asks the
+  person (with no terminal, `otto note` is pre-approved too — nobody can approve it, and
+  `live_chat` found a chat that couldn't so much as run `otto show`); and
+  `OTTO_CHAT` in its environment makes `otto state` refuse every write. The env guard clears
+  `OTTO_CHAT` for wakes, so a wake started from a chat (`otto note --now`) is an ordinary wake. None
+  of the three stops a model determined to get round it — a shell redirect, `env -u` — and the person
+  approving each command is the rest.
+- **A note is the only way out.** What the person decides, the chat drafts as a note for a wake
+  that wasn't there and leaves with `otto note` once they agree. A gate can be answered from it
+  with `otto answer`, in the person's words. Nothing else said in a chat is given to any wake.
+- **Not `--resume` of the last wake.** Forking the last wake's session would let the person talk to
+  the wake itself, but it is a wake's context — it wants to carry on working — its cache is cold, so
+  a long wake is paid for again before the first question, and it knows one wake of many. A cold
+  chat that can read every transcript costs one start and knows them all.
+- **Accounted, not budgeted.** `chat-started` and `chat-ended` journal it, with the tokens read
+  from its transcript and the notes left while it was open. `otto usage` and the run's total count
+  them beside its wakes; no budget does, because a budget bounds what a run spends unattended, and a
+  chat is the person spending.
+- **A terminal, not the web.** A page can't hold an interactive session without `-p` (the wrong
+  meter, §5.1) or a terminal emulator, so the web page shows the command to copy. With no terminal
+  — a script, output into a file — `otto chat <run> "…"` runs the way a wake does, stdin at
+  `/dev/null` and stdout on a pipe, and answers once.
 
 ## 8. Waiting
 
@@ -974,7 +1013,7 @@ classes. Only the first is supposed to happen.
 
 Every command and flag is in the generated [CLI reference](docs/reference/cli.md); this section
 keeps only the shape. There are three groups: the commands a person uses (`run`, `ls`, `show`,
-`answer`, `note`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`, `feedback`), the machinery
+`answer`, `note`, `chat`, `period`, `check`, `logs`, `attach`, `wake`, `stop`, `resume`, `feedback`), the machinery
 (`poke`, `agent`, `serve`, `service`, `install`), and `otto state`, the wake's writer surface.
 
 `otto state` is unchanged in role: the only writer, used by a wake, atomic per call. The human

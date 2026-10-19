@@ -15,6 +15,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Check scripts](#check-scripts)
 - [Gates](#gates)
 - [Notes](#notes)
+- [Chats](#chats)
 - [Messages and the inbox](#messages-and-the-inbox)
 - [Pausing](#pausing)
 - [When things go wrong](#when-things-go-wrong)
@@ -240,6 +241,40 @@ the next one gets it again.
   it's done: otto refuses the question or the done once, with your note in the refusal.
 - A note steers *how* the run works. It never changes the goal or the done-condition, and never
   authorizes a push; a wake opens a gate for anything like that.
+
+## Chats
+
+A gate is the run asking and a note is you telling, but neither answers a question *you* have —
+why it skipped the e2e suite, what it found in the logs, what is actually left. A **chat** does:
+
+```bash
+otto chat 7                                  # it says where the run stands, then it's your turn
+otto chat 7 "why did wake 12 skip e2e?"      # or start with a question
+```
+
+A chat is a `claude` session you hold, started in the run's working directory under its launcher.
+It answers from the record: `otto show`, the handoff, the journal, the questions it asked and your
+answers, what it sent and made, its `artifacts/` — and each wake's own session transcript, which is
+the one place that says *why* a wake did something rather than what it wrote down. When the question
+is about now, it looks at the world, the way a wake would.
+
+**A chat is not a wake, and it changes nothing.** It has no wake number, isn't checked when it ends,
+counts toward no budget and is no tick for the [stall](#statuses) count, so it is fine beside a wake
+that is working. It can't do the run's work either, because a change made there is one no wake would
+know about — no lock, no handoff, no approval on record. Edit and Write are refused, every other tool
+but otto's own reads (`otto show`, `otto logs`…) asks you first, and `otto state` refuses its writes.
+
+**What you decide leaves as a note.** When the conversation lands on something the run should do
+differently, the chat drafts a [note](#notes) for a wake that wasn't there, and leaves it with `otto
+note` once you say so — `--now` to act on it now. A note is the only way a chat reaches the run. If a
+gate is open you can answer it from the chat too, and the answer is recorded as yours, verbatim.
+
+From a script — stdin or stdout not a terminal — `otto chat 7 "what's left?"` answers once and ends.
+With nobody there to approve a command, it reads files rather than running them, and leaves a note
+only when the question asks for one.
+The journal has `chat-started` and `chat-ended`, with what it used and the notes left while it was
+open; what was said stays in its transcript. A chat's tokens count toward the run's total in `otto
+usage` and `otto show`, beside its wakes. The web page has the command to copy, for a terminal.
 
 ## Messages and the inbox
 

@@ -190,7 +190,7 @@ pub struct UsageArgs {
     pub json: bool,
 }
 
-/// `otto usage` — what wakes have used, in tokens, across every run.
+/// `otto usage` — what wakes, and chats about their runs, have used, in tokens, across every run.
 pub fn usage(args: UsageArgs) -> Result<(), OttoError> {
     let since = match (&args.since, args.all) {
         (_, true) => None,
@@ -238,9 +238,12 @@ pub fn usage(args: UsageArgs) -> Result<(), OttoError> {
     }
     println!();
     line("TOTAL", &report.totals);
+    if report.totals.chats > 0 {
+        println!("\nincludes {} chat(s) — `otto chat` — beside the wakes", report.totals.chats);
+    }
     if report.totals.unmeasured > 0 {
         println!(
-            "\n* includes {} wake(s) whose usage couldn't be read (usually a sandbox that hides ~/.claude) — counted, tokens unknown",
+            "\n* includes {} wake(s) or chat(s) whose usage couldn't be read (usually a sandbox that hides ~/.claude) — counted, tokens unknown",
             report.totals.unmeasured
         );
     }

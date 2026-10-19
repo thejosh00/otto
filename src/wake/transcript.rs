@@ -64,7 +64,16 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// session file under that id: `wake_number` only ever increments within a run, and the start
 /// timestamp separates two runs that happen to share an id.
 pub fn session_id(run_id: &str, wake_n: u32, started_iso: &str) -> String {
-    let seed = format!("{run_id}:{wake_n}:{started_iso}");
+    uuid_from(&format!("{run_id}:{wake_n}:{started_iso}"))
+}
+
+/// The session id for one chat (`crate::chat`) about a run. Its own seed, so no chat can land on
+/// a wake's session — a chat is not a wake, and the run's wake numbers are not its to take.
+pub fn chat_session_id(run_id: &str, started_iso: &str) -> String {
+    uuid_from(&format!("{run_id}:chat:{started_iso}"))
+}
+
+fn uuid_from(seed: &str) -> String {
     let high = fnv1a(seed.as_bytes());
     let low = fnv1a(format!("{seed}:low").as_bytes());
     let mut hex = format!("{high:016x}{low:016x}");
@@ -403,6 +412,18 @@ mod tests {
         assert_ne!(a, session_id("r1", 2, "2026-09-13T00:00:00Z"), "next wake needs its own session");
         assert_ne!(a, session_id("r2", 1, "2026-09-13T00:00:00Z"), "another run must not collide");
         assert_ne!(a, session_id("r1", 1, "2026-09-13T01:00:00Z"), "a later start is a later session");
+    }
+
+    /// A chat's session is a well-formed id of its own: never a wake's, whatever its start.
+    #[test]
+    fn a_chat_session_is_its_own_and_well_formed() {
+        let chat = chat_session_id("r1", "2026-09-13T00:00:00Z");
+        assert_eq!(chat.split('-').map(str::len).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert!(chat.split('-').nth(2).unwrap().starts_with('4'), "claude insists on v4: {chat}");
+        for n in 0..5 {
+            assert_ne!(chat, session_id("r1", n, "2026-09-13T00:00:00Z"), "a chat must not land on wake {n}'s session");
+        }
+        assert_ne!(chat, chat_session_id("r1", "2026-09-13T00:05:00Z"), "each chat is a session of its own");
     }
 
     #[test]

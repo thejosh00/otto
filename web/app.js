@@ -1218,6 +1218,7 @@ function runView(id, opened) {
   const picture = h("div.panel");
   const lately = h("div.panel");
   const tell = h("div.panel");
+  const chat = h("div.panel");
   const hood = h("div.hood");
   let last = null;
 
@@ -1225,7 +1226,7 @@ function runView(id, opened) {
     h("a.back", { href: "#/" }, "← Agents"),
     head, ask, alerts, work.el,
     h("div.agent-grid",
-      h("div.col", picture, lately, tell),
+      h("div.col", picture, lately, tell, chat),
       h("aside.col", hood)));
 
   async function refresh() {
@@ -1245,6 +1246,7 @@ function runView(id, opened) {
     renderPicture(d);
     renderLately(d);
     renderTell(d);
+    renderChat(d);
     renderHood(d);
   }
 
@@ -1469,6 +1471,18 @@ function runView(id, opened) {
         }, n.standing ? "Unpin" : "Withdraw")),
       md(n.text)));
     tell.replaceChildren(h("p.label", "Tell it something"), ...notes, over ? h("p.faint", "It has finished — nothing will read a new note.") : tellForm);
+  }
+
+  // ----- asking it something: a chat happens in a terminal, so this is the command for one
+  let shownChat = null;
+  function renderChat(d) {
+    if (d.short === shownChat) return;
+    shownChat = d.short;
+    const command = `otto chat ${d.short}`;
+    chat.replaceChildren(h("p.label", "Ask it something"),
+      h("p.hint", "Why it did something, what it found, what's left — in a terminal, where it reads everything it has done and changes none of it. What you settle on reaches it the same way as what you type above."),
+      h("div.command", h("code", command),
+        h("button.small", { type: "button", onclick: () => copyText(command, "Copied — paste it in a terminal") }, "Copy")));
   }
 
   // ----- under the hood: everything the engine keeps, folded away
@@ -1701,7 +1715,8 @@ function tokenTotal(t) {
 // Mirrors TokenTotals::summary.
 function tokenSummary(t) {
   const n = humaniseTokens;
-  return `${n(tokenTotal(t))} over ${count(t.wakes, "run")} — ${n(t.inputTokens)} in, ${n(t.outputTokens)} out, ` +
+  return `${n(tokenTotal(t))} over ${count(t.wakes, "run")}${t.chats ? ` and ${count(t.chats, "chat")}` : ""} — ` +
+    `${n(t.inputTokens)} in, ${n(t.outputTokens)} out, ` +
     `${n(t.cacheCreation)} cache write, ${n(t.cacheRead)} cache read` +
     (t.unmeasured ? ` (${t.unmeasured} not measured)` : "");
 }

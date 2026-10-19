@@ -308,6 +308,28 @@ Options:
           Print help
 ```
 
+## `otto chat`
+
+```text
+Ask a run about its work, in a conversation. It reads everything the run has done and changes none of it: what you decide, it leaves as a note
+
+Usage: otto chat [OPTIONS] <ID> [QUESTION]
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [QUESTION]
+          What to ask first. Without one, the chat opens by saying where the run stands. With no terminal — from a script, or into a file — it is answered once, and the chat ends
+
+Options:
+      --dry-run
+          Print the command the chat would run, and start nothing
+
+  -h, --help
+          Print help
+```
+
 ## `otto check`
 
 ```text
@@ -369,7 +391,7 @@ Options:
 ## `otto usage`
 
 ```text
-What wakes have used, in tokens, across every run — by run or by day
+What wakes and chats have used, in tokens, across every run — by run or by day
 
 Usage: otto usage [OPTIONS]
 

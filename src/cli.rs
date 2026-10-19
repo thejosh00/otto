@@ -31,11 +31,14 @@ pub enum Command {
     Answer(crate::human::AnswerArgs),
     /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
     Note(crate::human::NoteArgs),
+    /// Ask a run about its work, in a conversation. It reads everything the run has done and
+    /// changes none of it: what you decide, it leaves as a note.
+    Chat(crate::chat::ChatArgs),
     /// Give a run a check script poke runs instead of a wake, see it, or remove it.
     Check(crate::human::CheckArgs),
     /// The run's journal, readably.
     Logs(crate::human::LogsArgs),
-    /// What wakes have used, in tokens, across every run — by run or by day.
+    /// What wakes and chats have used, in tokens, across every run — by run or by day.
     Usage(crate::human::UsageArgs),
     /// What wakes have said about otto itself: where it got in their way.
     Feedback(crate::human::FeedbackArgs),
@@ -175,6 +178,20 @@ pub enum StateCommand {
     Log(LogArgs),
     /// Last N journal lines
     Tail(TailArgs),
+}
+
+impl StateCommand {
+    /// Whether this changes anything — a run, a lock, the feedback log. A chat may run only those
+    /// that don't (`chat::refuse_state_write`). No wildcard: a new command has to say which it is.
+    pub fn writes(&self) -> bool {
+        use StateCommand::*;
+        match self {
+            Get(_) | List(_) | Due | CheckAuthorized(_) | Locks(_) | Tail(_) => false,
+            Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | OpenGate(_) | CloseGate(_)
+            | Message(_) | Publish(_) | Stages(_) | OutputState(_) | ArmTimer(_) | SetCheck(_) | Tick(_)
+            | Feedback(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,
+        }
+    }
 }
 
 /// `docs/reference/cli.md` is generated from the help text above, so the reference cannot drift

@@ -85,7 +85,8 @@ fn shell_words(line: &str) -> Vec<String> {
                     in_word = true;
                 }
                 '#' if !in_word => break,
-                '|' => break,
+                // A pipe or a redirect ends what otto is given.
+                '|' | '>' => break,
                 c if c.is_whitespace() => {
                     if in_word {
                         words.push(std::mem::take(&mut word));
@@ -218,7 +219,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         TimerArmed { next_wake_at: at, note: some() },
         Tick { ticks_without_progress: 0, note: some() },
         NoopTick { ticks_without_progress: 0, note: some() },
-        WakeStarted { wake: 1, deadline_at: at, launcher: s() },
+        WakeStarted { wake: 1, deadline_at: at, launcher: s(), session: some() },
         WakeSpent { turns: 0, spent_wakes: 0, spent_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, tool_errors: 0 },
         UsageUnavailable { note: s() },
         WakeReportedError { exit_code: 1, timed_out: false, turns: 0 },
@@ -257,6 +258,16 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         OutputPublished { output: s(), version: 1, title: s(), stage: some(), file: some(), link: some() },
         OutputState { output: s(), state: crate::outputs::OutputState::Done, by: s(), note: some() },
         StagesSet { stages: vec![s()] },
+        ChatStarted { session: s(), launcher: s() },
+        ChatEnded {
+            session: s(),
+            turns: Some(1),
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            cache_read: Some(1),
+            cache_creation: Some(1),
+            notes: vec![s()],
+        },
     ];
     for event in &events {
         match event {
@@ -272,7 +283,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }
-            | StagesSet { .. } => {}
+            | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } => {}
         }
     }
     events

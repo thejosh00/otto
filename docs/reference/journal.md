@@ -32,7 +32,7 @@ the budget events, the wake failures, and `usage-limited`.
 
 | Event | Fields | When |
 |---|---|---|
-| `wake-started` | `wake`, `deadlineAt`, `launcher` | A wake began |
+| `wake-started` | `wake`, `deadlineAt`, `launcher`, `session` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under `~/.claude/projects/`); absent on wakes from before it was recorded |
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
@@ -76,6 +76,8 @@ the budget events, the wake failures, and `usage-limited`.
 | `output-state` | `output`, `state`, `by`, `note` | An output was marked `waiting`, `done` or `dropped` — by the `person` ("I sent it", `otto outputs --mark`) or a `wake` (`otto state output-state`) |
 | `stages-set` | `stages` | A wake declared the steps its work moves through (`otto state stages`) |
 | `paused` | `until`, `reason` | A person paused the run (`otto pause`) |
+| `chat-started` | `session`, `launcher` | A person opened a [chat](../concepts.md#chats) about the run (`otto chat`). Not a wake: it changes nothing |
+| `chat-ended` | `session`, `turns`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `notes` | The chat ended: what it used, read from its transcript (the token fields are absent when that couldn't be read), and `notes`, those left while it was open |
 | `unpaused` | `by` | The pause ended: by a `person` (`otto resume`) or `time` |
 
 ## Budgets, locks and authorizations

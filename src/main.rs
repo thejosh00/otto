@@ -1,3 +1,4 @@
+mod chat;
 mod cli;
 mod clock;
 mod config;
@@ -56,6 +57,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Answer(args) => human::answer(args),
         Command::Pause(args) => human::pause(args),
         Command::Note(args) => human::note(args),
+        Command::Chat(args) => chat::chat(args),
         Command::Check(args) => human::check(args),
         Command::Logs(args) => human::logs(args),
         Command::Usage(args) => human::usage(args),
@@ -86,6 +88,7 @@ fn run(command: Command) -> Result<(), OttoError> {
 
 fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
     use state::{authorize, commands, locks};
+    chat::refuse_state_write(&command, std::env::var(chat::CHAT_ENV).ok().as_deref())?;
     match command {
         StateCommand::Init(a) => commands::init(a),
         StateCommand::Get(a) => commands::get(a),
