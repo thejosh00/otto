@@ -294,13 +294,21 @@ scratch space; the page shows only what you publish.
 
 ```
 write it                → artifacts/<name>.md — for a person reading it cold
-otto state publish <id> --key <key> --title "refund-policy-qa: a stale index, not the model" --file artifacts/<name>.md
+over a page? summarise  → artifacts/<name>-summary.md
+otto state publish <id> --key <key> --title "refund-policy-qa: a stale index, not the model" --file artifacts/<name>.md [--summary-file artifacts/<name>-summary.md]
 ```
 
 - **The key says what it is.** A new key is a new output; the same key again is the next
   version of it. A report a day is a new key each day (`<date>-refund-policy-qa`). A design
   you revise after review is the same key every time (`design`). Publishing exactly what the latest
   version already says changes nothing, so republishing is safe.
+- **Over a page, a summary too.** A document over 500 words gets a summary beside it, every time
+  without being asked: the page opens on the summary, with the whole document a click away, so the
+  summary is what the person reads. Write it for them: the finding or the decision first, then what
+  it asks of them, in a few short paragraphs or bullets they can read in a minute — not a table of
+  contents, not "this document describes". It stands alone; nothing in it needs the rest to make
+  sense. Each version gets its own: a revision republished without one has none, because the old
+  one describes the old text. Under a page, no summary — the document is its own.
 - **Work that moves through steps** declares them once, first: `otto state stages <id> Research
   Design Plan`, then `--stage <one of them>` on each output. The page shows them as a track.
 - **One output per thing to deal with**: an answer to a question in a channel is an output with

@@ -520,6 +520,9 @@ pub struct OutputsArgs {
     /// Which version of it. Omitted, the latest
     #[arg(long, value_name = "N", requires = "key")]
     pub version: Option<u32>,
+    /// The whole of it, when it has a summary. Omitted, the summary
+    #[arg(long, requires = "key")]
+    pub full: bool,
     /// Mark it done (you sent its draft, you acted on it), waiting again, or dropped
     #[arg(long, value_enum, requires = "key", conflicts_with = "version")]
     pub mark: Option<crate::outputs::OutputState>,
@@ -560,6 +563,16 @@ pub fn outputs(args: OutputsArgs) -> Result<(), OttoError> {
 ");
         }
         match (&v.text, &v.version.link) {
+            (Some(_), _) if !args.full && v.summary.is_some() => {
+                println!("{}", v.summary.as_deref().unwrap_or_default().trim_end());
+                println!(
+                    "\n─── its summary — the whole of it is {} words: `otto outputs {} {}{} --full` ───",
+                    v.version.words.unwrap_or_default(),
+                    crate::paths::short_id(&id),
+                    v.output.key,
+                    if v.version.n < of { format!(" --version {}", v.version.n) } else { String::new() }
+                );
+            }
             (Some(text), _) => println!("{}", text.trim_end()),
             (None, Some(link)) => println!("{link}"),
             (None, None) => println!("(its file {} is missing)", v.version.file.as_deref().unwrap_or("?")),

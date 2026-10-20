@@ -309,7 +309,7 @@ report, a design as it is revised, an explanation and the reply drafted for it, 
 
 ```bash
 otto state publish <id> --key 2026-10-16-refund-policy-qa --title "refund-policy-qa: a stale index, not the model" --file artifacts/report.md
-otto state publish <id> --key design --title "Design: per-key rate-limit tiers" --file artifacts/design.md --stage Design
+otto state publish <id> --key design --title "Design: per-key rate-limit tiers" --file artifacts/design.md --summary-file artifacts/design-summary.md --stage Design
 otto state publish <id> --key thread-1729072990 --title "Priya asked why refunds say 14 days" --file artifacts/explain.md --about https://example.slack.com/archives/C1/p1729072990 --draft-file artifacts/reply.md
 otto state publish <id> --key proj-4412 --title "Add rate_tier to key_metadata" --link https://example.atlassian.net/browse/PROJ-4412
 ```
@@ -319,6 +319,9 @@ There are no agent types to choose; the page reads the shape of the work from th
 - **The key says what it is.** A new key is a new output — a report a day is a dated list. The same
   key again is its next version — a design revised after review shows v1 and v2 and what changed
   between them. Publishing what the latest version already says makes no new one.
+- **A summary** comes with anything over a page (500 words). The page opens on it, with a toggle to
+  the whole document; `otto outputs <id> <key>` prints it, and `--full` the whole. A run writes one
+  without being asked, a new one for each version.
 - **Stages** (`otto state stages <id> Research Design Plan`) put outputs on a track, for work that
   moves through steps.
 - **A draft and a state** make an output something to deal with: a card with the reply to copy,
@@ -329,13 +332,14 @@ There are no agent types to choose; the page reads the shape of the work from th
 
 ```bash
 otto outputs <id>                  # what it has made, newest first, and where its stages stand
-otto outputs <id> design --version 1   # one in full, with its draft and your review
+otto outputs <id> design --version 1   # one, with its draft and your review — its summary, if it has one
+otto outputs <id> design --full        # the whole of it, not its summary
 otto outputs <id> <key> --mark done    # you sent its draft
 otto note <id> "shorter, please" --about design   # a note the run knows is about that output
 ```
 
-On disk, `outputs/index.json` holds everything but the text, and `outputs/<key>/v<n>.md` each
-version's text, verbatim. `artifacts/` stays the run's scratch space: an output is published from
+On disk, `outputs/index.json` holds everything but the text, `outputs/<key>/v<n>.md` each
+version's text, verbatim, and `outputs/<key>/v<n>.summary.md` its summary. `artifacts/` stays the run's scratch space: an output is published from
 it on purpose, so the page shows the work and not the workings.
 
 ## Pausing
@@ -456,6 +460,7 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
     messages/NNN-<slug>.md|.json messages it sent you: the body verbatim, and the rest
     outputs/index.json           what it made, kept: keys, titles, versions, stages, states
     outputs/<key>/v<n>.md        each version's text, verbatim
+    outputs/<key>/v<n>.summary.md its summary, for one over a page
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   archive/<id>/                  a deleted run's directory, kept until `otto cleanup`

@@ -1268,6 +1268,10 @@ pub struct PublishArgs {
     /// Read the draft from this file
     #[arg(long = "draft-file", value_name = "PATH")]
     pub draft_file: Option<String>,
+    /// A summary of the file, for a document over a page (500 words): the page opens on it, with
+    /// the whole a click away. The same file again with a summary adds it to that version
+    #[arg(long = "summary-file", value_name = "PATH")]
+    pub summary_file: Option<String>,
     /// Whether it waits on the person; an output with a draft waits until they deal with it
     #[arg(long, value_enum)]
     pub state: Option<crate::outputs::OutputState>,
@@ -1277,19 +1281,20 @@ pub struct PublishArgs {
 /// under "Its work", every version of it.
 pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
     let id = crate::paths::resolve_run_id(&args.id)?;
+    // A wake runs in its working directory, and its artifacts are in the run directory: either is
+    // where a relative path can mean.
+    let read_text = |file: &str| -> Result<String, OttoError> {
+        let given = std::path::Path::new(file);
+        let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
+        let bytes = std::fs::read(&found).map_err(|e| OttoError::usage(format!("cannot read {file}: {e}")))?;
+        String::from_utf8(bytes)
+            .map_err(|_| OttoError::usage(format!("{file} is not text — publish text a person reads, or --link to where the file lives")))
+    };
     let text = match (&args.file, args.stdin) {
         (Some(_), true) => return Err(OttoError::usage("give --file or --stdin, not both")),
         (Some(file), false) => {
-            // A wake runs in its working directory, and its artifacts are in the run directory:
-            // either is where a relative path can mean.
-            let given = std::path::Path::new(file);
-            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
-            let bytes = std::fs::read(&found).map_err(|e| OttoError::usage(format!("cannot read {file}: {e}")))?;
-            let text = String::from_utf8(bytes).map_err(|_| {
-                OttoError::usage(format!("{file} is not text — publish text a person reads, or --link to where the file lives"))
-            })?;
-            let ext = given.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
-            Some((text, ext))
+            let ext = std::path::Path::new(file).extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+            Some((read_text(file)?, ext))
         }
         (None, true) => {
             let mut buf = String::new();
@@ -1305,6 +1310,7 @@ pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
         }
         (None, None) => None,
     };
+    let summary = args.summary_file.as_deref().map(read_text).transpose()?;
     let out = crate::outputs::publish(
         &id,
         &crate::outputs::Publish {
@@ -1315,13 +1321,23 @@ pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
             stage: args.stage.as_deref(),
             about: args.about.as_deref(),
             draft: draft.as_deref(),
+            summary: summary.as_deref(),
             state: args.state,
         },
     )?;
-    if out.unchanged {
+    if out.summary_added {
+        println!("{}@{} unchanged, and its summary kept with it", out.key, out.version);
+    } else if out.unchanged {
         println!("{}@{} unchanged — the same as its latest version, so no new one", out.key, out.version);
     } else {
         println!("{}@{}", out.key, out.version);
+    }
+    match (out.words, &out.summary) {
+        (Some(words), None) if words > crate::outputs::PAGE_WORDS => println!(
+            "It is {words} words, over a page, and has no summary: write one a person can read in a minute, and publish \
+             the same file again with --summary-file. The page opens on the summary."
+        ),
+        _ => {}
     }
     Ok(())
 }

@@ -228,6 +228,9 @@ Options:
       --version <N>
           Which version of it. Omitted, the latest
 
+      --full
+          The whole of it, when it has a summary. Omitted, the summary
+
       --mark <MARK>
           Mark it done (you sent its draft, you acted on it), waiting again, or dropped
 
@@ -1304,6 +1307,9 @@ Options:
 
       --draft-file <PATH>
           Read the draft from this file
+
+      --summary-file <PATH>
+          A summary of the file, for a document over a page (500 words): the page opens on it, with the whole a click away. The same file again with a summary adds it to that version
 
       --state <STATE>
           Whether it waits on the person; an output with a draft waits until they deal with it

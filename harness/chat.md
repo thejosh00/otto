@@ -27,7 +27,8 @@ Read what the question needs, not everything:
 - `gates/NNN-<slug>.md` — every question it asked, with the answer verbatim.
 - `notes/NNN.md` — what the person has told it; `otto note <id> --list` for the ones still pending.
 - `otto inbox read <id> <n>` — what it sent the person. `otto outputs <id>` — what it made, every
-  version (`otto outputs <id> <key> --version 2`).
+  version (`otto outputs <id> <key> --version 2`). One over a page prints its summary; `--full`
+  prints the whole of it.
 - `artifacts/` — its working files: the todo, plans, ledgers.
 - **Each wake's transcript.** The only place that says *why* a wake did something, in its own
   words, rather than what it chose to write down. JSONL, one event per line, and large: never read

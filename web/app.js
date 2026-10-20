@@ -921,6 +921,7 @@ function workPanel(runId, initial, onChanged) {
   const cache = new Map(); // "key@n" → a version, with its text
   let sel = initial ? { key: initial.key, v: initial.v || null } : null;
   let showDiff = true;
+  let showFull = false; // a document with a summary opens on the summary
   let stageFilter = null;
   let stateFilter = store("otto.work.state") || "all";
   let query = "";
@@ -936,6 +937,7 @@ function workPanel(runId, initial, onChanged) {
   };
 
   function select(key, v = null, scroll = true) {
+    if (!sel || sel.key !== key) showFull = false;
     sel = { key, v };
     showDiff = true;
     history.replaceState(null, "", `#/run/${enc(runId)}/work/${enc(key)}${v ? `/v${v}` : ""}`);
@@ -952,7 +954,7 @@ function workPanel(runId, initial, onChanged) {
     if (!outputs.length) return;
     const messages = d.messages.filter((m) => m.output);
     const key = JSON.stringify([outputs.map((o) => [o.key, latestOf(o).n, o.title, o.state, o.asking, o.stage,
-      o.versions.map((v) => (v.reviews || []).length)]), stages, sel, showDiff, stageFilter, stateFilter, query,
+      o.versions.map((v) => (v.reviews || []).length)]), stages, sel, showDiff, showFull, stageFilter, stateFilter, query,
     messages.map((m) => [m.id, m.open, m.reply])]);
     if (key === shown) return;
     if (el.contains(document.activeElement) && document.activeElement.matches("textarea, input[type=search]")) return;
@@ -1062,7 +1064,7 @@ function workPanel(runId, initial, onChanged) {
     try {
       doc = await load(o.key, n);
       const before = o.versions.filter((v) => v.n < n).pop();
-      if (showDiff && before && before.file && version.file) prev = await load(o.key, before.n);
+      if (showDiff && (showFull || !doc.summary) && before && before.file && version.file) prev = await load(o.key, before.n);
     } catch (err) {
       reader.replaceChildren(h("div.banner.bad", err.message));
       return;
@@ -1071,7 +1073,7 @@ function workPanel(runId, initial, onChanged) {
     parts.push(h("div.reader-head",
       o.stage ? h("span.kind.report", o.stage) : null,
       h("span", dayText(version.at), " · ", clockTime(version.at)),
-      version.words ? h("span", `· ${version.words} words`) : null,
+      version.words && !doc.summary ? h("span", `· ${version.words} words`) : null, // with a summary, its toggle says
       h("span.grow"),
       readerSteps(o)));
     parts.push(h("h3.reader-title", o.title));
@@ -1081,11 +1083,12 @@ function workPanel(runId, initial, onChanged) {
         h("div.seg-pills", { role: "group", "aria-label": "Version" }, o.versions.map((v) =>
           h("button", { type: "button", "aria-pressed": String(v.n === n), onclick: () => select(o.key, v.n === latest.n ? null : v.n, false) },
             `v${v.n} · ${dayText(v.at)}${v.n === latest.n ? " · latest" : ""}`))),
-        before && before.file && version.file
+        before && before.file && version.file && (showFull || !doc.summary)
           ? h("label.check", h("input", { type: "checkbox", checked: showDiff, onchange: (e) => { showDiff = e.target.checked; shown = null; render(last); } }),
             `Show what changed since v${before.n}`)
           : null));
     }
+    if (doc.summary && doc.text != null) parts.push(summaryToggle(version));
     for (const r of version.reviews || []) {
       parts.push(h("div.review", h("strong", `Your review of v${n} · ${dayText(r.at)}`), md(r.answer)));
     }
@@ -1098,6 +1101,8 @@ function workPanel(runId, initial, onChanged) {
         h("span.lc-title", o.title), h("span.lc-url", version.link)));
     } else if (doc.text == null) {
       parts.push(h("p.faint", `Its file ${version.file} is missing.`));
+    } else if (doc.summary && !showFull) {
+      parts.push(md(doc.summary));
     } else if (prev && prev.text != null) {
       const lines = lineDiff(prev.text, doc.text);
       parts.push(lines ? diffView(lines) : h("p.faint", "Too long to compare here."));
@@ -1108,12 +1113,19 @@ function workPanel(runId, initial, onChanged) {
     if (version.draft) parts.push(draftBox(o, version));
     if (doc.text != null) {
       parts.push(h("div.row",
-        h("button.small", { type: "button", onclick: () => copyText(doc.text, "Copied") }, "Copy"),
+        h("button.small", { type: "button", onclick: () => copyText(doc.summary && !showFull ? doc.summary : doc.text, "Copied") }, "Copy"),
         h("button.small", { type: "button", onclick: () => download(doc.text, `${o.key}-v${n}${(version.file.match(/\.\w+$/) || [".md"])[0]}`) }, "Download")));
     }
     parts.push(...inboxLines(o, d));
     parts.push(tellAbout(o, n, d));
     reader.replaceChildren(...parts);
+  }
+
+  // A document over a page comes with a summary: what's shown is that, or the whole of it.
+  function summaryToggle(version) {
+    const words = version.words ? ` · ${version.words.toLocaleString()} words` : "";
+    return h("div.seg-pills", { role: "group", "aria-label": "Show" }, [[false, "Summary"], [true, `Full${words}`]].map(([full, label]) =>
+      h("button", { type: "button", "aria-pressed": String(showFull === full), onclick: () => { showFull = full; shown = null; render(last); } }, label)));
   }
 
   // Older and newer, for a dated list: the next thing along, not the next version.
@@ -1179,7 +1191,7 @@ function workPanel(runId, initial, onChanged) {
     const card = h(`div.item-card${open ? ".open" : ""}`);
     const top = h("button.item-top", {
       type: "button", "aria-expanded": String(open),
-      onclick: () => { sel = open ? null : { key: o.key, v: null }; shown = null; render(last); },
+      onclick: () => { sel = open ? null : { key: o.key, v: null }; showFull = false; shown = null; render(last); },
     },
     h("span.it-when", dayText(latest.at), " · ", clockTime(latest.at)),
     outputStateChip(o) || h("span"),
@@ -1189,8 +1201,11 @@ function workPanel(runId, initial, onChanged) {
       const body = h("div.item-body", h("p.faint", "Loading…"));
       card.append(body);
       load(o.key, latest.n).then((doc) => {
+        const summary = doc.text != null && doc.summary;
         body.replaceChildren(
-          doc.text != null ? (/\.md$/.test(latest.file || "") ? md(doc.text) : h("pre.code", doc.text)) : latest.link ? h("a", { href: latest.link, target: "_blank", rel: "noopener noreferrer" }, latest.link) : null,
+          summary ? summaryToggle(latest) : null,
+          summary && !showFull ? md(doc.summary)
+            : doc.text != null ? (/\.md$/.test(latest.file || "") ? md(doc.text) : h("pre.code", doc.text)) : latest.link ? h("a", { href: latest.link, target: "_blank", rel: "noopener noreferrer" }, latest.link) : null,
           latest.draft ? draftBox(o, latest) : null,
           ...inboxLines(o, d),
           tellAbout(o, latest.n, d));

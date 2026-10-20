@@ -16,12 +16,14 @@
 //!   design, plan — for work that moves through steps.
 //! - an output may carry a **draft** (text for the person to send on) and a **state** (waiting on
 //!   them, done, or not needed) — one per question in a channel, each with its reply.
+//! - a version over a page may carry a **summary**, and the page opens on that, with the whole a
+//!   click away: a person reads the finding, and the document only when they want the rest.
 //!
 //! The page picks its layout from which of those are present. A question can be **about** a version
 //! (`open-gate --about design`), and the answer is kept on that version as its review.
 //!
 //! On disk: `outputs/index.json` is everything but the content; `outputs/<key>/v<n>.<ext>` is each
-//! version's text, verbatim. Work that lives elsewhere — a ticket, a merged PR — is a version with a
+//! version's text, verbatim, and `outputs/<key>/v<n>.summary.md` its summary. Work that lives elsewhere — a ticket, a merged PR — is a version with a
 //! `link` instead of a file. `artifacts/` stays the run's scratch space: an output is published from
 //! there on purpose, so the page shows the work and not the workings.
 
@@ -41,6 +43,8 @@ pub const KEY_MAX_CHARS: usize = 80;
 pub const FILE_MAX_BYTES: usize = 512 * 1024;
 /// A draft is a reply someone will paste.
 pub const DRAFT_MAX_BYTES: usize = 8 * 1024;
+/// A page, in words. A document longer than this comes with a summary, and a summary is no longer.
+pub const PAGE_WORDS: u32 = 500;
 pub const ABOUT_MAX_CHARS: usize = 400;
 pub const STAGES_MAX: usize = 12;
 pub const STAGE_MAX_CHARS: usize = 40;
@@ -99,6 +103,10 @@ pub struct Version {
     pub draft: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<u32>,
+    /// Its summary, relative to the run directory: what a person reads first, for a document over a
+    /// page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// What the person answered to a question about this version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<Review>,
@@ -243,6 +251,8 @@ pub struct Publish<'a> {
     pub stage: Option<&'a str>,
     pub about: Option<&'a str>,
     pub draft: Option<&'a str>,
+    /// A summary of the text, for a document over a page.
+    pub summary: Option<&'a str>,
     pub state: Option<OutputState>,
 }
 
@@ -255,11 +265,17 @@ pub struct Published {
     pub file: Option<String>,
     /// Nothing differed from the latest version, so no new version was made.
     pub unchanged: bool,
+    /// How long the text is, when there is text.
+    pub words: Option<u32>,
+    /// Where its summary is, when it has one.
+    pub summary: Option<String>,
+    /// The text was unchanged and the summary was not: it is kept on the latest version.
+    pub summary_added: bool,
 }
 
 /// Publish a version of `key`: a new output when the key is new, its next version otherwise. A
 /// version identical to the latest — same text, link and draft — is not a new version: a wake
-/// that republishes what it already published changes nothing.
+/// that republishes what it already published changes nothing, except to give it a summary.
 pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
     let key = normalise_key(p.key)?;
     let title = check_title(p.title)?;
@@ -293,6 +309,21 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
     if about.as_ref().is_some_and(|a| a.chars().count() > ABOUT_MAX_CHARS || a.contains('\n')) {
         return Err(OttoError::usage(format!("--about is one line of at most {ABOUT_MAX_CHARS} characters — a link, or what it answers")));
     }
+    let text_words = text.as_ref().map(|(t, _)| words(t));
+    let summary = match (p.summary.map(str::trim).filter(|s| !s.is_empty()), text_words) {
+        (None, _) => None,
+        (Some(_), None) => return Err(OttoError::usage("a summary is of a file — work kept at a --link has none")),
+        (Some(s), Some(of)) => {
+            let n = words(s);
+            if n > PAGE_WORDS {
+                return Err(OttoError::usage(format!("a summary is at most a page, {PAGE_WORDS} words (this one is {n})")));
+            }
+            if n >= of {
+                return Err(OttoError::usage(format!("a summary is shorter than what it summarises (this one is {n} words, the file {of})")));
+            }
+            Some(s.to_string())
+        }
+    };
 
     crate::state::transaction(run_id, |path, state| {
         let mut index = read_index(path)?;
@@ -310,8 +341,22 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
             };
             let unchanged = same_text && latest.link == link && latest.draft == draft;
             if unchanged {
-                // Only the bookkeeping moves: a new title, stage or state needs no new version.
+                // Only the bookkeeping moves: a new title, stage or state needs no new version, and
+                // nor does a summary — it is of the text, and the text is the same.
+                let summary_added = match &summary {
+                    Some(s) => {
+                        let same = latest.summary.as_ref().is_some_and(|f| std::fs::read_to_string(path.join(f)).is_ok_and(|old| old.trim_end() == s));
+                        if !same {
+                            write_summary(path, &key, latest.n, s)?;
+                        }
+                        !same
+                    }
+                    None => false,
+                };
                 let output = &mut index.outputs[i];
+                if summary_added {
+                    output.versions.last_mut().expect("an output has at least one version").summary = Some(summary_file(&key, latest.n));
+                }
                 output.title = title.clone();
                 if stage.is_some() {
                     output.stage = stage.clone();
@@ -323,7 +368,8 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
                     set_state_on(output, s, None, "wake", at);
                 }
                 write_index(path, &index)?;
-                return Ok(Published { key, version: latest.n, file: latest.file, unchanged: true });
+                let summary = index.outputs[i].latest().summary.clone();
+                return Ok(Published { key, version: latest.n, file: latest.file, unchanged: true, words: latest.words, summary, summary_added });
             }
         }
 
@@ -337,6 +383,10 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
             }
             None => None,
         };
+        let summary = match &summary {
+            Some(s) => Some(write_summary(path, &key, n, s)?),
+            None => None,
+        };
         let version = Version {
             n,
             at,
@@ -344,7 +394,8 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
             file: file.clone(),
             link: link.clone(),
             draft: draft.clone(),
-            words: text.as_ref().map(|(t, _)| words(t)),
+            words: text_words,
+            summary: summary.clone(),
             reviews: Vec::new(),
         };
         let output = match existing {
@@ -386,8 +437,20 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
             path,
             &Event::OutputPublished { output: key.clone(), version: n, title, stage, file: file.clone(), link },
         )?;
-        Ok(Published { key, version: n, file, unchanged: false })
+        Ok(Published { key, version: n, file, unchanged: false, words: text_words, summary, summary_added: false })
     })
+}
+
+fn summary_file(key: &str, n: u32) -> String {
+    format!("{OUTPUTS_DIR}/{key}/v{n}.summary.md")
+}
+
+/// Keep `text` as the summary of `key`'s version `n`, and say where, relative to the run directory.
+fn write_summary(run_dir: &Path, key: &str, n: u32, text: &str) -> Result<String, OttoError> {
+    let rel = summary_file(key, n);
+    std::fs::create_dir_all(run_dir.join(OUTPUTS_DIR).join(key))?;
+    crate::state::write_atomic(&run_dir.join(&rel), &format!("{text}\n"))?;
+    Ok(rel)
 }
 
 fn set_state_on(output: &mut Output, state: OutputState, note: Option<String>, by: &str, at: Timestamp) {
@@ -604,6 +667,8 @@ pub struct VersionView {
     pub version: Version,
     /// `None` for a link, or a file gone missing.
     pub text: Option<String>,
+    /// Its summary, when it has one.
+    pub summary: Option<String>,
 }
 
 /// `key`'s version `n`, or its latest.
@@ -621,7 +686,8 @@ pub fn read(run_id: &str, key: &str, n: Option<u32>) -> Result<VersionView, Otto
         None => output.latest().clone(),
     };
     let text = version.file.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
-    Ok(VersionView { output, version, text })
+    let summary = version.summary.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
+    Ok(VersionView { output, version, text, summary })
 }
 
 /// What a message points at, as the inbox shows it.
@@ -716,6 +782,35 @@ mod tests {
         let stage = Publish { stage: Some("design"), ..doc("k", "t", "x") };
         assert!(publish("o-bad", &stage).unwrap_err().to_string().contains("otto state stages"), "no stages declared");
         assert!(read_index(&crate::paths::run_dir("o-bad").unwrap()).unwrap().outputs.is_empty(), "nothing half-made");
+    }
+
+    #[test]
+    fn a_document_over_a_page_carries_its_summary() {
+        let _h = TempHome::new();
+        test_init("o-sum", "a goal").unwrap();
+        let long = "The tiers hold. ".repeat(200);
+        let with = |summary| Publish { summary: Some(summary), ..doc("design", "Design: tiers", &long) };
+        let first = publish("o-sum", &with("Three tiers, set per key.")).unwrap();
+        assert_eq!((first.words, first.summary.as_deref()), (Some(600), Some("outputs/design/v1.summary.md")));
+        assert_eq!(read("o-sum", "design", None).unwrap().summary.as_deref(), Some("Three tiers, set per key.\n"));
+
+        let again = publish("o-sum", &with("Three tiers, set per key, and why.")).unwrap();
+        assert!(again.unchanged && again.summary_added, "a better summary of the same text is not a new version");
+        assert_eq!(read("o-sum", "design", Some(1)).unwrap().summary.as_deref(), Some("Three tiers, set per key, and why.\n"));
+        assert!(!publish("o-sum", &with("Three tiers, set per key, and why.")).unwrap().summary_added, "the same summary again changes nothing");
+        assert!(publish("o-sum", &doc("design", "Design: tiers", &long)).unwrap().summary.is_some(), "republished without one, it keeps it");
+
+        let v2 = publish("o-sum", &doc("design", "Design: tiers", &format!("{long}And a fourth."))).unwrap();
+        assert_eq!((v2.version, v2.summary), (2, None), "a new version's summary is its own: v1's would be stale");
+        assert!(read("o-sum", "design", None).unwrap().summary.is_none());
+
+        let linked = Publish { key: "proj-1", title: "t", link: Some("https://x.example/1"), summary: Some("s"), ..Default::default() };
+        assert!(publish("o-sum", &linked).unwrap_err().to_string().contains("--link"));
+        let longer = Publish { summary: Some("A summary longer than this."), ..doc("short", "t", "Short.") };
+        assert!(publish("o-sum", &longer).unwrap_err().to_string().contains("shorter than"));
+        let a_page = "word ".repeat(PAGE_WORDS as usize + 1);
+        assert!(publish("o-sum", &with(&a_page)).unwrap_err().to_string().contains("at most a page"));
+        assert_eq!(read_index(&crate::paths::run_dir("o-sum").unwrap()).unwrap().outputs.len(), 1, "nothing half-made");
     }
 
     #[test]
