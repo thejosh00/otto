@@ -1013,15 +1013,17 @@ pub fn landed(lander: &str, r: &ChangeRef, sha: &str, note: Option<&str>) -> Res
         refuse_unless(c, &[ChangeState::Landing], "marked landed")?;
         let repo = Path::new(&c.repo);
         let sha = rev(repo, sha)?;
+        // On its base branch: the remote's, or — for a repo that ships from its main checkout, as one
+        // with a ship script of its own may — the local one.
         let base = base_ref(repo, &c.base);
-        if !ok(repo, &["merge-base", "--is-ancestor", &sha, &base]) {
+        let local_base = ok(repo, &["merge-base", "--is-ancestor", &sha, &format!("refs/heads/{}", c.base)]);
+        if !local_base && !ok(repo, &["merge-base", "--is-ancestor", &sha, &base]) {
             return Err(OttoError::conflict(format!(
                 "{base} doesn't contain {} — it hasn't landed yet, or this checkout hasn't heard (`git -C {} fetch`)",
                 short_sha(&sha),
                 c.repo
             )));
         }
-        let local_base = ok(repo, &["merge-base", "--is-ancestor", &sha, &format!("refs/heads/{}", c.base)]);
         c.landed = Some(Landed { sha: sha.clone(), at: Timestamp::now(), local_base, note: note.clone() });
         c.enter(ChangeState::Landed);
         let what = format!("landed on {} at {}{}", c.base, short_sha(&sha), note.as_ref().map(|n| format!(" — {n}")).unwrap_or_default());
@@ -1615,6 +1617,25 @@ mod tests {
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
         let c = rebased("c-bl", &r("c-b", 1), &head).unwrap();
         assert_eq!((c.state, c.latest().k, c.latest().by.as_str()), (ChangeState::Review, 3, "lander"));
+    }
+
+    #[test]
+    fn a_change_waiting_for_review_is_a_notice_once_a_version() {
+        let _h = TempHome::new();
+        test_init("c-n", "a goal").unwrap();
+        test_init("c-nl", "land changes").unwrap();
+        set_lander("c-nl");
+        let repo = repo();
+        submit("c-n", &submit_fix(&repo, "Shout")).unwrap();
+        let dir = crate::paths::run_dir("c-n").unwrap();
+        let keys = |d: &Path| crate::notify::change_notices(d).into_iter().map(|n| n.key).collect::<Vec<_>>();
+        assert_eq!(keys(&dir), vec!["change:1@v1"]);
+        revise(&r("c-n", 1), "louder").unwrap();
+        assert!(keys(&dir).is_empty(), "its author's move, not the person's");
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        submit("c-n", &submit_fix(&repo, "Shout")).unwrap();
+        assert_eq!(keys(&dir), vec!["change:1@v2"], "the next version is new to review");
     }
 
     #[test]

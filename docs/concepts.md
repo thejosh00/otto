@@ -17,6 +17,8 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Notes](#notes)
 - [Chats](#chats)
 - [Messages and the inbox](#messages-and-the-inbox)
+- [Outputs: what it made, kept](#outputs-what-it-made-kept)
+- [Changes: code handed back](#changes-code-handed-back)
 - [Pausing](#pausing)
 - [When things go wrong](#when-things-go-wrong)
 - [Budgets and policy](#budgets-and-policy)
@@ -342,6 +344,46 @@ On disk, `outputs/index.json` holds everything but the text, `outputs/<key>/v<n>
 version's text, verbatim, and `outputs/<key>/v<n>.summary.md` its summary. `artifacts/` stays the run's scratch space: an output is published from
 it on purpose, so the page shows the work and not the workings.
 
+## Changes: code handed back
+
+When a run's work changes code, it doesn't commit to `main` or push: it commits on a branch of its
+own and hands that back as a **change**. You review it on one page, and a run of its own — the
+**lander** — puts it on the base branch once you approve.
+
+```bash
+otto state change submit <id> --repo ~/work/svc --branch svc-retry --title "Retry flaky reads" --summary-file artifacts/change.md --tests "unit: 12 passed"
+```
+
+```bash
+otto changes                       # what waits on your review, what is in hand, what landed this week
+otto changes show 3/2 --patch      # one change: what its author said, its files, its patch, what happened
+otto changes approve 3/2 7/1       # land them: the lander is woken to do it
+otto changes revise 3/2 --text "keep the old flag working"   # back to its author, in your words
+otto changes drop 3/2              # it won't land; the lander cleans up after it
+```
+
+- **A change doesn't stop its run.** Submitting isn't a question: the run goes on with its next piece
+  of work, and what happens to the change reaches it as a note — you asked for changes, it landed, it
+  was dropped. A run that hands back a lot of code doesn't wait on you between pieces.
+- **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
+  that version, its commit and its `git patch-id`. Just before it pushes, the lander checks the commit
+  it is about to put on the base (`otto state change check`): the approved commit, or a clean rebase of
+  the same patch onto a base that moved. If the code around it changed, it comes back to you as a new
+  version; if it conflicts, it goes back to its author.
+- **Every change says whose move it is**: yours, its author's, the lander's, or no one's once it has
+  landed or been dropped and cleaned up after. The Changes page lists them that way — what waits on
+  you first — and flags a change over a few hundred lines, or two open changes that touch the same
+  file. The inbox doesn't list them; it says how many wait, with a link.
+- **Only the lander lands.** It is named in `config.json` (`otto config lander <run>`), and otto refuses
+  the landing commands from any other run. So only the lander needs to be able to push; the runs that
+  write code can run under a launcher that can't. otto checks what it says, too: a change is landed
+  only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
+- **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
+  the author is told it landed, and woken to do it.
+
+The [README](../README.md#landing-changes) sets up a lander. A change's files live with the run that
+wrote it: `changes/index.json`, and each version's patch and summary beside it.
+
 ## Pausing
 
 `otto pause <id> --for 2d` (or `--until 09:00`, `--until 2026-10-19`, or neither for "until I say")
@@ -409,9 +451,9 @@ are due, run their check scripts, kill wakes past their deadline, and record cra
 **Without it, a sleeping run never wakes.** See [running as a
 service](guides/running-as-a-service.md).
 
-Poke also sends a macOS notification, once each, when a run opens a gate, sends a message,
-becomes blocked, leaves a gate unanswered past `gateStaleAfterHours`, can't start three times in a
-row, or passes 80% of a budget.
+Poke also sends a macOS notification, once each, when a run opens a gate, sends a message, hands
+back code for review, becomes blocked, leaves a gate unanswered past `gateStaleAfterHours`, can't
+start three times in a row, or passes 80% of a budget.
 
 ## What a wake costs
 
@@ -451,7 +493,7 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
 
 ```
 ~/.otto/                         ($OTTO_HOME overrides)
-  config.json                    the default workdir and launchers — see reference/config.md
+  config.json                    the default workdir, launchers and lander — see reference/config.md
   runs/<id>/
     run.json                     machine truth — see reference/run-json.md
     handoff.md                   what the next wake gets for free
@@ -462,6 +504,8 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
     outputs/index.json           what it made, kept: keys, titles, versions, stages, states
     outputs/<key>/v<n>.md        each version's text, verbatim
     outputs/<key>/v<n>.summary.md its summary, for one over a page
+    changes/index.json           code it handed back: branches, versions, decisions, what happened
+    changes/<n>-<key>/v<k>.patch each version's patch, and v<k>.summary.md what its author said
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   archive/<id>/                  a deleted run's directory, kept until `otto cleanup`

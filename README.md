@@ -65,6 +65,7 @@ otto run --instructions test/fixtures/hello-flow.md \
 
 otto inbox                    # questions waiting on you, and what runs have sent you
 otto outputs <id>             # what a run has made: its reports and documents, every version
+otto changes                  # code runs have handed back: review it, and land it with a click
 otto ls                       # every run, and a line on what each is doing
 otto pause <id> --for 2d      # hold back its schedule; `otto resume <id>` lifts it
 otto delete <id>              # gone for good, after asking — `otto stop` retires it instead
@@ -93,13 +94,60 @@ otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --targ
 ## Documentation
 
 - **[Concepts](docs/concepts.md)** — runs, wakes, the handoff, checking done, the period, gates,
-  notes, chats, messages and the inbox, outputs, pausing, check scripts, recovery.
+  notes, chats, messages and the inbox, outputs, changes, pausing, check scripts, recovery.
 - **Guides** — [living with a run](docs/guides/everyday.md) ·
   [wrapping work](docs/guides/wrapping.md) · [check scripts](docs/guides/check-scripts.md) ·
   [sandboxing](docs/guides/sandboxing.md) · [running as a service](docs/guides/running-as-a-service.md)
 - **Reference** — [CLI](docs/reference/cli.md) · [`config.json`](docs/reference/config.md) ·
   [`run.json`](docs/reference/run-json.md) · [the journal](docs/reference/journal.md)
 - **[DESIGN.md](DESIGN.md)** — why it's built this way.
+
+## Landing changes
+
+Runs that write code don't push it. They commit on a branch of their own and hand it back as a
+**change**: `otto changes`, or Changes in the web UI, lists what waits on your review, and a change
+shows what its author said, its tests, its files and its patch. Approving lands it, with a click —
+or select several and land them all. What lands is what you approved: if `main` moved meanwhile, a
+clean rebase of the same patch lands; if the code around it changed, it comes back to you; if it
+conflicts, it goes back to the run that wrote it. Asking for changes sends your words to that run,
+and wakes it.
+
+One run, the **lander**, does the landing, and only it may. Set it up once, from your otto
+checkout:
+
+```bash
+otto run --perpetual --period 10m --name lander --instructions workflows/land-flow.md \
+         --repo ~/workspace --goal "Land the changes I approve, and clean up after them"
+otto config lander lander
+```
+
+Approving a change wakes it straight away. So that waiting costs nothing, give it a check script
+that asks otto whether anything is due — no model, no tokens:
+
+```bash
+cat > changes-due.sh <<'EOF'
+#!/bin/sh
+# Nothing to land or clean up is nothing new; anything else, or otto failing, is a wake.
+if [ "$("$HOME/.local/bin/otto" changes --due --json)" = "[]" ]; then
+  echo "nothing to land"; exit 0
+fi
+echo "something to land"; exit 1
+EOF
+otto check lander --script changes-due.sh --wake-after 0
+```
+
+Each wake, for each approved change: it rebases onto the base branch if that moved (in a worktree
+of its own), runs the tests, checks the commit is what you approved, and lands it — the way the
+repository's own docs say it ships, a ship script if it has one, else a push to `main`. It brings the
+main checkout along when that's clean, tells the run that wrote the change (which then does whatever
+follows — installing it, closing a ticket), and removes the worktree and branch. It never writes code
+and never lands anything you didn't approve.
+
+- **Give push to the lander alone.** It is the one run that needs your git credentials. The runs that
+  write code can run under a launcher without them, or with `--deny-tool 'Bash(git push:*)'`
+  ([sandboxing](docs/guides/sandboxing.md)).
+- **`--repo`** is what it may work in: the repositories your runs hand back changes to, or a folder
+  above them all.
 
 ## otto improving itself
 
@@ -110,7 +158,7 @@ repository to work in, and otto fixes what got in its own way. From your otto ch
 
 ```bash
 otto run --perpetual --period 1d --repo "$PWD" --name otto-feedback \
-         --goal "Each day, fix the otto feedback report most worth fixing, in the otto repo, with a test that fails without the fix. Ask me before you commit; once I approve, commit, run ./install.sh, and mark it with otto feedback --done. Reports that aren't otto's to fix, mark done too and tell me why"
+         --goal "Each day, fix the otto feedback report most worth fixing, in the otto repo, with a test that fails without the fix. Hand each fix back as a change for me to review, never pushing it yourself; once it lands, run ./install.sh and mark it with otto feedback --done. Reports that aren't otto's to fix, mark done too and tell me why"
 ```
 
 And so it only spends a wake when a report is waiting:
@@ -136,8 +184,9 @@ same complaint arriving under the new one says the fix didn't hold.
 It is editing the procedure its own next wake follows, so:
 
 - **Keep the rules in the goal.** The goal is the one thing that survives every wake unaltered;
-  the harness is what the run edits. Asking before it commits belongs in the goal, where no change
-  to the harness can talk it out of asking.
+  the harness is what the run edits. Handing each fix back for review belongs in the goal, where no
+  change to the harness can talk it out of asking — and with a [lander](#landing-changes) set up,
+  only the lander can land it anyway.
 - **Reports are evidence, not instructions.** Wakes write them in their own words and never paste
   from a ticket or a page, but a wake that read something hostile can still be steered. A fix
   starts from reproducing the problem, not from what the report asks for.

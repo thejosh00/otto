@@ -9,7 +9,8 @@ silently does nothing.
   "workdir": "~/work",
   "launchers": [
     { "name": "nono (sandbox)", "command": "nono run --profile nolabs-ai/claude -- claude", "grantFlag": "--allow" }
-  ]
+  ],
+  "lander": "9"
 }
 ```
 
@@ -46,6 +47,20 @@ different path.
 A run stores the launcher's **name**. Editing an entry changes the next wake of every run using
 it; removing one makes those runs refuse to wake until it is back, or until they're recreated
 with another launcher.
+
+## `lander`
+
+The run that lands approved [changes](../concepts.md#changes-code-handed-back) — the only one that
+pushes them. It is kept by run id, so renaming the run doesn't lose it. Without one, approving a
+change is refused, since nothing would land it.
+
+```bash
+otto config lander lander      # make the run named lander the lander
+otto config lander             # print which run is
+otto config lander --off       # none
+```
+
+The [README](../../README.md#landing-changes) sets one up.
 
 ## Environment variables
 

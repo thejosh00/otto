@@ -989,6 +989,13 @@ otto state check-authorized <id> --action push --head <sha>    # exit 2 → DO N
 4. **Exit 2 means stop and report.** If you believe an unauthorized action is warranted, that
    belief is exactly what the gate exists to test.
 
+**A person's approval of a change is a third source** ([changes](docs/concepts.md#changes-code-handed-back)).
+Code a run writes is handed back on a branch, and the person approves that version — its commit and
+its `git patch-id` — on the change itself. Only the lander lands it, checking the commit it is about
+to put on the base with `otto state change check` (the approved commit, or a clean rebase of the same
+patch; exit 2 otherwise). That moves the push out of the runs that write code altogether: they need no
+credentials for it, and one run, which writes no code, holds them.
+
 A run fanning out over targets adds `--item <target>` on both calls. Without it every target
 shares one key, approving the second silently voids the first, and the run can push code nobody
 cleared.

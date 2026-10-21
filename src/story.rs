@@ -425,7 +425,8 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                 let text = str_of(v, "file").and_then(|f| std::fs::read_to_string(dir.join(f)).ok()).unwrap_or_default();
                 let standing = v.get("standing").and_then(Value::as_bool).unwrap_or(false);
                 // A reply to a message is told as the reply, by `message-done`.
-                if text.starts_with("In reply to message ") {
+                // Likewise what was said about a change is told by `change-moved`.
+                if text.starts_with("In reply to message ") || text.starts_with(crate::changes::NOTE_ABOUT_PREFIX) {
                     None
                 } else if let Some(rest) = text.strip_prefix(crate::outputs::NOTE_ABOUT_PREFIX) {
                     // "About output design@2, \"Design\":\n\n<words>"
@@ -479,6 +480,23 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "check-cleared" => happening("status", "Stopped checking for news before each run".to_string()),
             "renamed" => happening("you", format!("You renamed it from {}", str_of(v, "from").unwrap_or("?"))),
             "budget-exhausted" => happening("trouble", format!("Reached its budget: {}", str_of(v, "reason").unwrap_or(""))),
+            "change-submitted" => {
+                let title = str_of(v, "title").unwrap_or("");
+                match v.get("version").and_then(Value::as_u64).unwrap_or(1) {
+                    1 => happening("made", format!("Handed back code: {title}")),
+                    n => happening("made", format!("Handed back code again: {title} (v{n})")),
+                }
+            }
+            "change-moved" => {
+                let what = first_line(str_of(v, "what").unwrap_or(""), 200);
+                match (str_of(v, "by"), str_of(v, "state")) {
+                    (Some("person"), _) => happening("you", format!("You {what}")),
+                    (_, Some("landed")) if what.starts_with("landed") => happening("status", format!("Its change {what}")),
+                    (Some("author"), _) => happening("status", format!("It {what}")),
+                    (_, Some("revising")) => happening("trouble", format!("The lander {what}")),
+                    _ => None,
+                }
+            }
             "output-published" => {
                 let key = str_of(v, "output").unwrap_or("");
                 let title = str_of(v, "title").unwrap_or(key);

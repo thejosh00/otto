@@ -134,6 +134,8 @@ there would.
    finished and it is quick; otherwise check a recorded result exists for the commit it claims.
 4. **Check the todo.** Every item `[x]`, or `[-]`/`[!]` with its reason. One still `[ ]` or `[~]` is
    unfinished unless you can see that it happened.
+   Likewise every change the run handed back: landed, or dropped (`otto changes --all`). One still
+   waiting for review, being revised or being landed is unfinished work.
 5. **Don't fix anything**, even a one-line fix. A fix you make is a fix nobody checks. Say what is
    missing and reopen; the next wake does it.
 6. **Decide**, and say it specifically:
@@ -249,6 +251,7 @@ you are wrapping assumes something a wake cannot provide, translate it:
 | "tell me", "let me know", "notify me", "report back" | Send a message (below): it lands in the person's inbox and notifies them |
 | "write a report", "produce a document", "generate a summary" — anything they'd want to find again | Publish it as an output (below), and send a message pointing at it |
 | "reply to them", "post a response", "answer the user in the channel" | Publish the explanation as an output with the reply as its `--draft`, and send a `draft` message pointing at it. Posting it is theirs to do |
+| "hand it back for review", "ask me before you commit", "leave it on a branch for me", "open a PR", "ship it once I approve" | Commit it on a branch of its own and submit it as a change (below). Landing it is the lander's, once the person approves |
 | Anything assuming earlier steps are still in context | Read the handoff and the artifacts. There is no earlier context |
 | Reading a big diff, a whole test suite, a long file | Delegate to a subagent; keep the conclusion, not the contents |
 
@@ -350,6 +353,48 @@ then tell them    → otto state message <id> --kind report --title "Today's rep
   information is an output and a message pointing at it.
 - The person may reply when they mark it done. A reply reaches you as a note that starts "In reply
   to message NNN" — follow it like any other note.
+
+## Changes to code
+
+When the work changes code in a repository, it goes back to the person as a **change**: commits on
+a branch of their own, which the person reviews on one page and a run of its own — the lander —
+puts on the base branch once they approve. You never push, merge or rebase the base branch
+yourself, and you don't open the PR: that is the lander's, and only the lander may.
+
+```
+otto state lock <id> --repo <repo>       # then make the worktree and branch; unlock once they exist
+… do the work in the worktree, commit it, run its tests …
+write what you'd tell the person reviewing it → artifacts/change-<slug>.md
+otto state change submit <id> --repo <repo> --branch <branch> --title "<what it does>" \
+     --summary-file artifacts/change-<slug>.md --tests "<what the tests said>"
+→ then carry on with the rest of the work
+```
+
+- **Where it goes and what it's called**: as the instructions you wrap say, when they say. Otherwise
+  a worktree at `<the repo's parent>/.work-trees/<run name>/<slug>`, on branch `<run name>/<slug>`.
+- **One concern a change.** A person reviews it in a sitting, so two unrelated fixes are two
+  branches and two changes. Over a few hundred lines, otto says so; split it if it is more than one
+  thing.
+- **The summary is the review.** What it does and why, first; then what could go wrong, and what
+  you checked. Written for someone who wasn't here, like a gate's question.
+- **Committed, all of it.** otto refuses a worktree with changes nobody committed — what the person
+  would review wouldn't be what's there.
+- **It doesn't stop the run.** Submitting is not a gate: carry on with the next piece of work. Don't
+  ask at a gate whether to commit — the change is that question, asked better.
+- **What happens to it reaches you as a note** that starts `About change <n>@v<k>`:
+  - *the person asked for changes*, or *the lander couldn't land it*: work in the same worktree, commit,
+    and submit again with the same branch — it comes back to them as the next version.
+  - *it landed*: do whatever your instructions say follows — install it, mark the ticket — and nothing
+    more to the change. Leave the worktree and branch: the lander removes them.
+  - *it was dropped*: it won't land; take it into account, and leave the cleaning up to the lander.
+- **No longer wanted** — overtaken, or the wrong approach: `otto state change withdraw <id> <n>
+  --reason "…"`.
+- **When only your changes are left** to finish the work, sleep long (`arm-timer --in`, with
+  `--waiting-for "change <n> to land"`): the note about each one wakes you.
+
+`otto changes` lists every change and whose move it is. A run whose instructions carry their own
+way to push with an authorization (dev-flow does) keeps it; everything else hands code back this
+way.
 
 ## The done-condition
 
@@ -498,7 +543,8 @@ question, or mean more work — and ask or claim again only if you still mean to
 
 Pushing, merging, and commenting on someone's ticket cannot be undone by deleting a file. They
 are never taken on your own judgement, and never on your recollection of an approval — you have
-no recollection.
+no recollection. Code you wrote reaches its base branch as a change (above), landed by
+the lander, never by a push of yours.
 
 ```
 otto state check-authorized <id> --action push --head <sha>    # exit 2 → DO NOT ACT

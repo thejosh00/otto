@@ -1,5 +1,6 @@
 //! Desktop notifications for the moments a run needs a person: a gate opened, a gate left
-//! unanswered past `policy.gateStaleAfterHours`, a run blocked, a budget past 80%.
+//! unanswered past `policy.gateStaleAfterHours`, a run blocked, a budget past 80%, code handed back
+//! for review.
 //!
 //! Sent from poke rather than from the wake that caused them, for two reasons. A wake under
 //! a sandboxing launcher may not be able to reach the notification centre at all;
@@ -115,6 +116,21 @@ pub fn due(state: &RunState, now: OffsetDateTime, elapsed_hours: f64, short: &st
     notices
 }
 
+/// A notice for each change of the run waiting on the person's review, one per version: a change
+/// sent back and handed back again is new to review. Kept apart from `due`, which reads only
+/// `run.json`: changes are in their own index.
+pub fn change_notices(run_dir: &std::path::Path) -> Vec<Notice> {
+    crate::changes::index_or_empty(run_dir)
+        .changes
+        .iter()
+        .filter(|c| c.whose_move() == crate::changes::Move::You)
+        .map(|c| Notice {
+            key: format!("change:{}@v{}", c.n, c.latest().k),
+            message: format!("Code to review: {}. otto changes", crate::exec::truncate(&c.title, DETAIL_MAX_CHARS)),
+        })
+        .collect()
+}
+
 /// Which of `due` are new, and what `notified` should become: the keys still due, plus the new
 /// ones stamped `now`. `None` when nothing changes, so a quiet pass writes nothing.
 fn reconcile(
@@ -144,7 +160,9 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
 
         // Decide from the snapshot first, so the common case — nothing new — takes no lock and
         // rewrites no `run.json`.
-        let notices = due(snapshot, now, crate::wake::elapsed_hours(snapshot), &short);
+        let dir = crate::paths::run_dir(&snapshot.id).ok();
+        let mut notices = due(snapshot, now, crate::wake::elapsed_hours(snapshot), &short);
+        notices.extend(dir.as_deref().map(change_notices).unwrap_or_default());
         if reconcile(&snapshot.notified, &notices, stamp).is_none() {
             continue;
         }
@@ -158,7 +176,8 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
         // The name, not just the number: on a phone, `#7` alone says nothing about which run.
         let title = format!("otto · {}", snapshot.label());
         let sent = crate::state::transaction(&snapshot.id, |path, state| {
-            let notices = due(state, now, crate::wake::elapsed_hours(state), &short);
+            let mut notices = due(state, now, crate::wake::elapsed_hours(state), &short);
+            notices.extend(change_notices(path));
             let Some((fresh, next)) = reconcile(&state.notified, &notices, stamp) else {
                 return Ok(Vec::new());
             };
