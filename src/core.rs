@@ -684,7 +684,8 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
     let running = LockLiveness.probe(&id).is_busy();
     let short = short_id(&id);
     let blocked_explanation = (state.status == Status::Blocked).then(|| blocked_explanation(&state, &short));
-    let gate = state.gate.as_ref().map(|gate| {
+    // A finished run's question is not offered: answering it is refused (`pending_gate`).
+    let gate = state.gate.as_ref().filter(|_| !state.status.is_terminal()).map(|gate| {
         let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
         let options = crate::gate::parse_options(&question);
         let default = crate::gate::parse_default(&question, &options);
@@ -823,6 +824,21 @@ pub fn pending_gate(id: Option<&str>) -> Result<PendingGate, OttoError> {
     };
     let short = short_id(&id);
     let state = read_run(&id)?;
+    // A stopped run's question went with it. Answering one used to flip the run back to `running`
+    // with nothing in the journal to say so, leaving its next wake to choose between run.json and
+    // the journal. `otto resume` is the way back, journaled, and it keeps the question open.
+    match state.status {
+        Status::Done => {
+            return Err(OttoError::conflict(format!("{id} is done — nothing is being asked; start a new run for more work")))
+        }
+        Status::Stopped | Status::Failed => {
+            return Err(OttoError::conflict(format!(
+                "{id} is {} — answering would not bring it back. `otto resume {short}` first, and it waits on its question again",
+                crate::state::commands::status_str(state.status)
+            )))
+        }
+        _ => {}
+    }
     let gate = state.gate.as_ref().ok_or_else(|| {
         OttoError::conflict(format!("{id} has no gate open — nothing is being asked. `otto show {short}` for where it stands"))
     })?;

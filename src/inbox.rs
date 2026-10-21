@@ -71,7 +71,8 @@ pub fn inbox(all: bool) -> Result<Inbox, OttoError> {
             options: Vec::new(),
             answer: None,
         };
-        if let Some(gate) = &state.gate {
+        // A finished run's question can't be answered (`core::pending_gate`), so it isn't asked.
+        if let Some(gate) = state.gate.as_ref().filter(|_| !state.status.is_terminal()) {
             let question = crate::gate::read_question(&dir, gate).unwrap_or_default();
             let title = crate::gate::title(&question, crate::story::QUESTION_TITLE_CHARS);
             let title = if title.is_empty() { gate.slug.replace('-', " ") } else { title };
@@ -163,5 +164,21 @@ mod tests {
         let answered = history.items.iter().find(|i| i.kind == "question").unwrap();
         assert_eq!((answered.answer.as_deref(), answered.open), (Some("Approve"), false));
         assert_eq!(answered.title, "Approve the plan?");
+    }
+
+    /// A stopped run's question can't be answered (`core::pending_gate`), so the inbox must not
+    /// ask for an answer it would refuse.
+    #[test]
+    fn a_stopped_run_asks_nothing() {
+        let _h = TempHome::new();
+        test_init("1", "a goal").unwrap();
+        crate::state::ops::open_gate("1", "plan-review", "# Approve the plan?\n\n## Options\n- Approve\n- Revise", None).unwrap();
+        assert_eq!(inbox(false).unwrap().open, 1);
+        crate::state::transaction("1", |_p, state| {
+            state.status = crate::state::Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(inbox(false).unwrap().open, 0);
     }
 }

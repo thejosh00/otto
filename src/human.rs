@@ -1946,6 +1946,42 @@ mod tests {
         assert!(err.to_string().contains("no gate open"));
     }
 
+    /// The bug this fixes: answering a question a stopped run still had open flipped it back to
+    /// `running` and started a wake, with nothing in the journal to say it had come back. The
+    /// wake found run.json saying running and the journal saying stopped, and had to guess which
+    /// to believe. `otto resume` is the way back, and it leaves the question open to answer.
+    #[test]
+    fn answering_a_stopped_run_is_refused_until_it_is_resumed() {
+        let _h = TempHome::new();
+        test_init("h-stopped-gate", "a goal").unwrap();
+        gate_open("h-stopped-gate", "review");
+        stop(StopArgs { id: "h-stopped-gate".into(), reason: Some("finished with it".into()), failed: false }).unwrap();
+        let answer_it = || {
+            answer(AnswerArgs {
+                id: Some("h-stopped-gate".into()),
+                choice: Some("Approve".into()),
+                text: None,
+                file: None,
+                no_wake: true,
+            })
+        };
+
+        let err = answer_it().expect_err("a stopped run's question is not answerable");
+        assert_eq!(err.code, 2);
+        assert!(err.to_string().contains("otto resume"), "says the way back: {err}");
+        let state = read_run("h-stopped-gate").unwrap();
+        assert_eq!(state.status, Status::Stopped, "still stopped");
+        assert!(state.gate.is_some(), "the question is kept for when it is resumed");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("h-stopped-gate").unwrap().join("journal.jsonl")).unwrap();
+        assert!(!journal.contains("\"gate-closed\""), "nothing was answered");
+        assert!(crate::core::run_detail(Some("h-stopped-gate")).unwrap().gate.is_none(), "nor offered to answer");
+
+        resume(ResumeArgs { id: "h-stopped-gate".into(), reason: None, no_wake: true }).unwrap();
+        assert_eq!(read_run("h-stopped-gate").unwrap().status, Status::AwaitingHuman);
+        answer_it().unwrap();
+        assert_eq!(read_run("h-stopped-gate").unwrap().status, Status::Running);
+    }
+
     #[test]
     fn answering_with_nothing_to_say_is_a_usage_error() {
         let _h = TempHome::new();
