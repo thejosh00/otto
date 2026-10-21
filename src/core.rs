@@ -620,6 +620,8 @@ pub struct RunDetail {
     pub messages: Vec<MessageLine>,
     /// What it has made, kept: its stages and its outputs, newest change first (`outputs::view`).
     pub outputs: crate::outputs::OutputsView,
+    /// Code it has handed back, newest first (`changes`).
+    pub changes: Vec<crate::changes::Line>,
     /// Its last week, for a picture.
     pub timeline: crate::story::Timeline,
     /// What has happened lately, in words, newest first.
@@ -725,6 +727,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         timeline: crate::story::timeline(&dir, &state),
         lately: crate::story::lately(&dir, LATELY_SHOWN),
         outputs: crate::outputs::view(&dir, &state),
+        changes: crate::changes::of_run(&state),
         todo_left_open: todo_left_open(&state, todo.as_ref().map(|t| &t.counts)),
         todo,
         activity: activity(&dir, ACTIVITY_SHOWN),

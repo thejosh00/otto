@@ -103,14 +103,6 @@ pub enum LandMode {
     Push,
 }
 
-impl LandMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            LandMode::Push => "push",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Index {

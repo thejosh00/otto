@@ -759,9 +759,20 @@ pub fn inbox(args: InboxArgs) -> Result<(), OttoError> {
         println!("{}", serde_json::to_string_pretty(&inbox)?);
         return Ok(());
     }
+    let changes_line = match inbox.changes {
+        0 => None,
+        1 => Some("1 change waiting for your review: otto changes".to_string()),
+        n => Some(format!("{n} changes waiting for your review: otto changes")),
+    };
     if inbox.items.is_empty() {
         println!("nothing in your inbox{}", if args.all { "" } else { " (--all shows what you've answered and read)" });
+        if let Some(line) = changes_line {
+            println!("{line}");
+        }
         return Ok(());
+    }
+    if let Some(line) = changes_line {
+        println!("{line}\n");
     }
     let from_width = inbox.items.iter().map(|i| crate::paths::label(&i.short, &i.name).len()).max().unwrap_or(4);
     let title_width = terminal_width().saturating_sub(from_width + 30).clamp(30, 80);

@@ -110,7 +110,8 @@ a { color: inherit; }
 }
 .brand-ink { stroke: var(--ink); }
 
-nav { display: flex; gap: 4px; overflow-x: auto; }
+nav { display: flex; gap: 4px; overflow-x: auto; min-width: 0; }
+@media (max-width: 520px) { .top { gap: 10px; } nav a { padding: 6px 7px; } }
 nav a {
   padding: 6px 10px;
   border-radius: 7px;
@@ -698,3 +699,49 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 details.more { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
 details.more[open] { display: grid; gap: 14px; }
 details.more fieldset { background: var(--bg); }
+
+/* ===========================================================================
+   Changes — code an agent handed back
+   =========================================================================== */
+.nav-count { display: inline-block; min-width: 18px; height: 18px; margin-left: 4px; padding: 0 5px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); font: 700 11px/18px var(--sans); text-align: center; vertical-align: 1px; }
+.changes-list .list-head { padding: 12px 14px 6px; border-bottom: 1px solid var(--line); }
+.change-item { grid-template-columns: 18px minmax(0, 1fr) auto; }
+.change-item input[type="checkbox"] { margin: 0; align-self: center; width: 15px; height: 15px; }
+.change-item .chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.batch { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--accent-soft); border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+.batch[hidden] { display: none; }
+.flag { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); white-space: nowrap; }
+.pm { font: 12.5px var(--mono); white-space: nowrap; }
+.pm .plus { color: var(--ok); }
+.pm .minus { color: var(--bad); }
+.change-meta { margin: 0; font-size: 13.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.change-meta code, .files code, .pf summary code { font-size: 12.5px; }
+.state-line { font-size: 14px; font-weight: 600; }
+.tests { margin: 0; font-size: 14px; }
+.decide { display: grid; gap: 10px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: var(--radius); background: var(--accent-soft); max-width: 70ch; }
+.decide textarea { background: var(--surface); }
+.decide .hint { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.files { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 13.5px; }
+.files li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; overflow-wrap: anywhere; }
+.patch { display: grid; gap: 8px; min-width: 0; }
+.pf { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-width: 0; }
+.pf summary { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; cursor: pointer; overflow-wrap: anywhere; }
+.pf summary .pm { margin-left: auto; }
+.pf[open] summary { border-bottom: 1px solid var(--line); }
+.pf-body { overflow-x: auto; font: 12.5px/1.5 var(--mono); padding: 4px 0; }
+.pl { display: grid; grid-template-columns: 44px 44px minmax(max-content, 1fr); min-width: 100%; width: max-content; }
+.pl .ln { color: var(--ink-3); text-align: right; padding-right: 8px; user-select: none; }
+.pl .code { white-space: pre; padding-right: 12px; }
+.pl .pm-mark { display: inline-block; width: 14px; color: var(--ink-3); user-select: none; }
+.pl.add { background: var(--ok-soft); }
+.pl.add .pm-mark { color: var(--ok); }
+.pl.del { background: var(--bad-soft); }
+.pl.del .pm-mark { color: var(--bad); }
+.pl.hunk { background: var(--surface-2); color: var(--ink-3); }
+.pl.meta { color: var(--ink-3); font-style: italic; }
+.timeline strong { font-weight: 600; }
+.changes-line { margin: 10px; }
+@media (max-width: 760px) {
+  .files li { grid-template-columns: 76px minmax(0, 1fr); }
+  .pl { grid-template-columns: 34px 34px minmax(max-content, 1fr); }
+}

@@ -400,3 +400,44 @@ pub async fn agent_stop() -> Response {
 pub async fn poke() -> Response {
     blocking(|| Ok::<_, OttoError>(crate::poke::poke_pass(&crate::poke::PokeArgs::default()))).await
 }
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangesQuery {
+    all: bool,
+}
+
+pub async fn changes(Query(q): Query<ChangesQuery>) -> Response {
+    blocking(move || crate::changes::list(q.all)).await
+}
+
+pub async fn change(Path((id, n)): Path<(String, u32)>, Query(q): Query<OutputQuery>) -> Response {
+    blocking(move || crate::changes::read(&crate::changes::ChangeRef::parse(&format!("{id}/{n}"))?, q.v)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApproveBody {
+    /// `<run>/<number>`, one or more.
+    changes: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+pub async fn approve_changes(Json(body): Json<ApproveBody>) -> Response {
+    blocking(move || crate::core::approve_changes(&body.changes, body.note.as_deref(), false)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeWordsBody {
+    text: Option<String>,
+}
+
+pub async fn revise_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
+    blocking(move || crate::core::revise_change(&format!("{id}/{n}"), body.text.as_deref().unwrap_or(""), false)).await
+}
+
+pub async fn drop_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
+    blocking(move || crate::core::drop_change(&format!("{id}/{n}"), body.text.as_deref(), false)).await
+}

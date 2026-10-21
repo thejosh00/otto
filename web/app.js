@@ -333,6 +333,9 @@ async function refreshChrome() {
     count.textContent = inbox.open > 99 ? "99+" : String(inbox.open);
     count.hidden = inbox.open === 0;
     document.getElementById("inbox-btn").title = inbox.open ? `${inbox.open} waiting for you` : "Nothing waiting for you";
+    const changes = document.getElementById("changes-count");
+    changes.textContent = inbox.changes > 99 ? "99+" : String(inbox.changes);
+    changes.hidden = !inbox.changes;
   } catch { /* the server is down; the next refresh says so */ }
   try {
     const health = await api("/health");
@@ -657,7 +660,9 @@ function inboxView(selected) {
     items = data.items.filter((i) => inboxFilter === "all" || (inboxFilter === "todo" ? i.open : !i.open));
     document.getElementById("inbox-summary").textContent = data.open ? `${data.open} waiting for you` : "Nothing waiting for you";
     drawFilters(data.open);
-    listBox.replaceChildren(filters, items.length
+    listBox.replaceChildren(filters,
+      data.changes ? h("a.inbox-line.changes-line", { href: "#/changes" }, `${data.changes} ${data.changes === 1 ? "change waits" : "changes wait"} for your review →`) : null,
+      items.length
       ? h("div", items.map((i) => h("a.mail-item" + (i.open ? "" : ".done"), {
         href: `#/inbox/${itemKey(i)}`,
         "aria-current": String(itemKey(i) === selected),
@@ -810,6 +815,291 @@ function inboxView(selected) {
 
 const runNameCache = {};
 const LATELY_FIRST = 8;
+
+// ---------------------------------------------------------------------------
+// Changes — code an agent handed back (`changes`)
+// ---------------------------------------------------------------------------
+//
+// One list of every change, by whose move it is: what waits on you first, then what an agent has
+// in hand, then what finished this week. Picking one shows what its author said, the files, the
+// patch, and what happened to it; landing it is one click, and so is landing several.
+
+const MOVE_HEADINGS = [["you", "Waiting on you"], ["agents", "In hand"], ["nobody", "Done this week"]];
+const shortSha = (s) => (s || "").slice(0, 7);
+
+/** Where a change is, in a few plain words. */
+function changeStateText(l) {
+  switch (l.state) {
+    case "review": return l.version > 1 ? `Waiting for your review — version ${l.version}` : "Waiting for your review";
+    case "revising": return l.authorGone ? "Sent back, but its agent has stopped" : "Its agent is revising it";
+    case "approved": return "Approved — waiting for the lander";
+    case "landing": return "The lander is landing it";
+    case "landed": return l.move === "lander" ? `Landed at ${shortSha(l.landedSha)} — cleaning up` : `Landed at ${shortSha(l.landedSha)}`;
+    default: return l.move === "lander" ? "Dropped — cleaning up" : "Dropped";
+  }
+}
+
+function changeChip(l) {
+  const [cls, text] = l.move === "you" ? ["question", "Your review"]
+    : l.state === "landed" ? ["done", "Landed"]
+    : l.state === "dropped" ? ["update", "Dropped"]
+    : l.state === "revising" ? ["draft", "Being revised"]
+    : ["report", l.state === "landing" ? "Landing" : "Approved"];
+  return h(`span.kind.${cls}`, text);
+}
+
+function changeFlags(l) {
+  const flags = [];
+  if (l.large) flags.push(h("span.flag", { title: "A person reviews one concern at a time" }, `Large: ${l.add + l.del} lines`));
+  if (l.overlaps.length) flags.push(h("span.flag", { title: "Whichever lands second may not apply cleanly" }, `Touches what ${l.overlaps.join(", ")} does`));
+  return flags;
+}
+
+const lineCount = (l) => h("span.pm", h("span.plus", `+${l.add}`), " ", h("span.minus", `−${l.del}`));
+
+function changesView(selected) {
+  const listBox = h("div.mail-list.changes-list");
+  const pane = h("div.mail-pane");
+  const picked = new Set();
+  let data = null;
+  let shownKey = null;
+  const keyOf = (l) => `${l.run}/${l.n}`;
+  view.replaceChildren(
+    h("div.view-title", h("h1", "Changes"), h("span.faint", { id: "changes-summary" })),
+    h("div", { id: "lander-banner" }),
+    h("div.mail", listBox, pane));
+
+  const batch = h("div.batch");
+  const drawBatch = () => {
+    batch.hidden = picked.size === 0;
+    batch.replaceChildren(
+      h("span", `${picked.size} picked`),
+      h("button.small.primary", { onclick: (e) => land([...picked], e.currentTarget) }, picked.size === 1 ? "Land it" : `Land ${picked.size}`),
+      h("button.small.ghost", { onclick: () => { picked.clear(); drawList(); } }, "Clear"));
+  };
+
+  async function land(keys, button) {
+    const r = await busy(button, () => api("/changes/approve", { changes: keys }));
+    if (!r) return;
+    keys.forEach((k) => picked.delete(k));
+    toast(`${r.decided.length === 1 ? "Approved" : `Approved ${r.decided.length}`} — ${r.woke ? "the lander is on it" : r.notWoken ? `the lander lands ${r.decided.length === 1 ? "it" : "them"} when it next runs (${r.notWoken})` : "the lander lands them next"}`);
+    if (keys.includes(selected)) moveOn();
+    await refresh();
+    refreshChrome();
+  }
+
+  // Done with one: on to the next that waits on you, as an inbox does.
+  function moveOn() {
+    const yours = data ? data.changes.filter((l) => l.move === "you" && keyOf(l) !== selected) : [];
+    selected = yours.length ? keyOf(yours[0]) : null;
+    history.replaceState(null, "", selected ? `#/changes/${selected}` : "#/changes");
+  }
+
+  function drawList() {
+    const groups = MOVE_HEADINGS.map(([move, title]) => [title, data.changes.filter((l) => move === "agents" ? l.move === "author" || l.move === "lander" : l.move === move), move]);
+    const parts = [batch];
+    for (const [title, rows, move] of groups) {
+      if (!rows.length) continue;
+      parts.push(h("p.label.list-head", `${title} · ${rows.length}`));
+      for (const l of rows) {
+        const key = keyOf(l);
+        const box = move === "you" ? h("input", {
+          type: "checkbox", checked: picked.has(key), "aria-label": `Pick ${l.title}`,
+          onclick: (e) => { e.stopPropagation(); e.target.checked ? picked.add(key) : picked.delete(key); drawBatch(); },
+        }) : h("span");
+        parts.push(h("a.mail-item.change-item" + (move === "nobody" ? ".done" : ""), { href: `#/changes/${enc(l.run)}/${l.n}`, "aria-current": String(key === selected), dataset: { key } },
+          box,
+          h("span.from", `${l.name} · ${l.repo.split("/").pop()}`), h("span.when", relative(l.since)),
+          h("span.title", l.title),
+          h("span.chip-row", changeChip(l), lineCount(l), ...changeFlags(l))));
+      }
+    }
+    if (!data.changes.length) parts.push(h("p.mail-empty", "Nothing yet. When an agent hands back code, it waits here for you."));
+    listBox.replaceChildren(...parts);
+    drawBatch();
+  }
+
+  async function refresh() {
+    try {
+      data = await api("/changes");
+    } catch (err) {
+      listBox.replaceChildren(h("div.banner.bad", err.message));
+      return;
+    }
+    const yours = data.changes.filter((l) => l.move === "you").length;
+    document.getElementById("changes-summary").textContent = yours ? `${yours} waiting for your review` : "Nothing waiting for your review";
+    const banner = document.getElementById("lander-banner");
+    const warning = !data.lander
+      ? h("div.banner.warn", h("div", "No lander is set up, so nothing lands an approved change. Start one and name it with ", h("code", "otto config lander <agent>"), " — the README's \"Landing changes\" says how."))
+      : !data.lander.alive ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, has stopped, so nothing lands. Resume it, or name another with `, h("code", "otto config lander"), "."))
+      : null;
+    banner.replaceChildren(...(warning ? [warning] : []));
+    for (const k of [...picked]) if (!data.changes.some((l) => keyOf(l) === k && l.move === "you")) picked.delete(k);
+    if (!selected && yours && window.matchMedia("(min-width: 761px)").matches) {
+      selected = keyOf(data.changes.find((l) => l.move === "you"));
+      history.replaceState(null, "", `#/changes/${selected}`);
+    }
+    drawList();
+    if (selected !== shownKey) drawPane();
+  }
+
+  async function drawPane(version) {
+    shownKey = selected;
+    pane.classList.toggle("blank", !selected);
+    if (!selected) { pane.replaceChildren(h("p.faint", data && data.changes.length ? "Choose a change on the left." : "All caught up.")); return; }
+    const [run, n] = selected.split("/");
+    pane.replaceChildren(h("p.faint", "Loading…"));
+    let d;
+    try {
+      d = await api(`/changes/${enc(run)}/${n}${version ? `?v=${version}` : ""}`);
+    } catch (err) {
+      pane.replaceChildren(h("div.banner.bad", err.message));
+      return;
+    }
+    if (shownKey !== selected) return; // another was picked while this one loaded
+    pane.replaceChildren(...changeDetail(d, { land, moveOn: () => { moveOn(); refresh(); refreshChrome(); }, version: (k) => drawPane(k) }));
+  }
+
+  // j/k to move, a to land, r to ask for changes — not while typing.
+  const keys = (e) => {
+    if (e.target.closest("input, textarea, select") || e.metaKey || e.ctrlKey || e.altKey || !data) return;
+    const items = [...listBox.querySelectorAll(".change-item")];
+    const at = items.findIndex((a) => a.dataset.key === selected);
+    if (e.key === "j" || e.key === "k") {
+      const next = items[Math.max(0, Math.min(items.length - 1, at + (e.key === "j" ? 1 : -1)))];
+      if (next) { location.hash = next.getAttribute("href"); e.preventDefault(); }
+    } else if (e.key === "a" && selected && data.changes.some((l) => keyOf(l) === selected && l.move === "you")) {
+      const button = pane.querySelector("button.land");
+      if (button) { button.click(); e.preventDefault(); }
+    } else if (e.key === "r") {
+      const box = pane.querySelector("textarea.revise");
+      if (box) { box.focus(); e.preventDefault(); }
+    }
+  };
+  document.addEventListener("keydown", keys);
+  onLeave(() => document.removeEventListener("keydown", keys));
+
+  refresh();
+  every(10000, refresh);
+}
+
+/** One change: what its author said, what to do about it, its files and patch, what happened. */
+function changeDetail(d, actions) {
+  const l = d.line;
+  const c = d.change;
+  const v = d.version;
+  const latest = c.versions[c.versions.length - 1];
+  const yours = l.move === "you" && v.k === latest.k;
+  const parts = [
+    h("div.pane-head",
+      h("div.row", h("a", { href: `#/run/${enc(l.run)}` }, l.name), changeChip(l), h("span.faint", relative(l.since))),
+      h("h2", c.title),
+      h("p.change-meta", h("code", c.branch), " → ", h("code", c.base), ` in ${l.repo} · `,
+        `${v.commits} ${v.commits === 1 ? "commit" : "commits"}, ${v.stat.files.length} ${v.stat.files.length === 1 ? "file" : "files"}, `, lineCount(v.stat))),
+    h("div.row", h("span.state-line", changeStateText(l)), ...changeFlags(l)),
+  ];
+  if (c.versions.length > 1) {
+    parts.push(h("div.row.versions", h("span.label", "Version"),
+      c.versions.map((x) => h("button.small" + (x.k === v.k ? ".primary" : ""), {
+        title: `${x.by === "lander" ? "Rebased by the lander" : "From its agent"}, ${relative(x.at)}`,
+        onclick: () => actions.version(x.k),
+      }, `v${x.k}${x.by === "lander" ? " (rebased)" : ""}`))));
+  }
+  parts.push(md(d.summary));
+  if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
+  if (yours) {
+    const words = h("textarea.revise", { rows: 3, placeholder: "What to change — its agent reads your words (r)" });
+    parts.push(h("div.decide",
+      h("div.row",
+        h("button.primary.land", {
+          disabled: !d.lander,
+          title: d.lander ? `The lander puts it on ${c.base} and pushes it (a)` : "No lander is set up",
+          onclick: (e) => actions.land([`${l.run}/${l.n}`], e.currentTarget),
+        }, `Land on ${c.base}`),
+        h("button.danger", {
+          onclick: async (e) => {
+            const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/drop`, { text: words.value.trim() || null }));
+            if (!r) return;
+            toast("Dropped — it won't land, and its agent is told");
+            actions.moveOn();
+          },
+        }, "Drop")),
+      words,
+      h("div.row", h("button", {
+        onclick: async (e) => {
+          if (!words.value.trim()) { toast("Say what to change first", true); words.focus(); return; }
+          const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/revise`, { text: words.value }));
+          if (!r) return;
+          toast(r.woke ? "Sent back — its agent is on it" : `Sent back — its agent reads it when it next runs${r.notWoken ? ` (${r.notWoken})` : ""}`);
+          actions.moveOn();
+        },
+      }, "Ask for changes")),
+      d.lander ? null : h("p.hint", "No lander is set up. To land it yourself: ", h("code", d.commands[1] || d.commands[0]))));
+  }
+  parts.push(h("p.label", "Files"), h("ul.files", v.stat.files.map((f) =>
+    h("li", f.add == null ? h("span.pm.faint", "binary") : lineCount(f), " ", h("code", f.path)))));
+  parts.push(d.patch != null ? patchView(d.patch) : h("p.faint", "Its patch was too big to keep here. To read it: ", h("code", d.commands[0])));
+  parts.push(h("p.label", "What happened"), h("ul.lately.timeline", [...c.timeline].reverse().map((m) =>
+    h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : "otto"), " ", m.what)))));
+  return parts;
+}
+
+/**
+ * A unified diff as files a person reads: each one folded behind its name and counts, opened on a
+ * click — the first few open already — with old and new line numbers beside each line.
+ */
+function patchView(patch) {
+  const files = [];
+  let file = null;
+  for (const raw of patch.split("\n")) {
+    if (raw.startsWith("diff --git ")) {
+      const m = raw.match(/^diff --git a\/(.*) b\/(.*)$/);
+      file = { path: m ? m[2] : raw.slice(11), from: m ? m[1] : null, note: [], lines: [], add: 0, del: 0 };
+      files.push(file);
+    } else if (!file) {
+      continue;
+    } else if (raw.startsWith("@@")) {
+      const m = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/);
+      file.lines.push({ kind: "hunk", text: m ? m[3].trim() : raw, o: m ? Number(m[1]) : 0, n: m ? Number(m[2]) : 0 });
+    } else if (!file.lines.length) {
+      if (raw.startsWith("new file")) file.note.push("new file");
+      else if (raw.startsWith("deleted file")) file.note.push("deleted");
+      else if (raw.startsWith("rename from")) file.note.push(`renamed from ${raw.slice(12)}`);
+      else if (raw.startsWith("Binary files")) file.note.push("binary");
+    } else if (raw.startsWith("+")) { file.lines.push({ kind: "add", text: raw.slice(1) }); file.add++; }
+    else if (raw.startsWith("-")) { file.lines.push({ kind: "del", text: raw.slice(1) }); file.del++; }
+    else if (raw.startsWith(" ")) file.lines.push({ kind: "ctx", text: raw.slice(1) });
+    else if (raw.startsWith("\\")) file.lines.push({ kind: "meta", text: raw.slice(2) });
+  }
+  const render = (f) => {
+    const box = h("div.pf-body");
+    let o = 0;
+    let n = 0;
+    for (const line of f.lines) {
+      if (line.kind === "hunk") {
+        o = line.o; n = line.n;
+        box.append(h("div.pl.hunk", h("span.ln", "⋯"), h("span.ln"), h("span.code", line.text)));
+        continue;
+      }
+      if (line.kind === "meta") { box.append(h("div.pl.meta", h("span.ln"), h("span.ln"), h("span.code", line.text))); continue; }
+      const old = line.kind === "add" ? "" : o++;
+      const nu = line.kind === "del" ? "" : n++;
+      box.append(h(`div.pl.${line.kind}`, h("span.ln", String(old)), h("span.ln", String(nu)),
+        h("span.code", h("span.pm-mark", { "aria-hidden": "true" }, line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "), line.text || " ")));
+    }
+    return box;
+  };
+  const total = files.reduce((t, f) => t + f.lines.length, 0);
+  return h("div.patch", files.map((f, i) => {
+    const open = total <= 1500 ? f.lines.length <= 400 : i < 3 && f.lines.length <= 200;
+    const details = h("details.pf", { open },
+      h("summary", h("code", f.path), f.note.length ? h("span.faint", ` ${f.note.join(", ")}`) : null, h("span.pm", h("span.plus", `+${f.add}`), " ", h("span.minus", `−${f.del}`))));
+    // Lines are built when a file is first opened: a big patch costs nothing until it is read.
+    if (open) details.append(render(f));
+    else details.addEventListener("toggle", () => { if (details.open && details.children.length === 1) details.append(render(f)); });
+    return details;
+  }));
+}
 
 // ---------------------------------------------------------------------------
 // Its work — what an agent made, kept (`outputs`)
@@ -1454,6 +1744,11 @@ function runView(id, opened) {
     const sent = d.messages.length;
     if (sent) foot.push(`${sent}${sent >= 20 ? "+" : ""} ${sent === 1 ? "message" : "messages"} sent`);
     if (foot.length) parts.push(h("p.foot-line", foot.join(" · ")));
+    if (d.changes.length) {
+      parts.push(h("p.label", "Code it handed back"),
+        h("div.tiles", d.changes.slice(0, 12).map((l) => h(`a.tile${l.move === "you" ? ".open" : ""}`, { href: `#/changes/${enc(l.run)}/${l.n}` },
+          h("span.d", relative(l.since)), h("span.t", l.title), changeChip(l)))));
+    }
     // An agent that keeps its work shows it under "Its work"; one that only sends messages, here.
     if (d.messages.length && !d.outputs.outputs.length) {
       parts.push(h("p.label", "What it has sent you"),
@@ -2112,10 +2407,12 @@ function route() {
   const hash = location.hash || "#/";
   const run = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
   const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
-  const section = run ? "agents" : inbox ? "inbox" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
+  const changes = hash.match(/^#\/changes(?:\/([^/]+\/\d+))?$/);
+  const section = run ? "agents" : inbox ? "inbox" : changes ? "changes" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
+  else if (changes) changesView(changes[1] ? decodeURIComponent(changes[1]) : null);
   else if (hash === "#/new") newRunView();
   else if (hash === "#/system" || hash === "#/agent") systemView();
   else if (hash === "#/usage") usageView();

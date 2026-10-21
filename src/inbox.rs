@@ -45,6 +45,9 @@ pub struct Inbox {
     pub items: Vec<Item>,
     /// How many are still waiting.
     pub open: usize,
+    /// Changes waiting on the person's review. They have their own page, so they are counted here
+    /// rather than listed: a run that hands back a lot of code would bury everything else.
+    pub changes: usize,
 }
 
 /// Every open question and message across every run, newest first; with `all`, the answered and
@@ -101,7 +104,7 @@ pub fn inbox(all: bool) -> Result<Inbox, OttoError> {
     }
     items.sort_by(|a, b| b.at.cmp(&a.at).then(a.run.cmp(&b.run)));
     let open = items.iter().filter(|i| i.open).count();
-    Ok(Inbox { items, open })
+    Ok(Inbox { items, open, changes: crate::changes::yours() })
 }
 
 /// The questions a run has had answered (or let expire), newest first: (gate, answered at, title,
