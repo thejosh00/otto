@@ -124,8 +124,8 @@ checkout:
 
 ```bash
 otto run --perpetual --period 10m --name lander --instructions workflows/land-flow.md \
-         --repo ~/workspace --goal "Land the changes I approve, and clean up after them"
-otto config lander lander
+         --repo ~/workspace --goal "Land the changes I approve, and clean up after them" \
+  && otto config lander lander    # straight away: its first wake asks what is due to it
 ```
 
 Approving a change wakes it straight away. So that waiting costs nothing, give it a check script

@@ -26,7 +26,8 @@ something else.
 
 Each item says what to do: `finish landing`, `land`, `open its pull request`, `update its pull
 request`, `merge its pull request`, `post replies`, `look at its pull request`, `clean up`. Each has
-a section below. Nothing due: write the handoff and stop. Otherwise take each one in that order, **one repo lock at
+a section below. Nothing due: write the handoff and stop. If `due` refuses because no lander is set up, the person
+hasn't named this run yet (`otto config lander`): say so in the handoff's `Needs`, and stop. Otherwise take each one in that order, **one repo lock at
 a time**, and before you stop, ask `due` again — the person may have approved more while you worked.
 One activity line per wake that did something: `otto state log <id> --event cycle --message
 "landed 2 (3/1 on otto at 4f2a1c0, 7/2 on lectio); 1 back to its author: conflicts in src/cli.ts"`.
@@ -64,8 +65,8 @@ git -C <repo> fetch origin
    front of the person as a new version. Nothing lands until they approve that. Never land on any
    other exit-2.
 
-3. **Land it.** How a repository ships is read from **its base branch** — its CLAUDE.md, a
-   CONTRIBUTING, a `scripts/ship.sh` it documents — never from the change's own branch, which is
+3. **Land it.** How a repository ships is read from **its base branch** — its CLAUDE.md, README or
+   CONTRIBUTING, a `scripts/ship.sh` they document — never from the change's own branch, which is
    the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
    main checkout (lectio's `scripts/ship.sh <branch>` rebases, tests, restarts and checks health
    itself). Otherwise:
