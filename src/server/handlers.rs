@@ -422,10 +422,34 @@ pub struct ApproveBody {
     changes: Vec<String>,
     #[serde(default)]
     note: Option<String>,
+    /// As pull requests rather than pushed.
+    #[serde(default)]
+    pr: bool,
+    #[serde(default)]
+    merge_when_ready: bool,
 }
 
 pub async fn approve_changes(Json(body): Json<ApproveBody>) -> Response {
-    blocking(move || crate::core::approve_changes(&body.changes, body.note.as_deref(), false)).await
+    let mode = if body.pr { crate::changes::LandMode::Pr } else { crate::changes::LandMode::Push };
+    blocking(move || crate::core::approve_changes(&body.changes, mode, body.merge_when_ready, body.note.as_deref(), false)).await
+}
+
+pub async fn merge_change(Path((id, n)): Path<(String, u32)>) -> Response {
+    blocking(move || crate::core::merge_change(&format!("{id}/{n}"), false)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct PostBody {
+    comment: Option<String>,
+}
+
+pub async fn post_replies(Path((id, n)): Path<(String, u32)>, Json(body): Json<PostBody>) -> Response {
+    blocking(move || crate::core::post_replies(&format!("{id}/{n}"), body.comment.as_deref(), false)).await
+}
+
+pub async fn answer_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
+    blocking(move || crate::core::answer_change(&format!("{id}/{n}"), body.text.as_deref().unwrap_or(""), false)).await
 }
 
 #[derive(Deserialize, Default)]

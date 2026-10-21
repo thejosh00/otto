@@ -492,8 +492,12 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                 match (str_of(v, "by"), str_of(v, "state")) {
                     (Some("person"), _) => happening("you", format!("You {what}")),
                     (_, Some("landed")) if what.starts_with("landed") => happening("status", format!("Its change {what}")),
+                    (_, Some("merged")) => happening("status", format!("Its change: {what}")),
                     (Some("author"), _) => happening("status", format!("It {what}")),
-                    (_, Some("revising")) => happening("trouble", format!("The lander {what}")),
+                    (_, Some("revising")) if what.starts_with("couldn't land") => happening("trouble", format!("The lander {what}")),
+                    // A reviewer's ask, or CI's, relayed: "a reviewer (sam): …"
+                    (_, Some("revising")) => happening("asked", format!("On its pull request, {what}")),
+                    (_, Some("pr-open")) if what.starts_with("opened") => happening("status", format!("The lander {what}")),
                     _ => None,
                 }
             }

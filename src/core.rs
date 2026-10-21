@@ -1833,10 +1833,16 @@ fn change_refs(refs: &[String]) -> Result<Vec<crate::changes::ChangeRef>, OttoEr
     refs.iter().map(|r| crate::changes::ChangeRef::parse(r)).collect()
 }
 
-/// Approve changes to land, and wake the lander to land them.
-pub fn approve_changes(refs: &[String], note: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+/// Approve changes to land — pushed, or as pull requests — and wake the lander to land them.
+pub fn approve_changes(
+    refs: &[String],
+    mode: crate::changes::LandMode,
+    merge_when_ready: bool,
+    note: Option<&str>,
+    no_wake: bool,
+) -> Result<ChangeOutcome, OttoError> {
     let refs = change_refs(refs)?;
-    let decided = crate::changes::approve(&refs, crate::changes::LandMode::Push, note)?;
+    let decided = crate::changes::approve(&refs, mode, merge_when_ready, note)?;
     let lander = crate::config::lander()?.expect("approve refuses without a lander");
     let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander) };
     Ok(ChangeOutcome { decided, woke, not_woken })
@@ -1846,6 +1852,36 @@ pub fn approve_changes(refs: &[String], note: Option<&str>, no_wake: bool) -> Re
 pub fn revise_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::revise(&r, text)?;
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run) };
+    Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
+}
+
+fn lander_acts(decided: Vec<crate::changes::Decided>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let lander = crate::config::lander()?;
+    let (woke, not_woken) = match lander {
+        Some(lander) if !no_wake => wake_to_act(&lander),
+        Some(_) => (None, None),
+        None => (None, Some("no lander is set up".to_string())),
+    };
+    Ok(ChangeOutcome { decided, woke, not_woken })
+}
+
+/// Merge a change's pull request, now it is approved and passing: the lander does it.
+pub fn merge_change(reference: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let r = crate::changes::ChangeRef::parse(reference)?;
+    lander_acts(vec![crate::changes::merge(&r)?], no_wake)
+}
+
+/// Post the replies to reviewers a change's author drafted — one, or all: the lander does it.
+pub fn post_replies(reference: &str, comment: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let r = crate::changes::ChangeRef::parse(reference)?;
+    lander_acts(vec![crate::changes::post(&r, comment)?], no_wake)
+}
+
+/// Answer what a change's author asked, and wake it to act on the answer.
+pub fn answer_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let r = crate::changes::ChangeRef::parse(reference)?;
+    let decided = crate::changes::answer(&r, text)?;
     let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }

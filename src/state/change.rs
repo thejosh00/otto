@@ -11,6 +11,10 @@ pub enum ChangeCommand {
     Submit(SubmitArgs),
     /// Take back a change you no longer want: overtaken, or the wrong approach
     Withdraw(WithdrawArgs),
+    /// Draft a reply to a reviewer's comment on its pull request, for the person to post
+    Reply(ReplyArgs),
+    /// Ask the person something about a change — a judgement that is theirs — without stopping the run
+    Ask(AskArgs),
     /// The lander: what waits on it, across every run — approved changes to land, then cleaning up
     Due(DueArgs),
     /// The lander: take an approved change in hand, and print what lands
@@ -25,6 +29,108 @@ pub enum ChangeCommand {
     Bounce(BounceArgs),
     /// The lander: its worktree and branch are gone (otto looks), or say what was left and why
     Cleaned(CleanedArgs),
+    /// The lander: it opened the change's pull request (--url), or pushed its next version to it
+    PrPushed(PrPushedArgs),
+    /// The lander: what its pull request says now — CI, review, whether it merges — and when it said it
+    PrSeen(PrSeenArgs),
+    /// The lander: hand what a reviewer or CI asked of its pull request to the change's author
+    Relay(RelayArgs),
+    /// The lander: its pull request was merged. otto looks, and tells its author
+    Merged(LandedArgs),
+    /// The lander: its pull request was closed without merging
+    Closed(BounceArgs),
+    /// The lander: it posted a reply the person said to post
+    Posted(PostedArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ReplyArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The change's number
+    pub change: u32,
+    /// The comment it answers: its id, or its link
+    #[arg(long, required = true)]
+    pub comment: String,
+    /// The reply, as it would be posted
+    #[arg(long, required = true)]
+    pub text: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct AskArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The change's number
+    pub change: u32,
+    /// The question, written to be answered cold: where it stands, the decision, options under `## Options`
+    #[arg(long = "question-file", value_name = "PATH", required = true)]
+    pub question_file: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PrPushedArgs {
+    /// The lander run: its number or name
+    pub lander: String,
+    /// The change: <run>/<number>
+    pub change: String,
+    /// The commit its pull request's branch has now
+    #[arg(long, required = true)]
+    pub head: String,
+    /// The pull request's address, when you just opened it
+    #[arg(long)]
+    pub url: Option<String>,
+    /// You turned on GitHub's auto-merge for it (`gh pr merge --auto`)
+    #[arg(long)]
+    pub auto_merge: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PrSeenArgs {
+    /// The lander run: its number or name
+    pub lander: String,
+    /// The change: <run>/<number>
+    pub change: String,
+    /// The pull request's `updatedAt`, as `gh pr view --json updatedAt` gave it
+    #[arg(long, required = true)]
+    pub updated: String,
+    /// pending, passing or failing
+    #[arg(long)]
+    pub ci: Option<String>,
+    /// approved, changes-requested, waiting, or none (nobody has to review it)
+    #[arg(long)]
+    pub review: Option<String>,
+    /// clean, behind or conflicting
+    #[arg(long)]
+    pub mergeable: Option<String>,
+    /// What happened on it, in a line, for the change's history: "CI passing; Sam approved"
+    #[arg(long)]
+    pub what: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct RelayArgs {
+    /// The lander run: its number or name
+    pub lander: String,
+    /// The change: <run>/<number>
+    pub change: String,
+    /// Who: "a reviewer (sam)", "CI"
+    #[arg(long, required = true)]
+    pub who: String,
+    /// What they said, quoted — the comment's words, or the failing job and its first error lines
+    #[arg(long, required = true)]
+    pub text: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct PostedArgs {
+    /// The lander run: its number or name
+    pub lander: String,
+    /// The change: <run>/<number>
+    pub change: String,
+    /// The comment the reply answered
+    #[arg(long, required = true)]
+    pub comment: String,
 }
 
 impl ChangeCommand {
@@ -156,6 +262,65 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
             Ok(())
         }
         ChangeCommand::Due(a) => due(a),
+        ChangeCommand::Reply(a) => {
+            let id = crate::paths::resolve_run_id(&a.id)?;
+            changes::reply_draft(&ChangeRef { run: id, n: a.change }, &a.comment, &a.text)?;
+            println!("drafted; the person reads it on the change and says whether to post it");
+            Ok(())
+        }
+        ChangeCommand::Ask(a) => {
+            let id = crate::paths::resolve_run_id(&a.id)?;
+            let given = std::path::Path::new(&a.question_file);
+            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
+            let question = std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {}: {e}", a.question_file)))?;
+            let c = changes::ask(&ChangeRef { run: id, n: a.change }, &question)?;
+            println!(
+                "asked about change {}{} — carry on with other work; the answer reaches you as a note",
+                c.n,
+                c.ask.as_ref().filter(|q| !q.options.is_empty()).map(|q| format!(" ({})", q.options.join(" / "))).unwrap_or_default()
+            );
+            Ok(())
+        }
+        ChangeCommand::PrPushed(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            let c = changes::pr_pushed(&a.lander, &r, &a.head, a.url.as_deref(), a.auto_merge)?;
+            println!("{}: {}", r.display(), c.timeline.last().map(|m| m.what.as_str()).unwrap_or(""));
+            Ok(())
+        }
+        ChangeCommand::PrSeen(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            let c = changes::pr_seen(
+                &a.lander,
+                &r,
+                &changes::Seen { updated: &a.updated, ci: a.ci.as_deref(), review: a.review.as_deref(), mergeable: a.mergeable.as_deref(), what: a.what.as_deref() },
+            )?;
+            println!("{} is {}", r.display(), c.state.as_str());
+            Ok(())
+        }
+        ChangeCommand::Relay(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            changes::relay(&a.lander, &r, &a.who, &a.text)?;
+            println!("{} is with its author, with what {} said", r.display(), a.who);
+            Ok(())
+        }
+        ChangeCommand::Merged(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            changes::merged(&a.lander, &r, &a.sha)?;
+            println!("{} merged; its author is told. Clean up next: its worktree and branch, then `otto state change cleaned`", r.display());
+            Ok(())
+        }
+        ChangeCommand::Closed(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            changes::closed(&a.lander, &r, &a.reason)?;
+            println!("{} closed. Clean up next: its worktree and branch, then `otto state change cleaned`", r.display());
+            Ok(())
+        }
+        ChangeCommand::Posted(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            changes::posted(&a.lander, &r, &a.comment)?;
+            println!("{}: posted", r.display());
+            Ok(())
+        }
         ChangeCommand::Claim(a) => {
             let due = changes::claim(&a.lander, &ChangeRef::parse(&a.change)?)?;
             println!("{}", serde_json::to_string_pretty(&due)?);
@@ -245,7 +410,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
 
 fn due(a: DueArgs) -> Result<(), OttoError> {
     changes::require_lander(&a.lander)?;
-    let due = changes::due()?;
+    let due = changes::due_with_prs()?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&due)?);
         return Ok(());

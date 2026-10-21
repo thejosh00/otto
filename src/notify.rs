@@ -120,16 +120,32 @@ pub fn due(state: &RunState, now: OffsetDateTime, elapsed_hours: f64, short: &st
 /// sent back and handed back again is new to review. Kept apart from `due`, which reads only
 /// `run.json`: changes are in their own index.
 pub fn change_notices(run_dir: &std::path::Path) -> Vec<Notice> {
-    crate::changes::index_or_empty(run_dir)
-        .changes
-        .iter()
-        .filter(|c| c.whose_move() == crate::changes::Move::You)
-        .map(|c| Notice {
-            key: format!("change:{}@v{}", c.n, c.latest().k),
-            message: format!("Code to review: {}. otto changes", crate::exec::truncate(&c.title, DETAIL_MAX_CHARS)),
-        })
-        .collect()
+    use crate::changes::{ChangeState, Move, ReplyState};
+    let now = crate::clock::now();
+    let mut notices = Vec::new();
+    for c in crate::changes::index_or_empty(run_dir).changes {
+        let title = crate::exec::truncate(&c.title, DETAIL_MAX_CHARS);
+        if c.whose_move() == Move::You {
+            let (what, message) = if c.replies.iter().any(|r| r.state == ReplyState::Draft) {
+                ("reply", format!("A reply to post: {title}"))
+            } else {
+                match c.state {
+                    ChangeState::ReadyToMerge => ("merge", format!("Ready to merge: {title}")),
+                    ChangeState::NeedsYou => ("ask", format!("Asks you about {title}")),
+                    _ => ("review", format!("Code to review: {title}")),
+                }
+            };
+            notices.push(Notice { key: format!("{CHANGE_KEY}{}@v{}:{what}", c.n, c.latest().k), message: format!("{message}. otto changes") });
+        }
+        if let Some(why) = crate::changes::stuck(&c, now) {
+            notices.push(Notice { key: format!("{CHANGE_KEY}{}:stuck:{}", c.n, c.state_at), message: format!("Stuck: {title} — {why}. otto changes") });
+        }
+    }
+    notices
 }
+
+/// Notices about changes start with this, so a pass can say several as one.
+const CHANGE_KEY: &str = "change:";
 
 /// Which of `due` are new, and what `notified` should become: the keys still due, plus the new
 /// ones stamped `now`. `None` when nothing changes, so a quiet pass writes nothing.
@@ -153,6 +169,9 @@ fn reconcile(
 pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run: bool) -> Vec<String> {
     let ids: Vec<String> = runs.iter().map(|r| r.id().to_string()).collect();
     let mut lines = Vec::new();
+    // A run handing back a lot of code would be a banner a change: new ones across every run are
+    // said together, once the pass is over.
+    let mut changes: Vec<(String, Notice)> = Vec::new();
     for entry in runs {
         let RunEntry::Readable(snapshot) = entry else { continue };
         let short = crate::paths::short_id_among(&snapshot.id, &ids);
@@ -194,6 +213,10 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
         match sent {
             Ok(fresh) => {
                 for n in fresh {
+                    if n.key.starts_with(CHANGE_KEY) {
+                        changes.push((title.clone(), n));
+                        continue;
+                    }
                     let result = send(exec, &title, &n.message);
                     lines.push(match result {
                         Ok(()) => format!("notify {:<34} {}", snapshot.id, n.message),
@@ -204,7 +227,26 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
             Err(e) => lines.push(format!("notify {:<34} could not record: {e}", snapshot.id)),
         }
     }
+    if let Some((title, message)) = combined(&changes) {
+        let result = send(exec, &title, &message);
+        lines.push(match result {
+            Ok(()) => format!("notify {:<34} {message}", "changes"),
+            Err(e) => format!("notify {:<34} could not send ({e}): {message}", "changes"),
+        });
+    }
     lines
+}
+
+/// New notices about changes as one banner: the one itself, or how many and the first.
+fn combined(changes: &[(String, Notice)]) -> Option<(String, String)> {
+    match changes {
+        [] => None,
+        [(title, n)] => Some((title.clone(), n.message.clone())),
+        [(_, first), rest @ ..] => Some((
+            "otto · changes".to_string(),
+            format!("{} things about changes for you: {}, and {} more. otto changes", rest.len() + 1, first.message.trim_end_matches(". otto changes"), rest.len()),
+        )),
+    }
 }
 
 /// Post one notification through the macOS notification centre. Title and message go in as
@@ -305,6 +347,22 @@ mod tests {
         assert_eq!(keys(&state), vec!["budget"]);
         state.budget.spent_wakes = 10;
         assert!(keys(&state).is_empty(), "at 100% the block's own notice takes over");
+    }
+
+    #[test]
+    fn new_notices_about_changes_are_one_banner() {
+        let n = |key: &str, message: &str| ("otto · a".to_string(), Notice { key: key.into(), message: message.into() });
+        assert_eq!(combined(&[]), None);
+        let one = combined(&[n("change:1@v1:review", "Code to review: Shout. otto changes")]).unwrap();
+        assert_eq!(one, ("otto · a".to_string(), "Code to review: Shout. otto changes".to_string()));
+        let three = combined(&[
+            n("change:1@v1:review", "Code to review: Shout. otto changes"),
+            n("change:2@v1:merge", "Ready to merge: Retry. otto changes"),
+            n("change:3@v2:review", "Code to review: Docs. otto changes"),
+        ])
+        .unwrap();
+        assert_eq!(three.0, "otto · changes");
+        assert!(three.1.starts_with("3 things about changes for you: Code to review: Shout, and 2 more"), "{}", three.1);
     }
 
     #[test]

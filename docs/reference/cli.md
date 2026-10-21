@@ -259,6 +259,9 @@ Commands:
   approve  Approve changes to land on their base branch, and wake the lander to land them
   revise   Send a change back to its author, saying what to change, and wake it to do it
   drop     Drop a change: it won't land, its author is told, and the lander cleans up after it
+  merge    Merge a change's pull request, now it is approved and passing — the lander does it
+  post     Post the replies to reviewers a change's author drafted — the lander does it
+  answer   Answer what a change's author asked you about it
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -315,6 +318,12 @@ Options:
       --note <NOTE>
           For the lander and the record, in a sentence
 
+      --pr
+          As a pull request rather than pushed: the lander opens it and keeps it moving, and what reviewers ask goes to its author
+
+      --merge-when-ready
+          With --pr: merge it once it is approved and passing, without asking you again
+
       --no-wake
           Record it, and don't wake the lander yet
 
@@ -358,6 +367,60 @@ Arguments:
 Options:
       --text <TEXT>
           Why, for its author
+
+  -h, --help
+          Print help
+```
+
+### `otto changes merge`
+
+```text
+Merge a change's pull request, now it is approved and passing — the lander does it
+
+Usage: otto changes merge <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto changes post`
+
+```text
+Post the replies to reviewers a change's author drafted — the lander does it
+
+Usage: otto changes post [OPTIONS] <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --comment <COMMENT>
+          Only the reply to this comment. Omitted, every reply drafted for it
+
+  -h, --help
+          Print help
+```
+
+### `otto changes answer`
+
+```text
+Answer what a change's author asked you about it
+
+Usage: otto changes answer --text <TEXT> <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --text <TEXT>
+          Your answer: one of its options, or what you'd tell it in your own words
 
   -h, --help
           Print help
@@ -1518,16 +1581,24 @@ Code handed back: a wake submits it, and the lander lands it
 Usage: otto state change <COMMAND>
 
 Commands:
-  submit    Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
-  withdraw  Take back a change you no longer want: overtaken, or the wrong approach
-  due       The lander: what waits on it, across every run — approved changes to land, then cleaning up
-  claim     The lander: take an approved change in hand, and print what lands
-  check     The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
-  landed    The lander: it is on its base branch now. otto looks, and tells its author
-  rebased   The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
-  bounce    The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
-  cleaned   The lander: its worktree and branch are gone (otto looks), or say what was left and why
-  help      Print this message or the help of the given subcommand(s)
+  submit     Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
+  withdraw   Take back a change you no longer want: overtaken, or the wrong approach
+  reply      Draft a reply to a reviewer's comment on its pull request, for the person to post
+  ask        Ask the person something about a change — a judgement that is theirs — without stopping the run
+  due        The lander: what waits on it, across every run — approved changes to land, then cleaning up
+  claim      The lander: take an approved change in hand, and print what lands
+  check      The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
+  landed     The lander: it is on its base branch now. otto looks, and tells its author
+  rebased    The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
+  bounce     The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+  cleaned    The lander: its worktree and branch are gone (otto looks), or say what was left and why
+  pr-pushed  The lander: it opened the change's pull request (--url), or pushed its next version to it
+  pr-seen    The lander: what its pull request says now — CI, review, whether it merges — and when it said it
+  relay      The lander: hand what a reviewer or CI asked of its pull request to the change's author
+  merged     The lander: its pull request was merged. otto looks, and tells its author
+  closed     The lander: its pull request was closed without merging
+  posted     The lander: it posted a reply the person said to post
+  help       Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -1588,6 +1659,53 @@ Arguments:
 Options:
       --reason <REASON>
           Why, in a sentence: the person reads it on the change
+
+  -h, --help
+          Print help
+```
+
+### `otto state change reply`
+
+```text
+Draft a reply to a reviewer's comment on its pull request, for the person to post
+
+Usage: otto state change reply --comment <COMMENT> --text <TEXT> <ID> <CHANGE>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <CHANGE>
+          The change's number
+
+Options:
+      --comment <COMMENT>
+          The comment it answers: its id, or its link
+
+      --text <TEXT>
+          The reply, as it would be posted
+
+  -h, --help
+          Print help
+```
+
+### `otto state change ask`
+
+```text
+Ask the person something about a change — a judgement that is theirs — without stopping the run
+
+Usage: otto state change ask --question-file <PATH> <ID> <CHANGE>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <CHANGE>
+          The change's number
+
+Options:
+      --question-file <PATH>
+          The question, written to be answered cold: where it stands, the decision, options under `## Options`
 
   -h, --help
           Print help
@@ -1739,6 +1857,162 @@ Arguments:
 Options:
       --left <LEFT>
           What you left on purpose, and why: "the worktree, which has uncommitted work in it"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change pr-pushed`
+
+```text
+The lander: it opened the change's pull request (--url), or pushed its next version to it
+
+Usage: otto state change pr-pushed [OPTIONS] --head <HEAD> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --head <HEAD>
+          The commit its pull request's branch has now
+
+      --url <URL>
+          The pull request's address, when you just opened it
+
+      --auto-merge
+          You turned on GitHub's auto-merge for it (`gh pr merge --auto`)
+
+  -h, --help
+          Print help
+```
+
+### `otto state change pr-seen`
+
+```text
+The lander: what its pull request says now — CI, review, whether it merges — and when it said it
+
+Usage: otto state change pr-seen [OPTIONS] --updated <UPDATED> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --updated <UPDATED>
+          The pull request's `updatedAt`, as `gh pr view --json updatedAt` gave it
+
+      --ci <CI>
+          pending, passing or failing
+
+      --review <REVIEW>
+          approved, changes-requested, waiting, or none (nobody has to review it)
+
+      --mergeable <MERGEABLE>
+          clean, behind or conflicting
+
+      --what <WHAT>
+          What happened on it, in a line, for the change's history: "CI passing; Sam approved"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change relay`
+
+```text
+The lander: hand what a reviewer or CI asked of its pull request to the change's author
+
+Usage: otto state change relay --who <WHO> --text <TEXT> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --who <WHO>
+          Who: "a reviewer (sam)", "CI"
+
+      --text <TEXT>
+          What they said, quoted — the comment's words, or the failing job and its first error lines
+
+  -h, --help
+          Print help
+```
+
+### `otto state change merged`
+
+```text
+The lander: its pull request was merged. otto looks, and tells its author
+
+Usage: otto state change merged [OPTIONS] --sha <SHA> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --sha <SHA>
+          The commit now on the base branch
+
+      --note <NOTE>
+          Anything its author should know, in a sentence: "the main checkout has uncommitted changes, so it wasn't updated"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change closed`
+
+```text
+The lander: its pull request was closed without merging
+
+Usage: otto state change closed --reason <REASON> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --reason <REASON>
+          What stopped it, specifically enough to fix: "a.txt conflicts with 3f2a1c0 on main"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change posted`
+
+```text
+The lander: it posted a reply the person said to post
+
+Usage: otto state change posted --comment <COMMENT> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --comment <COMMENT>
+          The comment the reply answered
 
   -h, --help
           Print help

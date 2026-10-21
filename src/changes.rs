@@ -64,6 +64,16 @@ pub enum ChangeState {
     Landed,
     /// Not wanted: the person dropped it, or its author withdrew it.
     Dropped,
+    /// Its pull request is open, waiting on reviewers and CI.
+    PrOpen,
+    /// Its pull request is approved and passing, and merging it is the person's to say.
+    ReadyToMerge,
+    /// Its author asked the person something about it, and waits for the answer.
+    NeedsYou,
+    /// Its pull request was merged.
+    Merged,
+    /// Its pull request was closed without merging.
+    Closed,
 }
 
 impl ChangeState {
@@ -75,12 +85,18 @@ impl ChangeState {
             ChangeState::Landing => "landing",
             ChangeState::Landed => "landed",
             ChangeState::Dropped => "dropped",
+            ChangeState::PrOpen => "pr-open",
+            ChangeState::ReadyToMerge => "ready-to-merge",
+            ChangeState::NeedsYou => "needs-you",
+            ChangeState::Merged => "merged",
+            ChangeState::Closed => "closed",
         }
     }
 
-    /// Landed or dropped: nothing more happens to the change itself, only cleaning up after it.
+    /// Landed, merged, dropped or closed: nothing more happens to the change itself, only
+    /// cleaning up after it.
     pub fn is_over(self) -> bool {
-        matches!(self, ChangeState::Landed | ChangeState::Dropped)
+        matches!(self, ChangeState::Landed | ChangeState::Dropped | ChangeState::Merged | ChangeState::Closed)
     }
 }
 
@@ -91,6 +107,10 @@ pub enum Move {
     You,
     Author,
     Lander,
+    /// Its pull request waits on someone reviewing it.
+    Reviewers,
+    /// Its pull request waits on CI.
+    Ci,
     Nobody,
 }
 
@@ -101,6 +121,8 @@ pub enum Move {
 pub enum LandMode {
     /// Onto its base branch, and pushed
     Push,
+    /// As a pull request, which the lander keeps moving: reviewers' asks go to its author
+    Pr,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -138,6 +160,15 @@ pub struct Change {
     pub landed: Option<Landed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cleaned: Option<Cleaned>,
+    /// Its pull request, once the lander has opened one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<Pr>,
+    /// Replies to reviewers its author drafted; posting one is the person's to say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub replies: Vec<Reply>,
+    /// What its author asked the person about it, and their answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<Ask>,
     /// Everything that happened to it, oldest first, whoever did it.
     #[serde(default)]
     pub timeline: Vec<Moment>,
@@ -194,12 +225,88 @@ pub struct FileStat {
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
     pub mode: LandMode,
+    /// The version that lands. As a pull request, each new version its author submits is pushed
+    /// to it without asking again: the pull request is where it is reviewed.
     pub version: u32,
     pub sha: String,
     pub patch_id: String,
     pub at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// As a pull request: merge it once it is approved and passing, without asking again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge_when_ready: bool,
+    /// The person said to merge its pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_asked: Option<Timestamp>,
+}
+
+/// A change's pull request, as the lander last saw it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pr {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    pub opened_at: Timestamp,
+    /// The commit its branch has, as the lander last pushed it.
+    pub head: String,
+    /// GitHub merges it itself once it is approved and passing (`gh pr merge --auto`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_merge: bool,
+    /// `pending`, `passing` or `failing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci: Option<String>,
+    /// `approved`, `changes-requested`, `waiting`, or `none` when nobody has to review it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
+    /// `clean`, `behind` or `conflicting`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mergeable: Option<String>,
+    /// The pull request's `updatedAt` when the lander last looked: anything newer is news.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReplyState {
+    /// Drafted by its author; waits on the person.
+    Draft,
+    /// The person said to post it; waits on the lander.
+    Post,
+    Posted,
+}
+
+/// A reply to a reviewer's comment on a change's pull request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reply {
+    /// The comment it answers: its id, or its link.
+    pub comment: String,
+    pub text: String,
+    pub at: Timestamp,
+    pub state: ReplyState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posted_at: Option<Timestamp>,
+}
+
+/// What a change's author asked the person, without stopping its run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ask {
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    pub at: Timestamp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,14 +349,27 @@ impl Change {
         self.versions.iter().find(|v| v.k == k)
     }
 
-    /// Whose move it is. Over and cleaned up, no one's; over and not yet, the lander's.
+    /// Whose move it is. Over and cleaned up, no one's; over and not yet, the lander's. A reply
+    /// drafted for a reviewer makes an open pull request the person's move too.
     pub fn whose_move(&self) -> Move {
+        if self.state.is_over() {
+            return if self.cleaned.is_none() { Move::Lander } else { Move::Nobody };
+        }
+        let replies = |s: ReplyState| self.replies.iter().any(|r| r.state == s);
+        if replies(ReplyState::Draft) {
+            return Move::You;
+        }
         match self.state {
-            ChangeState::Review => Move::You,
+            ChangeState::Review | ChangeState::NeedsYou => Move::You,
             ChangeState::Revising => Move::Author,
             ChangeState::Approved | ChangeState::Landing => Move::Lander,
-            ChangeState::Landed | ChangeState::Dropped if self.cleaned.is_none() => Move::Lander,
-            ChangeState::Landed | ChangeState::Dropped => Move::Nobody,
+            _ if replies(ReplyState::Post) || self.decision.as_ref().is_some_and(|d| d.merge_asked.is_some()) => Move::Lander,
+            ChangeState::ReadyToMerge => Move::You,
+            _ => match self.pr.as_ref().and_then(|p| p.ci.as_deref()) {
+                Some("pending") => Move::Ci,
+                Some("failing") => Move::Lander,
+                _ => Move::Reviewers,
+            },
         }
     }
 
@@ -609,6 +729,13 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                         c.n
                     )))
                 }
+                ChangeState::NeedsYou => {
+                    return Err(OttoError::conflict(format!(
+                        "change {} ({key}) waits on the person's answer to what you asked about it; it reaches you as a note. \
+                         Submit the next version once you have it",
+                        c.n
+                    )))
+                }
                 _ => {}
             }
             let latest = c.latest();
@@ -661,10 +788,24 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 c.base = base.clone();
                 c.worktree = worktree.clone().or(c.worktree.take());
                 c.versions.push(version);
-                // An approval was for the version it named; this one is new.
-                c.decision = None;
-                c.enter(ChangeState::Review);
-                c.moment("author", format!("v{k}: {} commit{}, +{} −{}", snap.commits, if snap.commits == 1 { "" } else { "s" }, snap.stat.add, snap.stat.del));
+                let what = format!("v{k}: {} commit{}, +{} −{}", snap.commits, if snap.commits == 1 { "" } else { "s" }, snap.stat.add, snap.stat.del);
+                // With a pull request open, the pull request is where it is reviewed: the next
+                // version goes to it. Otherwise an approval was for the version it named, and this
+                // one is new.
+                match (c.pr.is_some(), c.decision.as_mut()) {
+                    (true, Some(d)) => {
+                        d.version = k;
+                        d.sha = sha.clone();
+                        d.patch_id = snap.patch_id.clone();
+                        c.enter(ChangeState::Approved);
+                        c.moment("author", format!("{what} — for its pull request"));
+                    }
+                    _ => {
+                        c.decision = None;
+                        c.enter(ChangeState::Review);
+                        c.moment("author", what);
+                    }
+                }
                 (c, Some(was))
             }
             None => {
@@ -682,6 +823,9 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                     decision: None,
                     landed: None,
                     cleaned: None,
+                    pr: None,
+                    replies: Vec::new(),
+                    ask: None,
                     timeline: Vec::new(),
                 };
                 c.moment("author", format!("submitted: {} commit{}, +{} −{} in {} file{}", snap.commits, if snap.commits == 1 { "" } else { "s" }, snap.stat.add, snap.stat.del, snap.stat.files.len(), if snap.stat.files.len() == 1 { "" } else { "s" }));
@@ -719,7 +863,7 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
 pub fn withdraw(r: &ChangeRef, reason: &str) -> Result<Change, OttoError> {
     let reason = check_say(Some(reason), "--reason")?.ok_or_else(|| OttoError::usage("say why, with --reason"))?;
     with_change(r, |path, _state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved], "withdrawn")?;
+        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "withdrawn")?;
         c.decision = None;
         c.enter(ChangeState::Dropped);
         c.moment("author", format!("withdrew it: {reason}"));
@@ -740,6 +884,11 @@ fn refuse_unless(c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(),
         ChangeState::Review => "it is waiting for review".to_string(),
         ChangeState::Revising => "its author is revising it".to_string(),
         ChangeState::Approved => "it is approved and waiting for the lander".to_string(),
+        ChangeState::PrOpen => "its pull request is open".to_string(),
+        ChangeState::ReadyToMerge => "its pull request is ready to merge".to_string(),
+        ChangeState::NeedsYou => "its author asked the person something about it".to_string(),
+        ChangeState::Merged => "its pull request was merged".to_string(),
+        ChangeState::Closed => "its pull request was closed".to_string(),
     };
     Err(OttoError::conflict(format!("change {} can't be {doing}: {why}", c.n)))
 }
@@ -790,7 +939,10 @@ pub struct Decided {
 
 /// Approve the latest version of each change, to land as `mode`. Refused whole when there is no
 /// lander to land them, and each one refused that isn't waiting for review.
-pub fn approve(refs: &[ChangeRef], mode: LandMode, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
+pub fn approve(refs: &[ChangeRef], mode: LandMode, merge_when_ready: bool, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
+    if merge_when_ready && mode != LandMode::Pr {
+        return Err(OttoError::usage("merging when ready is for a pull request: approve it with --pr"));
+    }
     if crate::config::lander()?.is_none() {
         return Err(OttoError::usage(
             "no lander is set up, so nothing would land an approved change — start one and name it with `otto config lander \
@@ -803,9 +955,23 @@ pub fn approve(refs: &[ChangeRef], mode: LandMode, note: Option<&str>) -> Result
         out.push(with_change(r, |path, _state, c| {
             refuse_unless(c, &[ChangeState::Review], "approved")?;
             let v = c.latest().clone();
-            c.decision = Some(Decision { mode, version: v.k, sha: v.sha.clone(), patch_id: v.patch_id.clone(), at: Timestamp::now(), note: note.clone() });
+            c.decision = Some(Decision {
+                mode,
+                version: v.k,
+                sha: v.sha.clone(),
+                patch_id: v.patch_id.clone(),
+                at: Timestamp::now(),
+                note: note.clone(),
+                merge_when_ready,
+                merge_asked: None,
+            });
             c.enter(ChangeState::Approved);
-            let what = format!("approved v{} to land on {}{}", v.k, c.base, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
+            let how = match (mode, merge_when_ready) {
+                (LandMode::Push, _) => format!("to land on {}", c.base),
+                (LandMode::Pr, false) => format!("as a pull request onto {}", c.base),
+                (LandMode::Pr, true) => format!("as a pull request onto {}, merged once it is approved and passing", c.base),
+            };
+            let what = format!("approved v{} {how}{}", v.k, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
             c.moment("you", &what);
             moved(path, c, "person", &what)?;
             Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
@@ -818,8 +984,11 @@ pub fn approve(refs: &[ChangeRef], mode: LandMode, note: Option<&str>) -> Result
 pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
     let text = check_say(Some(text), "what to change")?.ok_or_else(|| OttoError::usage("say what to change"))?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Approved], "sent back")?;
-        c.decision = None;
+        refuse_unless(c, &[ChangeState::Review, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "sent back")?;
+        // With its pull request open the approval stands: the next version goes to the pull request.
+        if c.pr.is_none() {
+            c.decision = None;
+        }
         c.enter(ChangeState::Revising);
         c.moment("you", format!("asked for changes: {text}"));
         let note = tell_author(path, state, c, &format!(
@@ -835,7 +1004,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
 pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoError> {
     let text = check_say(text, "why")?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved], "dropped")?;
+        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::NeedsYou, ChangeState::PrOpen, ChangeState::ReadyToMerge], "dropped")?;
         c.decision = None;
         c.enter(ChangeState::Dropped);
         let what = match &text {
@@ -845,8 +1014,8 @@ pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoErr
         c.moment("you", &what);
         settle_if_nothing_to_clean(c);
         let body = match &text {
-            Some(t) => format!("The person dropped it, saying:\n\n{t}\n\nIt won't land. The lander removes its worktree and branch."),
-            None => "The person dropped it. It won't land. The lander removes its worktree and branch.".to_string(),
+            Some(t) => format!("The person dropped it, saying:\n\n{t}\n\nIt won't land. The lander removes its worktree and branch{}.", if c.pr.is_some() { ", and closes its pull request" } else { "" }),
+            None => format!("The person dropped it. It won't land. The lander removes its worktree and branch{}.", if c.pr.is_some() { ", and closes its pull request" } else { "" }),
         };
         let note = tell_author(path, state, c, &body)?;
         moved(path, c, "person", &what)?;
@@ -896,16 +1065,28 @@ pub struct Due {
     /// What its author said about it, absolute: the commit message and PR body come from here.
     pub summary: String,
     pub landed_sha: Option<String>,
+    /// Its pull request, when it has one.
+    pub pr: Option<Pr>,
+    /// Replies the person said to post, for `post replies`.
+    pub replies: Vec<Reply>,
+    /// What `gh` said when asked about its pull request, for `look at its pull request`.
+    pub news: Option<String>,
 }
 
 fn due_of(run: &str, name: &str, dir: &Path, c: &Change) -> Option<Due> {
+    let d = c.decision.as_ref();
+    let pr_mode = d.is_some_and(|d| d.mode == LandMode::Pr);
     let todo = match c.state {
+        ChangeState::Approved if c.pr.is_some() => "update its pull request",
+        ChangeState::Approved if pr_mode => "open its pull request",
         ChangeState::Approved => "land",
         ChangeState::Landing => "finish landing",
-        ChangeState::Landed | ChangeState::Dropped if c.cleaned.is_none() => "clean up",
+        _ if c.state.is_over() && c.cleaned.is_none() => "clean up",
+        _ if c.state.is_over() => return None,
+        _ if c.replies.iter().any(|r| r.state == ReplyState::Post) => "post replies",
+        ChangeState::PrOpen | ChangeState::ReadyToMerge if d.is_some_and(|d| d.merge_asked.is_some()) => "merge its pull request",
         _ => return None,
     };
-    let d = c.decision.as_ref();
     Some(Due {
         reference: format!("{}/{}", crate::paths::short_id(run), c.n),
         run: run.to_string(),
@@ -924,7 +1105,72 @@ fn due_of(run: &str, name: &str, dir: &Path, c: &Change) -> Option<Due> {
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
+        pr: c.pr.clone(),
+        replies: c.replies.iter().filter(|r| r.state == ReplyState::Post).cloned().collect(),
+        news: None,
     })
+}
+
+/// A pull request that has moved since the lander last looked, as `gh` says: its `updatedAt` is not
+/// the one on record. `gh` failing is news too, so a lander that can't see is woken to say so.
+fn pr_news(c: &Change) -> Option<String> {
+    let pr = c.pr.as_ref()?;
+    if c.state.is_over() {
+        return None;
+    }
+    let out = std::process::Command::new("gh")
+        .args(["pr", "view", &pr.url, "--json", "updatedAt", "--jq", ".updatedAt"])
+        .current_dir(&c.repo)
+        .stdin(std::process::Stdio::null())
+        .output();
+    match out {
+        Ok(out) if out.status.success() => {
+            let updated = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (pr.seen.as_deref() != Some(updated.as_str())).then(|| format!("updated {updated}"))
+        }
+        Ok(out) => Some(format!("gh couldn't say: {}", String::from_utf8_lossy(&out.stderr).trim())),
+        Err(e) => Some(format!("gh couldn't run: {e}")),
+    }
+}
+
+/// `due`, and every open pull request that has news — what the lander's check script asks, since
+/// otto can't see a pull request move without asking `gh`.
+pub fn due_with_prs() -> Result<Vec<Due>, OttoError> {
+    let mut out = due()?;
+    for entry in crate::state::read_all_runs()? {
+        let crate::state::RunEntry::Readable(state) = entry else { continue };
+        let Ok(dir) = crate::paths::run_dir(&state.id) else { continue };
+        let name = state.display_name();
+        for c in index_or_empty(&dir).changes {
+            if out.iter().any(|d| d.run == state.id && d.n == c.n) {
+                continue;
+            }
+            let Some(news) = pr_news(&c) else { continue };
+            out.push(Due {
+                reference: format!("{}/{}", crate::paths::short_id(&state.id), c.n),
+                run: state.id.clone(),
+                run_name: name.clone(),
+                n: c.n,
+                title: c.title.clone(),
+                state: c.state,
+                todo: "look at its pull request".to_string(),
+                repo: c.repo.clone(),
+                base: c.base.clone(),
+                branch: c.branch.clone(),
+                worktree: c.worktree.clone(),
+                sha: c.decision.as_ref().map(|d| d.sha.clone()),
+                patch_id: c.decision.as_ref().map(|d| d.patch_id.clone()),
+                mode: c.decision.as_ref().map(|d| d.mode),
+                approved_at: c.decision.as_ref().map(|d| d.at),
+                summary: dir.join(&c.latest().summary).display().to_string(),
+                landed_sha: None,
+                pr: c.pr.clone(),
+                replies: Vec::new(),
+                news: Some(news),
+            });
+        }
+    }
+    Ok(out)
 }
 
 /// Everything waiting on the lander, across every run: what it had in hand first, then what was
@@ -943,8 +1189,9 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
     }
     let rank = |d: &Due| match d.todo.as_str() {
         "finish landing" => 0,
-        "land" => 1,
-        _ => 2,
+        "land" | "open its pull request" | "update its pull request" => 1,
+        "merge its pull request" | "post replies" => 2,
+        _ => 3,
     };
     out.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.approved_at.cmp(&b.approved_at)));
     Ok(out)
@@ -978,17 +1225,31 @@ pub fn check(lander: &str, r: &ChangeRef, head: &str) -> Result<String, OttoErro
     let state = crate::state::read_run(&r.run)?;
     let dir = crate::paths::run_dir(&r.run)?;
     let c = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
-    if c.state != ChangeState::Landing {
-        return Err(OttoError::conflict(format!("DO NOT ACT: change {} is {}, not being landed — claim it first", r.display(), c.state.as_str())));
-    }
     let d = c.decision.as_ref().ok_or_else(|| OttoError::conflict(format!("DO NOT ACT: change {} has no approval on record", r.display())))?;
     let repo = Path::new(&c.repo);
     let sha = rev(repo, head)?;
+    // Merging its pull request: what merges must be what the lander pushed to it, not a commit
+    // someone else added since.
+    if matches!(c.state, ChangeState::PrOpen | ChangeState::ReadyToMerge) && d.merge_asked.is_some() {
+        let pr = c.pr.as_ref().ok_or_else(|| OttoError::conflict(format!("DO NOT ACT: change {} has no pull request on record", r.display())))?;
+        if sha == pr.head || patch_id_against(repo, &base_ref(repo, &c.base), &sha).is_ok_and(|id| id == d.patch_id) {
+            return Ok(format!("ok: {} is what was pushed to its pull request — merge it", short_sha(&sha)));
+        }
+        return Err(OttoError::conflict(format!(
+            "DO NOT ACT: its pull request's head {} isn't what the lander pushed ({}) — someone else pushed to it. Look at what \
+             they added; it goes back to its author with `otto state change relay`, not into main",
+            short_sha(&sha),
+            short_sha(&pr.head)
+        )));
+    }
+    if c.state != ChangeState::Landing {
+        return Err(OttoError::conflict(format!("DO NOT ACT: change {} is {}, not being landed — claim it first", r.display(), c.state.as_str())));
+    }
     if sha == d.sha {
         return Ok(format!("ok: {} is v{}, as approved", short_sha(&sha), d.version));
     }
-    let id = patch_id_against(repo, &base_ref(repo, &c.base), &sha)?;
-    if id == d.patch_id {
+    // A commit with no patch of its own against the base — the base itself, say — matches nothing.
+    if patch_id_against(repo, &base_ref(repo, &c.base), &sha).is_ok_and(|id| id == d.patch_id) {
         return Ok(format!("ok: {} is v{} rebased onto {} with the same patch — a clean rebase of what was approved", short_sha(&sha), d.version, base_ref(repo, &c.base)));
     }
     Err(OttoError::conflict(format!(
@@ -1151,6 +1412,326 @@ pub fn cleaned(lander: &str, r: &ChangeRef, left: Option<&str>) -> Result<Change
     })
 }
 
+// ---------------------------------------------------------------------------
+// Pull requests
+// ---------------------------------------------------------------------------
+
+fn pr_number(url: &str) -> Option<u32> {
+    url.trim_end_matches('/').rsplit('/').next()?.parse().ok()
+}
+
+/// The lander pushed it to its pull request: opened it (`url`), or pushed the next version to it.
+/// Its author hears the first time, so it knows reviewers' asks will come.
+pub fn pr_pushed(lander: &str, r: &ChangeRef, head: &str, url: Option<&str>, auto_merge: bool) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::Landing], "pushed to a pull request")?;
+        if c.decision.as_ref().is_none_or(|d| d.mode != LandMode::Pr) {
+            return Err(OttoError::conflict(format!("change {} was approved to land on {}, not as a pull request", r.display(), c.base)));
+        }
+        let head = rev(Path::new(&c.repo), head)?;
+        let k = c.latest().k;
+        let what = match (&mut c.pr, url) {
+            (Some(pr), _) => {
+                pr.head = head.clone();
+                pr.ci = Some("pending".into());
+                format!("pushed v{k} to its pull request ({})", short_sha(&head))
+            }
+            (None, Some(url)) => {
+                let url = url.trim().to_string();
+                if !url.starts_with("http") {
+                    return Err(OttoError::usage(format!("--url {url:?}: the pull request's address")));
+                }
+                c.pr = Some(Pr {
+                    number: pr_number(&url),
+                    url: url.clone(),
+                    opened_at: Timestamp::now(),
+                    head: head.clone(),
+                    auto_merge,
+                    ci: Some("pending".into()),
+                    review: None,
+                    mergeable: None,
+                    seen: None,
+                    seen_at: None,
+                });
+                format!("opened its pull request: {url}{}", if auto_merge { ", to merge once approved and passing" } else { "" })
+            }
+            (None, None) => return Err(OttoError::usage("it has no pull request yet: say where it is, with --url")),
+        };
+        c.enter(ChangeState::PrOpen);
+        c.moment("lander", &what);
+        if url.is_some() {
+            let body = format!(
+                "Its pull request is open: {}. What reviewers ask, and CI failing, comes to you as notes like this one: \
+                 change the code in the same worktree and submit it again with the same key, and the lander pushes it to \
+                 the pull request. A reply to a reviewer is `otto state change reply`; the person posts it.",
+                c.pr.as_ref().map(|p| p.url.as_str()).unwrap_or("")
+            );
+            tell_author(path, state, c, &body)?;
+        }
+        moved(path, c, &lander, &what)?;
+        Ok(c.clone())
+    })
+}
+
+/// What the lander saw on its pull request: CI, review, whether it merges cleanly, and GitHub's
+/// `updatedAt`, so the same news isn't news twice. Approved and passing, with nothing to merge it
+/// itself, it is the person's to merge.
+pub struct Seen<'a> {
+    pub updated: &'a str,
+    pub ci: Option<&'a str>,
+    pub review: Option<&'a str>,
+    pub mergeable: Option<&'a str>,
+    pub what: Option<&'a str>,
+}
+
+pub fn pr_seen(lander: &str, r: &ChangeRef, seen: &Seen) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    let what = check_say(seen.what, "--what")?;
+    let one_of = |value: Option<&str>, allowed: &[&str], flag: &str| -> Result<Option<String>, OttoError> {
+        match value.map(str::trim) {
+            None => Ok(None),
+            Some(v) if allowed.contains(&v) => Ok(Some(v.to_string())),
+            Some(v) => Err(OttoError::usage(format!("{flag} {v:?}: one of {}", allowed.join(", ")))),
+        }
+    };
+    let ci = one_of(seen.ci, &["pending", "passing", "failing"], "--ci")?;
+    let review = one_of(seen.review, &["approved", "changes-requested", "waiting", "none"], "--review")?;
+    let mergeable = one_of(seen.mergeable, &["clean", "behind", "conflicting"], "--mergeable")?;
+    with_change(r, |path, _state, c| {
+        if c.state.is_over() || c.pr.is_none() {
+            return Err(OttoError::conflict(format!("change {} has no open pull request", r.display())));
+        }
+        let pr = c.pr.as_mut().expect("checked");
+        pr.seen = Some(seen.updated.trim().to_string());
+        pr.seen_at = Some(Timestamp::now());
+        if ci.is_some() {
+            pr.ci = ci.clone();
+        }
+        if review.is_some() {
+            pr.review = review.clone();
+        }
+        if mergeable.is_some() {
+            pr.mergeable = mergeable.clone();
+        }
+        let ready = pr.ci.as_deref() == Some("passing")
+            && matches!(pr.review.as_deref(), Some("approved" | "none"))
+            && pr.mergeable.as_deref() != Some("conflicting")
+            && !pr.auto_merge;
+        match c.state {
+            ChangeState::PrOpen if ready => {
+                c.enter(ChangeState::ReadyToMerge);
+                c.moment("reviewer", "approved and passing — ready for you to merge");
+            }
+            ChangeState::ReadyToMerge if !ready => c.enter(ChangeState::PrOpen),
+            _ => {}
+        }
+        if let Some(what) = &what {
+            c.moment("reviewer", what);
+            moved(path, c, &lander, what)?;
+        }
+        Ok(c.clone())
+    })
+}
+
+/// Hand what a reviewer, or CI, asked of its pull request to the change's author, in their words.
+/// The author changes the code and submits again; the lander pushes that to the pull request.
+pub fn relay(lander: &str, r: &ChangeRef, who: &str, text: &str) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    let who = who.trim();
+    let text = check_say(Some(text), "--text")?.ok_or_else(|| OttoError::usage("--text: what they asked"))?;
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "sent back")?;
+        if c.pr.is_none() {
+            return Err(OttoError::conflict(format!("change {} has no pull request: send it back with `bounce`", r.display())));
+        }
+        c.enter(ChangeState::Revising);
+        c.moment("reviewer", format!("{who}: {}", first_line(&text)));
+        let url = c.pr.as_ref().map(|p| p.url.clone()).unwrap_or_default();
+        let body = format!(
+            "On its pull request ({url}), {who} said:\n\n{text}\n\nIf it asks for a change, make it in the same worktree, commit, and \
+             submit again with the same key — the lander pushes it to the pull request. If it asks a question, draft the answer \
+             with `otto state change reply`. If it needs the person's judgement, `otto state change ask`."
+        );
+        tell_author(path, state, c, &body)?;
+        wake_soon(state);
+        moved(path, c, &lander, &format!("{who}: {}", first_line(&text)))?;
+        Ok(c.clone())
+    })
+}
+
+fn first_line(text: &str) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 160 { format!("{}…", line.chars().take(159).collect::<String>()) } else { line.to_string() }
+}
+
+/// Its pull request was merged: `sha` is on the base branch, which otto checks as for `landed`.
+/// The author is told, and woken to do what follows.
+pub fn merged(lander: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "marked merged")?;
+        let repo = Path::new(&c.repo);
+        let sha = rev(repo, sha)?;
+        let base = base_ref(repo, &c.base);
+        if !ok(repo, &["merge-base", "--is-ancestor", &sha, &base]) {
+            return Err(OttoError::conflict(format!("{base} doesn't contain {} — fetch first (`git -C {} fetch`)", short_sha(&sha), c.repo)));
+        }
+        let local_base = ok(repo, &["merge-base", "--is-ancestor", &sha, &format!("refs/heads/{}", c.base)]);
+        c.landed = Some(Landed { sha: sha.clone(), at: Timestamp::now(), local_base, note: None });
+        c.replies.retain(|r| r.state == ReplyState::Posted);
+        c.enter(ChangeState::Merged);
+        let what = format!("its pull request was merged into {} at {}", c.base, short_sha(&sha));
+        c.moment("lander", &what);
+        let checkout = if local_base { String::new() } else { format!(" The main checkout's own {} doesn't have it yet.", c.base) };
+        let body = format!("{what}.{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing more to the change itself.");
+        tell_author(path, state, c, &body)?;
+        wake_soon(state);
+        moved(path, c, &lander, &what)?;
+        Ok(c.clone())
+    })
+}
+
+/// Its pull request was closed without merging — by a reviewer, or by the lander for a change the
+/// person dropped.
+pub fn closed(lander: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    let reason = check_say(Some(reason), "--reason")?.ok_or_else(|| OttoError::usage("say why, with --reason"))?;
+    with_change(r, |path, state, c| {
+        if c.pr.is_none() || c.state.is_over() && c.state != ChangeState::Dropped {
+            return Err(OttoError::conflict(format!("change {} has no open pull request", r.display())));
+        }
+        let was_dropped = c.state == ChangeState::Dropped;
+        if !was_dropped {
+            c.enter(ChangeState::Closed);
+        }
+        c.replies.retain(|r| r.state == ReplyState::Posted);
+        let what = format!("its pull request was closed: {reason}");
+        c.moment("lander", &what);
+        if !was_dropped {
+            tell_author(path, state, c, &format!("{what}\n\nIt won't land. The lander removes its worktree and branch."))?;
+        }
+        moved(path, c, &lander, &what)?;
+        Ok(c.clone())
+    })
+}
+
+/// The lander posted a reply the person said to post.
+pub fn posted(lander: &str, r: &ChangeRef, comment: &str) -> Result<Change, OttoError> {
+    let lander = require_lander(lander)?;
+    with_change(r, |path, _state, c| {
+        let reply = c
+            .replies
+            .iter_mut()
+            .find(|x| x.comment == comment.trim() && x.state == ReplyState::Post)
+            .ok_or_else(|| OttoError::conflict(format!("change {} has no reply to post to {comment}", r.display())))?;
+        reply.state = ReplyState::Posted;
+        reply.posted_at = Some(Timestamp::now());
+        let what = format!("posted the reply to {}", comment.trim());
+        c.moment("lander", &what);
+        moved(path, c, &lander, &what)?;
+        Ok(c.clone())
+    })
+}
+
+/// The person says to merge its pull request, now that it is approved and passing.
+pub fn merge(r: &ChangeRef) -> Result<Decided, OttoError> {
+    with_change(r, |path, _state, c| {
+        refuse_unless(c, &[ChangeState::ReadyToMerge, ChangeState::PrOpen], "merged")?;
+        let d = c.decision.as_mut().ok_or_else(|| OttoError::conflict(format!("change {} has no approval on record", r.display())))?;
+        d.merge_asked = Some(Timestamp::now());
+        c.moment("you", "said to merge its pull request");
+        moved(path, c, "person", "said to merge its pull request")?;
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
+    })
+}
+
+/// The person says to post replies its author drafted: the one to `comment`, or all of them.
+pub fn post(r: &ChangeRef, comment: Option<&str>) -> Result<Decided, OttoError> {
+    with_change(r, |path, _state, c| {
+        let mut n = 0;
+        for reply in c.replies.iter_mut().filter(|x| x.state == ReplyState::Draft && comment.is_none_or(|w| x.comment == w.trim())) {
+            reply.state = ReplyState::Post;
+            n += 1;
+        }
+        if n == 0 {
+            return Err(OttoError::conflict(format!("change {} has no drafted reply{}", r.display(), comment.map(|w| format!(" to {w}")).unwrap_or_default())));
+        }
+        let what = format!("said to post {n} repl{}", if n == 1 { "y" } else { "ies" });
+        c.moment("you", &what);
+        moved(path, c, "person", &what)?;
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
+    })
+}
+
+/// The person answers what its author asked about it. The author hears it in their words.
+pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
+    let text = check_say(Some(text), "the answer")?.ok_or_else(|| OttoError::usage("say the answer"))?;
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::NeedsYou], "answered")?;
+        let ask = c.ask.as_mut().expect("needs-you has its question");
+        let answer = match ask.options.iter().find(|o| o.eq_ignore_ascii_case(text.trim())) {
+            Some(o) => o.clone(),
+            None => text.clone(),
+        };
+        ask.answer = Some(answer.clone());
+        ask.answered_at = Some(Timestamp::now());
+        let question = crate::gate::title(&ask.question, 120);
+        c.enter(ChangeState::Revising);
+        c.moment("you", format!("answered: {}", first_line(&answer)));
+        let note = tell_author(path, state, c, &format!("You asked: {question}\n\nThe person answered:\n\n{answer}"))?;
+        moved(path, c, "person", &format!("answered: {}", first_line(&answer)))?;
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note })
+    })
+}
+
+/// Its author drafts a reply to a reviewer's comment, for the person to post.
+pub fn reply_draft(r: &ChangeRef, comment: &str, text: &str) -> Result<Change, OttoError> {
+    let comment = comment.trim().to_string();
+    if comment.is_empty() {
+        return Err(OttoError::usage("--comment: the comment it answers, its id or its link"));
+    }
+    let text = check_say(Some(text), "the reply")?.ok_or_else(|| OttoError::usage("the reply is empty"))?;
+    with_change(r, |path, _state, c| {
+        if c.pr.is_none() || c.state.is_over() {
+            return Err(OttoError::conflict(format!("change {} has no open pull request to reply on", r.display())));
+        }
+        c.replies.retain(|x| !(x.comment == comment && x.state == ReplyState::Draft));
+        c.replies.push(Reply { comment: comment.clone(), text: text.clone(), at: Timestamp::now(), state: ReplyState::Draft, posted_at: None });
+        // Answering what was relayed with words rather than code: once the reply is posted, it is
+        // with its reviewers again, not its author.
+        if c.state == ChangeState::Revising {
+            c.enter(ChangeState::PrOpen);
+        }
+        let what = format!("drafted a reply to {comment}");
+        c.moment("author", &what);
+        moved(path, c, "author", &what)?;
+        Ok(c.clone())
+    })
+}
+
+/// Its author asks the person something about it, written like a gate's question — answerable
+/// cold, options under `## Options` — without stopping its run.
+pub fn ask(r: &ChangeRef, question: &str) -> Result<Change, OttoError> {
+    let question = question.trim();
+    if question.is_empty() || question.len() > crate::notes::NOTE_MAX_BYTES {
+        return Err(OttoError::usage(format!("a question about a change is 1 to {} bytes", crate::notes::NOTE_MAX_BYTES)));
+    }
+    let options = crate::gate::parse_options(question);
+    let default = crate::gate::parse_default(question, &options);
+    with_change(r, |path, _state, c| {
+        if c.state.is_over() || c.state == ChangeState::Landing {
+            return Err(OttoError::conflict(format!("change {} is {}: there is nothing to decide about it", r.display(), c.state.as_str())));
+        }
+        c.ask = Some(Ask { question: question.to_string(), options: options.clone(), default: default.clone(), at: Timestamp::now(), answer: None, answered_at: None });
+        c.enter(ChangeState::NeedsYou);
+        let what = format!("asked: {}", crate::gate::title(question, 120));
+        c.moment("author", &what);
+        moved(path, c, "author", &what)?;
+        Ok(c.clone())
+    })
+}
+
 /// Bring a sleeping run back at the next poke, the way a timer its own wake armed would: a check
 /// script doesn't stand in front of it, since what it is woken for is a note, not the world.
 fn wake_soon(state: &mut RunState) {
@@ -1200,6 +1781,41 @@ pub struct Line {
     pub landed_sha: Option<String>,
     /// Its run is over, so nobody can revise it.
     pub author_gone: bool,
+    /// Its pull request, when it has one.
+    pub pr: Option<Pr>,
+    /// What its author asked the person, when it waits on their answer.
+    pub asking: Option<String>,
+    /// Replies to reviewers drafted for the person to post.
+    pub replies: usize,
+    /// Why it looks stuck, when it does: its move has sat too long, or it keeps coming back.
+    pub stuck: Option<String>,
+}
+
+/// How long a change may sit with an agent, and with reviewers, before it reads as stuck.
+pub const STUCK_AGENT_HOURS: i64 = 6;
+pub const STUCK_REVIEW_DAYS: i64 = 3;
+/// Times the lander or CI may send it back before that reads as stuck too.
+pub const STUCK_BOUNCES: usize = 3;
+
+/// Why `c` looks stuck at `now`, in a few words, or `None`.
+pub fn stuck(c: &Change, now: time::OffsetDateTime) -> Option<String> {
+    let waited = now - c.state_at.dt();
+    let bounces = c.timeline.iter().filter(|m| m.by == "lander" && m.what.starts_with("couldn't land it")).count();
+    match c.whose_move() {
+        Move::Nobody | Move::You => None,
+        _ if bounces >= STUCK_BOUNCES && !c.state.is_over() => Some(format!("sent back {bounces} times")),
+        Move::Author | Move::Lander if waited > time::Duration::hours(STUCK_AGENT_HOURS) => Some(format!(
+            "{} hasn't moved it in {}h",
+            if c.whose_move() == Move::Author { "its agent" } else { "the lander" },
+            waited.whole_hours()
+        )),
+        Move::Reviewers | Move::Ci if waited > time::Duration::days(STUCK_REVIEW_DAYS) => Some(format!(
+            "waiting on {} for {} days",
+            if c.whose_move() == Move::Ci { "CI" } else { "reviewers" },
+            waited.whole_days()
+        )),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1262,6 +1878,10 @@ fn line(run: &RunState, short: &str, c: &Change) -> Line {
         last: c.timeline.last().cloned(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
         author_gone: run.status.is_terminal(),
+        pr: c.pr.clone(),
+        asking: (c.state == ChangeState::NeedsYou).then(|| c.ask.as_ref().map(|a| crate::gate::title(&a.question, 120))).flatten(),
+        replies: c.replies.iter().filter(|r| r.state == ReplyState::Draft).count(),
+        stuck: stuck(c, crate::clock::now()),
     }
 }
 
@@ -1296,7 +1916,7 @@ pub fn list(all: bool) -> Result<ChangesView, OttoError> {
     let mut changes: Vec<Line> = rows.into_iter().map(|(l, _)| l).collect();
     let rank = |l: &Line| match l.whose {
         Move::You => 0,
-        Move::Author | Move::Lander => 1,
+        Move::Author | Move::Lander | Move::Reviewers | Move::Ci => 1,
         Move::Nobody => 2,
     };
     changes.sort_by(|a, b| {
@@ -1495,16 +2115,16 @@ mod tests {
         test_init("c-lander", "land changes").unwrap();
         let repo = repo();
         submit("c-app", &submit_fix(&repo, "t")).unwrap();
-        let err = approve(&[r("c-app", 1)], LandMode::Push, None).unwrap_err();
+        let err = approve(&[r("c-app", 1)], LandMode::Push, false, None).unwrap_err();
         assert!(err.message.contains("no lander"), "{}", err.message);
         set_lander("c-lander");
-        let out = approve(&[r("c-app", 1)], LandMode::Push, Some("ship it")).unwrap();
+        let out = approve(&[r("c-app", 1)], LandMode::Push, false, Some("ship it")).unwrap();
         assert_eq!(out[0].state, ChangeState::Approved);
         let c = change("c-app", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.version, d.sha.as_str()), (1, c.latest().sha.as_str()));
         assert_eq!(c.whose_move(), Move::Lander);
-        assert!(approve(&[r("c-app", 1)], LandMode::Push, None).is_err(), "only a change waiting for review is approved");
+        assert!(approve(&[r("c-app", 1)], LandMode::Push, false, None).is_err(), "only a change waiting for review is approved");
         assert_eq!(due().unwrap().len(), 1);
     }
 
@@ -1517,7 +2137,7 @@ mod tests {
         let repo = repo();
         submit("c-land", &submit_fix(&repo, "t")).unwrap();
         set_lander("c-l");
-        approve(&[r("c-land", 1)], LandMode::Push, None).unwrap();
+        approve(&[r("c-land", 1)], LandMode::Push, false, None).unwrap();
         assert!(claim("c-other", &r("c-land", 1)).unwrap_err().message.contains("isn't the lander"));
         let d = claim("c-l", &r("c-land", 1)).unwrap();
         assert_eq!(d.todo, "land");
@@ -1572,7 +2192,7 @@ mod tests {
         set_lander("c-lr");
         let repo = repo();
         submit("c-rev", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-rev", 1)], LandMode::Push, None).unwrap();
+        approve(&[r("c-rev", 1)], LandMode::Push, false, None).unwrap();
         let out = revise(&r("c-rev", 1), "call it louder").unwrap();
         assert_eq!(out.state, ChangeState::Revising);
         let c = change("c-rev", 1);
@@ -1603,7 +2223,7 @@ mod tests {
         set_lander("c-bl");
         let repo = repo();
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], LandMode::Push, None).unwrap();
+        approve(&[r("c-b", 1)], LandMode::Push, false, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let c = bounce("c-bl", &r("c-b", 1), "a.txt conflicts with main").unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::Revising, Move::Author));
@@ -1612,7 +2232,7 @@ mod tests {
         std::fs::write(repo.wt.join("a.txt"), "one\nTwo\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "again"]);
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], LandMode::Push, None).unwrap();
+        approve(&[r("c-b", 1)], LandMode::Push, false, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
         let c = rebased("c-bl", &r("c-b", 1), &head).unwrap();
@@ -1629,13 +2249,109 @@ mod tests {
         submit("c-n", &submit_fix(&repo, "Shout")).unwrap();
         let dir = crate::paths::run_dir("c-n").unwrap();
         let keys = |d: &Path| crate::notify::change_notices(d).into_iter().map(|n| n.key).collect::<Vec<_>>();
-        assert_eq!(keys(&dir), vec!["change:1@v1"]);
+        assert_eq!(keys(&dir), vec!["change:1@v1:review"]);
         revise(&r("c-n", 1), "louder").unwrap();
         assert!(keys(&dir).is_empty(), "its author's move, not the person's");
         std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
         submit("c-n", &submit_fix(&repo, "Shout")).unwrap();
-        assert_eq!(keys(&dir), vec!["change:1@v2"], "the next version is new to review");
+        assert_eq!(keys(&dir), vec!["change:1@v2:review"], "the next version is new to review");
+    }
+
+    fn note_texts(run: &str) -> Vec<String> {
+        let dir = crate::paths::run_dir(run).unwrap();
+        crate::state::read_run(run).unwrap().notes.iter().map(|n| crate::notes::read_text(&dir, n)).collect()
+    }
+
+    #[test]
+    fn a_pull_request_is_kept_moving_and_what_reviewers_ask_goes_to_its_author() {
+        let _h = TempHome::new();
+        test_init("c-pr", "a goal").unwrap();
+        test_init("c-prl", "land changes").unwrap();
+        set_lander("c-prl");
+        let repo = repo();
+        submit("c-pr", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(approve(&[r("c-pr", 1)], LandMode::Push, true, None).is_err(), "merging when ready is for a pull request");
+        approve(&[r("c-pr", 1)], LandMode::Pr, false, None).unwrap();
+        assert_eq!(due().unwrap()[0].todo, "open its pull request");
+        let d = claim("c-prl", &r("c-pr", 1)).unwrap();
+        let v1 = d.sha.unwrap();
+        check("c-prl", &r("c-pr", 1), &v1).unwrap();
+        assert!(pr_pushed("c-prl", &r("c-pr", 1), &v1, None, false).unwrap_err().message.contains("--url"));
+        let c = pr_pushed("c-prl", &r("c-pr", 1), &v1, Some("https://github.com/o/app/pull/41"), false).unwrap();
+        assert_eq!((c.state, c.whose_move(), c.pr.as_ref().unwrap().number), (ChangeState::PrOpen, Move::Ci, Some(41)));
+        assert!(note_texts("c-pr").last().unwrap().contains("pull/41"), "its author hears the pull request is open");
+
+        let seen = |ci, review, what| Seen { updated: "2026-10-21T12:00:00Z", ci: Some(ci), review: Some(review), mergeable: Some("clean"), what };
+        let c = pr_seen("c-prl", &r("c-pr", 1), &seen("passing", "waiting", None)).unwrap();
+        assert_eq!(c.whose_move(), Move::Reviewers);
+        let c = relay("c-prl", &r("c-pr", 1), "a reviewer (sam)", "call it louder, please").unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Revising, Move::Author));
+        assert!(c.decision.is_some(), "the approval to open it as a pull request stands");
+        assert!(note_texts("c-pr").last().unwrap().contains("call it louder"));
+
+        // The next version goes to the pull request without asking the person again.
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        submit("c-pr", &submit_fix(&repo, "Shout")).unwrap();
+        let c = change("c-pr", 1);
+        assert_eq!((c.state, c.decision.as_ref().unwrap().version), (ChangeState::Approved, 2));
+        assert_eq!(due().unwrap()[0].todo, "update its pull request");
+        claim("c-prl", &r("c-pr", 1)).unwrap();
+        let v2 = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        check("c-prl", &r("c-pr", 1), &v2).unwrap();
+        assert!(check("c-prl", &r("c-pr", 1), &v1).is_err(), "the old version is not what goes to it now");
+        pr_pushed("c-prl", &r("c-pr", 1), &v2, None, false).unwrap();
+
+        // A reply its author drafts waits on the person, then on the lander.
+        let c = reply_draft(&r("c-pr", 1), "c-77", "Done in the latest push.").unwrap();
+        assert_eq!(c.whose_move(), Move::You);
+        post(&r("c-pr", 1), None).unwrap();
+        assert_eq!(due().unwrap()[0].todo, "post replies");
+        posted("c-prl", &r("c-pr", 1), "c-77").unwrap();
+
+        // An ask answered with words alone, not code: once posted, it is with its reviewers again.
+        relay("c-prl", &r("c-pr", 1), "a reviewer (sam)", "why three tries?").unwrap();
+        let c = reply_draft(&r("c-pr", 1), "c-78", "It matches the sync client.").unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::PrOpen, Move::You));
+        post(&r("c-pr", 1), Some("c-78")).unwrap();
+        let c = posted("c-prl", &r("c-pr", 1), "c-78").unwrap();
+        assert!(matches!(c.whose_move(), Move::Reviewers | Move::Ci), "not its author's — it has answered: {:?}", c.whose_move());
+
+        // Approved and passing, it is the person's to merge; what merges is what was pushed.
+        let c = pr_seen("c-prl", &r("c-pr", 1), &seen("passing", "approved", Some("Sam approved"))).unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::ReadyToMerge, Move::You));
+        merge(&r("c-pr", 1)).unwrap();
+        assert_eq!(due().unwrap()[0].todo, "merge its pull request");
+        check("c-prl", &r("c-pr", 1), &v2).unwrap();
+        assert!(check("c-prl", &r("c-pr", 1), &repo_head(&repo)).unwrap_err().message.contains("someone else pushed"));
+        assert!(merged("c-prl", &r("c-pr", 1), &v2).unwrap_err().message.contains("fetch first"));
+        sh(&repo.wt, &["push", "--quiet", "origin", &format!("{v2}:main")]);
+        let c = merged("c-prl", &r("c-pr", 1), &v2).unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Merged, Move::Lander));
+        assert!(note_texts("c-pr").last().unwrap().contains("merged"));
+    }
+
+    /// A commit that isn't on the change's branch: main's own.
+    fn repo_head(repo: &Repo) -> String {
+        sh(&repo.main, &["rev-parse", "main"])
+    }
+
+    #[test]
+    fn an_author_can_ask_the_person_without_stopping_and_hears_the_answer() {
+        let _h = TempHome::new();
+        test_init("c-ask", "a goal").unwrap();
+        let repo = repo();
+        submit("c-ask", &submit_fix(&repo, "Shout")).unwrap();
+        let c = ask(&r("c-ask", 1), "Sam wants the flag renamed, which breaks two callers.\n\n## Options\n- **Rename** *(default)* — and fix both callers\n- **Keep** — reply why\n").unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::NeedsYou, Move::You));
+        assert_eq!(c.ask.as_ref().unwrap().options, vec!["Rename", "Keep"]);
+        assert!(submit("c-ask", &submit_fix(&repo, "Shout")).unwrap_err().message.contains("answer"));
+        let out = answer(&r("c-ask", 1), "keep").unwrap();
+        assert_eq!(out.state, ChangeState::Revising);
+        assert!(note_texts("c-ask").last().unwrap().contains("The person answered:\n\nKeep"), "an option is matched, case aside");
+        let stale = Change { state_at: Timestamp::at(crate::clock::now() - time::Duration::hours(9)), ..change("c-ask", 1) };
+        assert_eq!(stuck(&stale, crate::clock::now()).as_deref(), Some("its agent hasn't moved it in 9h"));
     }
 
     #[test]

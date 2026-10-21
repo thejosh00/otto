@@ -446,6 +446,36 @@ pub enum ChangesCommand {
     Revise(ChangesReviseArgs),
     /// Drop a change: it won't land, its author is told, and the lander cleans up after it
     Drop(ChangesDropArgs),
+    /// Merge a change's pull request, now it is approved and passing — the lander does it
+    Merge(ChangesRefArgs),
+    /// Post the replies to reviewers a change's author drafted — the lander does it
+    Post(ChangesPostArgs),
+    /// Answer what a change's author asked you about it
+    Answer(ChangesAnswerArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesRefArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesPostArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+    /// Only the reply to this comment. Omitted, every reply drafted for it
+    #[arg(long)]
+    pub comment: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesAnswerArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+    /// Your answer: one of its options, or what you'd tell it in your own words
+    #[arg(long, required = true)]
+    pub text: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -471,6 +501,13 @@ pub struct ChangesApproveArgs {
     /// For the lander and the record, in a sentence
     #[arg(long)]
     pub note: Option<String>,
+    /// As a pull request rather than pushed: the lander opens it and keeps it moving, and what
+    /// reviewers ask goes to its author
+    #[arg(long)]
+    pub pr: bool,
+    /// With --pr: merge it once it is approved and passing, without asking you again
+    #[arg(long, requires = "pr")]
+    pub merge_when_ready: bool,
     /// Record it, and don't wake the lander yet
     #[arg(long)]
     pub no_wake: bool,
@@ -501,9 +538,10 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
     match args.command {
         Some(ChangesCommand::Show(a)) => return changes_show(a),
         Some(ChangesCommand::Approve(a)) => {
-            let out = crate::core::approve_changes(&a.changes, a.note.as_deref(), a.no_wake)?;
+            let mode = if a.pr { crate::changes::LandMode::Pr } else { crate::changes::LandMode::Push };
+            let out = crate::core::approve_changes(&a.changes, mode, a.merge_when_ready, a.note.as_deref(), a.no_wake)?;
             for d in &out.decided {
-                println!("{} approved: \"{}\"", d.reference, d.title);
+                println!("{} approved{}: \"{}\"", d.reference, if a.pr { " as a pull request" } else { "" }, d.title);
             }
             print_woke(&out, "the lander lands them when it next wakes");
             return Ok(());
@@ -520,10 +558,28 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
             print_woke(&out, "");
             return Ok(());
         }
+        Some(ChangesCommand::Merge(a)) => {
+            let out = crate::core::merge_change(&a.change, false)?;
+            println!("{}: its pull request is yours to merge, and you said merge it", out.decided[0].reference);
+            print_woke(&out, "the lander merges it when it next wakes");
+            return Ok(());
+        }
+        Some(ChangesCommand::Post(a)) => {
+            let out = crate::core::post_replies(&a.change, a.comment.as_deref(), false)?;
+            println!("{}: the lander posts what its agent drafted", out.decided[0].reference);
+            print_woke(&out, "the lander posts it when it next wakes");
+            return Ok(());
+        }
+        Some(ChangesCommand::Answer(a)) => {
+            let out = crate::core::answer_change(&a.change, &a.text, false)?;
+            println!("{}: its agent has your answer", out.decided[0].reference);
+            print_woke(&out, "its agent reads it at its next wake");
+            return Ok(());
+        }
         None => {}
     }
     if args.due {
-        println!("{}", serde_json::to_string_pretty(&crate::changes::due()?)?);
+        println!("{}", serde_json::to_string_pretty(&crate::changes::due_with_prs()?)?);
         return Ok(());
     }
     let view = crate::changes::list(args.all)?;
@@ -557,12 +613,13 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
                 l.add as i64,
                 l.del,
                 crate::clock::relative(l.since),
-                if l.whose == Move::You { format!("otto changes show {}", l.reference) } else { change_state_words(l) }
+                change_state_words(l)
             );
             println!("           {} · {}{}", l.name, l.repo, if flags.is_empty() { String::new() } else { format!(" · {flags}") });
         }
         println!();
     }
+    println!("otto changes show <change> for one in full: what its author said, its patch, and what to do about it");
     if view.yours > 0 && view.lander.is_none() {
         println!("No lander is set up, so an approved change has nothing to land it — see the README's \"Landing changes\".");
     }
@@ -595,6 +652,27 @@ fn change_state_words(l: &crate::changes::Line) -> String {
         },
         Dropped if l.whose == crate::changes::Move::Lander => "dropped; cleaning up".into(),
         Dropped => "dropped".into(),
+        NeedsYou => format!("its agent asks: {}", l.asking.as_deref().unwrap_or("(see the change)")),
+        ReadyToMerge => format!("{} is approved and passing: yours to merge", pr_name(l)),
+        PrOpen if l.replies > 0 => format!("{}: {} repl{} drafted for you to post", pr_name(l), l.replies, if l.replies == 1 { "y" } else { "ies" }),
+        PrOpen => match l.whose {
+            crate::changes::Move::Ci => format!("{}: waiting on CI", pr_name(l)),
+            crate::changes::Move::Lander => format!("{}: the lander is on it", pr_name(l)),
+            _ => format!("{}: waiting on review", pr_name(l)),
+        },
+        Merged => match (&l.landed_sha, l.whose) {
+            (Some(sha), crate::changes::Move::Lander) => format!("{} merged at {}; cleaning up", pr_name(l), short(sha)),
+            (Some(sha), _) => format!("{} merged at {}", pr_name(l), short(sha)),
+            (None, _) => "merged".into(),
+        },
+        Closed => format!("{} closed without merging", pr_name(l)),
+    }
+}
+
+fn pr_name(l: &crate::changes::Line) -> String {
+    match l.pr.as_ref().and_then(|p| p.number) {
+        Some(n) => format!("PR #{n}"),
+        None => "its pull request".into(),
     }
 }
 
@@ -608,6 +686,9 @@ fn change_flags(l: &crate::changes::Line) -> String {
     }
     if l.version > 1 {
         flags.push(format!("v{}", l.version));
+    }
+    if let Some(why) = &l.stuck {
+        flags.push(format!("stuck: {why}"));
     }
     flags.join(" · ")
 }
@@ -635,6 +716,23 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     let flags = change_flags(l);
     if !flags.is_empty() {
         println!("{flags}");
+    }
+    if let Some(pr) = &d.change.pr {
+        println!(
+            "pull request: {}{}",
+            pr.url,
+            [pr.ci.as_deref().map(|c| format!("CI {c}")), pr.review.as_deref().map(|r| format!("review {r}"))]
+                .into_iter()
+                .flatten()
+                .map(|x| format!(" · {x}"))
+                .collect::<String>()
+        );
+    }
+    if let (Some(ask), crate::changes::ChangeState::NeedsYou) = (&d.change.ask, d.change.state) {
+        println!("\nits agent asks:\n\n{}\n\notto changes answer {} --text \"…\"", ask.question.trim_end(), l.reference);
+    }
+    for r in d.change.replies.iter().filter(|r| r.state == crate::changes::ReplyState::Draft) {
+        println!("\na reply drafted to {}:\n{}\n  otto changes post {} --comment {}", r.comment, r.text, l.reference, r.comment);
     }
     println!("\n{}\n", d.summary.trim_end());
     if let Some(tests) = &v.tests {
@@ -667,9 +765,11 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     } else {
         println!("\nthe patch: otto changes show {} --patch   (or {})", l.reference, d.commands[0]);
     }
-    if l.whose == crate::changes::Move::You {
+    if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::ReadyToMerge {
+        println!("\notto changes merge {}      merge its pull request", l.reference);
+    } else if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::Review {
         println!(
-            "\notto changes approve {r}      land it on {}\notto changes revise {r} --text \"…\"\notto changes drop {r}",
+            "\notto changes approve {r}      land it on {}\notto changes approve {r} --pr  as a pull request\notto changes revise {r} --text \"…\"\notto changes drop {r}",
             d.change.base,
             r = l.reference
         );
