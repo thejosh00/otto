@@ -417,6 +417,290 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// otto changes
+// ---------------------------------------------------------------------------
+
+#[derive(clap::Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct ChangesArgs {
+    #[command(subcommand)]
+    pub command: Option<ChangesCommand>,
+    /// Every change, not only those open or finished this week
+    #[arg(long)]
+    pub all: bool,
+    /// What waits on the lander, as JSON — `[]` when nothing does. For a check script
+    #[arg(long)]
+    pub due: bool,
+    /// Print it as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum ChangesCommand {
+    /// One change: what its author said, its files, what happened to it — and with --patch, the patch
+    Show(ChangesShowArgs),
+    /// Approve changes to land on their base branch, and wake the lander to land them
+    Approve(ChangesApproveArgs),
+    /// Send a change back to its author, saying what to change, and wake it to do it
+    Revise(ChangesReviseArgs),
+    /// Drop a change: it won't land, its author is told, and the lander cleans up after it
+    Drop(ChangesDropArgs),
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesShowArgs {
+    /// The change: <run>/<number>, as `otto changes` lists it
+    pub change: String,
+    /// Which version of it. Omitted, the latest
+    #[arg(long, value_name = "N")]
+    pub version: Option<u32>,
+    /// Print the patch too
+    #[arg(long)]
+    pub patch: bool,
+    /// Print it as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesApproveArgs {
+    /// The changes: <run>/<number>, one or more
+    #[arg(required = true, num_args = 1..)]
+    pub changes: Vec<String>,
+    /// For the lander and the record, in a sentence
+    #[arg(long)]
+    pub note: Option<String>,
+    /// Record it, and don't wake the lander yet
+    #[arg(long)]
+    pub no_wake: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesReviseArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+    /// What to change, for its author: it reads your words
+    #[arg(long, required = true)]
+    pub text: String,
+    /// Record it, and don't wake the author yet
+    #[arg(long)]
+    pub no_wake: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesDropArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+    /// Why, for its author
+    #[arg(long)]
+    pub text: Option<String>,
+}
+
+pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
+    match args.command {
+        Some(ChangesCommand::Show(a)) => return changes_show(a),
+        Some(ChangesCommand::Approve(a)) => {
+            let out = crate::core::approve_changes(&a.changes, a.note.as_deref(), a.no_wake)?;
+            for d in &out.decided {
+                println!("{} approved: \"{}\"", d.reference, d.title);
+            }
+            print_woke(&out, "the lander lands them when it next wakes");
+            return Ok(());
+        }
+        Some(ChangesCommand::Revise(a)) => {
+            let out = crate::core::revise_change(&a.change, &a.text, a.no_wake)?;
+            println!("{} is back with its author, with your words", out.decided[0].reference);
+            print_woke(&out, "its author reads them at its next wake");
+            return Ok(());
+        }
+        Some(ChangesCommand::Drop(a)) => {
+            let out = crate::core::drop_change(&a.change, a.text.as_deref(), false)?;
+            println!("{} dropped: it won't land", out.decided[0].reference);
+            print_woke(&out, "");
+            return Ok(());
+        }
+        None => {}
+    }
+    if args.due {
+        println!("{}", serde_json::to_string_pretty(&crate::changes::due()?)?);
+        return Ok(());
+    }
+    let view = crate::changes::list(args.all)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&view)?);
+        return Ok(());
+    }
+    if view.changes.is_empty() {
+        println!("no changes{}", if args.all { "" } else { " open, or finished this week (--all shows every one)" });
+        return Ok(());
+    }
+    use crate::changes::Move;
+    let title_width = terminal_width().saturating_sub(48).clamp(30, 70);
+    let groups: [(&str, fn(Move) -> bool); 3] = [
+        ("waiting on you", |m| m == Move::You),
+        ("in hand", |m| matches!(m, Move::Author | Move::Lander)),
+        ("done", |m| m == Move::Nobody),
+    ];
+    for (heading, belongs) in groups {
+        let rows: Vec<&crate::changes::Line> = view.changes.iter().filter(|l| belongs(l.whose)).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        println!("{heading} ({})\n", rows.len());
+        for l in rows {
+            let flags = change_flags(l);
+            println!(
+                "  {:<8} {:<title_width$}  {:>+6} −{:<5} {:>8}  {}",
+                l.reference,
+                clip(&l.title, title_width),
+                l.add as i64,
+                l.del,
+                crate::clock::relative(l.since),
+                if l.whose == Move::You { format!("otto changes show {}", l.reference) } else { change_state_words(l) }
+            );
+            println!("           {} · {}{}", l.name, l.repo, if flags.is_empty() { String::new() } else { format!(" · {flags}") });
+        }
+        println!();
+    }
+    if view.yours > 0 && view.lander.is_none() {
+        println!("No lander is set up, so an approved change has nothing to land it — see the README's \"Landing changes\".");
+    }
+    Ok(())
+}
+
+fn print_woke(out: &crate::core::ChangeOutcome, otherwise: &str) {
+    match (&out.woke, &out.not_woken) {
+        (Some(who), _) => println!("woke {who} to act on it"),
+        (None, Some(why)) => println!("not woken ({why}); {}", if otherwise.is_empty() { "it acts at its next wake" } else { otherwise }),
+        (None, None) if !otherwise.is_empty() => println!("{otherwise}"),
+        _ => {}
+    }
+}
+
+/// Where a change is, in a few plain words.
+fn change_state_words(l: &crate::changes::Line) -> String {
+    use crate::changes::ChangeState::*;
+    let short = |s: &str| s[..s.len().min(7)].to_string();
+    match l.state {
+        Review => "waiting for your review".into(),
+        Revising if l.author_gone => "sent back, but its run is over".into(),
+        Revising => "its author is revising it".into(),
+        Approved => "approved; waiting for the lander".into(),
+        Landing => "the lander is landing it".into(),
+        Landed => match (&l.landed_sha, l.whose) {
+            (Some(sha), crate::changes::Move::Lander) => format!("landed at {}; cleaning up", short(sha)),
+            (Some(sha), _) => format!("landed at {}", short(sha)),
+            (None, _) => "landed".into(),
+        },
+        Dropped if l.whose == crate::changes::Move::Lander => "dropped; cleaning up".into(),
+        Dropped => "dropped".into(),
+    }
+}
+
+fn change_flags(l: &crate::changes::Line) -> String {
+    let mut flags = Vec::new();
+    if l.large {
+        flags.push(format!("large ({} lines)", l.add + l.del));
+    }
+    if !l.overlaps.is_empty() {
+        flags.push(format!("touches what {} does", l.overlaps.join(", ")));
+    }
+    if l.version > 1 {
+        flags.push(format!("v{}", l.version));
+    }
+    flags.join(" · ")
+}
+
+fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
+    let r = crate::changes::ChangeRef::parse(&a.change)?;
+    let d = crate::changes::read(&r, a.version)?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&d)?);
+        return Ok(());
+    }
+    let l = &d.line;
+    let v = &d.version;
+    println!("{}  {}", l.reference, d.change.title);
+    println!(
+        "{} · {} → {} in {} · v{}{} · {}",
+        l.name,
+        d.change.branch,
+        d.change.base,
+        l.repo,
+        v.k,
+        if d.change.versions.len() > 1 { format!(" of {}", d.change.versions.len()) } else { String::new() },
+        change_state_words(l)
+    );
+    let flags = change_flags(l);
+    if !flags.is_empty() {
+        println!("{flags}");
+    }
+    println!("\n{}\n", d.summary.trim_end());
+    if let Some(tests) = &v.tests {
+        println!("tests: {tests}");
+    }
+    println!(
+        "{} commit{}, {} file{}, +{} −{}",
+        v.commits,
+        if v.commits == 1 { "" } else { "s" },
+        v.stat.files.len(),
+        if v.stat.files.len() == 1 { "" } else { "s" },
+        v.stat.add,
+        v.stat.del
+    );
+    for f in &v.stat.files {
+        match (f.add, f.del) {
+            (Some(add), Some(del)) => println!("  {:>+5} −{:<4} {}", add as i64, del, f.path),
+            _ => println!("  {:>11} {}", "binary", f.path),
+        }
+    }
+    println!("\nwhat happened");
+    for m in &d.change.timeline {
+        println!("  {:>8}  {:<6} {}", crate::clock::relative(m.at), m.by, m.what);
+    }
+    if a.patch {
+        match &d.patch {
+            Some(p) => println!("\n{p}"),
+            None => println!("\nIts patch was too big to keep: {}", d.commands[0]),
+        }
+    } else {
+        println!("\nthe patch: otto changes show {} --patch   (or {})", l.reference, d.commands[0]);
+    }
+    if l.whose == crate::changes::Move::You {
+        println!(
+            "\notto changes approve {r}      land it on {}\notto changes revise {r} --text \"…\"\notto changes drop {r}",
+            d.change.base,
+            r = l.reference
+        );
+        if d.lander.is_none() {
+            println!("No lander is set up; to land it yourself: {}", d.commands.get(1).map(String::as_str).unwrap_or(""));
+        }
+    }
+    Ok(())
+}
+
+pub fn config_lander(run: Option<String>, off: bool) -> Result<(), OttoError> {
+    if off {
+        crate::config::save_lander(None)?;
+        println!("no lander: approving a change is refused until there is one");
+        return Ok(());
+    }
+    match run {
+        Some(run) => {
+            let id = crate::config::save_lander(Some(&run))?.expect("a run was named");
+            println!("lander: {} — it alone lands approved changes, and approving one wakes it", crate::paths::label_of(&id));
+        }
+        None => match crate::changes::lander_ref() {
+            Some(l) if l.alive => println!("{}", crate::paths::label(&l.short, &l.name)),
+            Some(l) => println!("{} — it is stopped or done, so nothing lands; resume it or name another", crate::paths::label(&l.short, &l.name)),
+            None => println!("not set — `otto config lander <run>` names the run that lands approved changes (the README's \"Landing changes\")"),
+        },
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // otto inbox
 // ---------------------------------------------------------------------------
 

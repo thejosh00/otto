@@ -59,6 +59,9 @@ pub struct Config {
     pub workdir: Option<String>,
     #[serde(default)]
     pub launchers: Vec<LauncherDef>,
+    /// The run that lands approved changes — the only one that pushes them (`crate::changes`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lander: Option<String>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -165,6 +168,35 @@ pub fn save_workdir(text: &str) -> Result<PathBuf, OttoError> {
     Ok(resolved)
 }
 
+/// The lander's run id, when one is set up.
+pub fn lander() -> Result<Option<String>, OttoError> {
+    Ok(load()?.lander)
+}
+
+/// Name the run that lands approved changes, or (`None`) say there is none, keeping everything else
+/// in the file as it was. Kept by run id, which a rename doesn't change.
+pub fn save_lander(id: Option<&str>) -> Result<Option<String>, OttoError> {
+    let id = id.map(crate::paths::resolve_run_id).transpose()?;
+    let path = config_path();
+    let mut value = match std::fs::read_to_string(&path) {
+        Ok(existing) => serde_json::from_str::<serde_json::Value>(&existing)
+            .map_err(|e| OttoError::usage(format!("{} is not valid: {e}", path.display())))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+        Err(e) => return Err(e.into()),
+    };
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| OttoError::usage(format!("{} is not a JSON object", path.display())))?;
+    match &id {
+        Some(id) => object.insert("lander".to_string(), serde_json::Value::String(id.clone())),
+        None => object.remove("lander"),
+    };
+    parse(&value.to_string())?;
+    std::fs::create_dir_all(crate::paths::otto_home())?;
+    crate::state::write_atomic(&path, &(serde_json::to_string_pretty(&value)? + "\n"))?;
+    Ok(id)
+}
+
 /// Where a run's wakes run: the directory the run recorded, else today's default. `None` — a run
 /// from before working directories existed, on a machine with no default — leaves a wake where
 /// whatever started it happens to be.
@@ -209,7 +241,7 @@ mod tests {
 
     #[test]
     fn a_name_resolves_exactly_or_by_unique_prefix() {
-        let config = Config { workdir: None, launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")] };
+        let config = Config { workdir: None, launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")], lander: None };
         assert_eq!(config.launcher("CLAUDE").unwrap().name, "claude");
         assert_eq!(config.launcher("nono (").unwrap().name, "nono (sandbox)");
         assert_eq!(config.launcher("nono-").unwrap().name, "nono-lite");
@@ -220,7 +252,7 @@ mod tests {
 
     #[test]
     fn the_config_can_redefine_claude() {
-        let config = Config { workdir: None, launchers: vec![def("claude", "/opt/claude")] };
+        let config = Config { workdir: None, launchers: vec![def("claude", "/opt/claude")], lander: None };
         assert_eq!(config.launchers().len(), 1);
         assert_eq!(config.launcher("claude").unwrap().command, "/opt/claude");
     }

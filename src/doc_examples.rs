@@ -268,6 +268,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             cache_creation: Some(1),
             notes: vec![s()],
         },
+        ChangeSubmitted { change: 1, version: 1, title: s(), sha: s(), branch: s() },
+        ChangeMoved { change: 1, state: crate::changes::ChangeState::Landed, by: s(), what: s() },
     ];
     for event in &events {
         match event {
@@ -283,7 +285,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }
-            | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } => {}
+            | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } | ChangeSubmitted { .. } | ChangeMoved { .. } => {}
         }
     }
     events

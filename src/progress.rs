@@ -28,7 +28,7 @@ pub fn mark(run_dir: &Path, state: &RunState) -> String {
     let mut hash = Fnv::new();
     hash.field(state.phase.as_bytes());
     hash.field(serde_json::to_string(&state.facts).unwrap_or_default().as_bytes());
-    for dir in ["artifacts", "gates", "messages", "outputs"] {
+    for dir in ["artifacts", "gates", "messages", "outputs", "changes"] {
         hash.field(dir.as_bytes());
         tree(&mut hash, run_dir, &run_dir.join(dir));
     }

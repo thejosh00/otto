@@ -50,26 +50,34 @@ pub fn add(run_id: &str, text: &str, standing: bool) -> Result<Note, OttoError> 
             text.len()
         )));
     }
-    crate::state::transaction(run_id, |path, state| {
-        refuse_if_over(state)?;
-        if standing {
-            let current: usize = state.notes.iter().filter(|n| n.standing).map(|n| read_text(path, n).len()).sum();
-            if current + text.len() > STANDING_MAX_BYTES {
-                return Err(OttoError::usage(format!(
-                    "standing notes are capped at {STANDING_MAX_BYTES} bytes together, since every wake carries them — \
-                     {current} are in use; drop one first (`otto note {} --list`)",
-                    crate::paths::short_id(run_id)
-                )));
-            }
+    crate::state::transaction(run_id, |path, state| add_in(path, state, text, standing))
+}
+
+/// `add`, for a caller that already holds the run's lock — a change moving on, which tells its
+/// author in the same write.
+pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bool) -> Result<Note, OttoError> {
+    let text = text.trim_end();
+    if text.len() > NOTE_MAX_BYTES {
+        return Err(OttoError::usage(format!("a note is at most {NOTE_MAX_BYTES} bytes (this one is {})", text.len())));
+    }
+    refuse_if_over(state)?;
+    if standing {
+        let current: usize = state.notes.iter().filter(|n| n.standing).map(|n| read_text(path, n).len()).sum();
+        if current + text.len() > STANDING_MAX_BYTES {
+            return Err(OttoError::usage(format!(
+                "standing notes are capped at {STANDING_MAX_BYTES} bytes together, since every wake carries them — \
+                 {current} are in use; drop one first (`otto note {} --list`)",
+                crate::paths::short_id(&state.id)
+            )));
         }
-        let id = next_id(path, state);
-        let file = format!("{NOTES_DIR}/{id}.md");
-        crate::state::write_atomic(&path.join(&file), &format!("{text}\n"))?;
-        let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None };
-        state.notes.push(note.clone());
-        crate::event::record(path, &Event::NoteAdded { note: id, file, standing })?;
-        Ok(note)
-    })
+    }
+    let id = next_id(path, state);
+    let file = format!("{NOTES_DIR}/{id}.md");
+    crate::state::write_atomic(&path.join(&file), &format!("{text}\n"))?;
+    let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None };
+    state.notes.push(note.clone());
+    crate::event::record(path, &Event::NoteAdded { note: id, file, standing })?;
+    Ok(note)
 }
 
 /// Withdraw a note that has not been delivered yet, or retire a standing one. Its file stays: the

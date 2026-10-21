@@ -246,6 +246,123 @@ Options:
           Print help (see a summary with '-h')
 ```
 
+## `otto changes`
+
+```text
+Code runs have handed back: what waits on your review, what is landing, what landed
+
+Usage: otto changes [OPTIONS]
+       otto changes <COMMAND>
+
+Commands:
+  show     One change: what its author said, its files, what happened to it — and with --patch, the patch
+  approve  Approve changes to land on their base branch, and wake the lander to land them
+  revise   Send a change back to its author, saying what to change, and wake it to do it
+  drop     Drop a change: it won't land, its author is told, and the lander cleans up after it
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+      --all
+          Every change, not only those open or finished this week
+
+      --due
+          What waits on the lander, as JSON — `[]` when nothing does. For a check script
+
+      --json
+          Print it as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto changes show`
+
+```text
+One change: what its author said, its files, what happened to it — and with --patch, the patch
+
+Usage: otto changes show [OPTIONS] <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>, as `otto changes` lists it
+
+Options:
+      --version <N>
+          Which version of it. Omitted, the latest
+
+      --patch
+          Print the patch too
+
+      --json
+          Print it as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto changes approve`
+
+```text
+Approve changes to land on their base branch, and wake the lander to land them
+
+Usage: otto changes approve [OPTIONS] <CHANGES>...
+
+Arguments:
+  <CHANGES>...
+          The changes: <run>/<number>, one or more
+
+Options:
+      --note <NOTE>
+          For the lander and the record, in a sentence
+
+      --no-wake
+          Record it, and don't wake the lander yet
+
+  -h, --help
+          Print help
+```
+
+### `otto changes revise`
+
+```text
+Send a change back to its author, saying what to change, and wake it to do it
+
+Usage: otto changes revise [OPTIONS] --text <TEXT> <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --text <TEXT>
+          What to change, for its author: it reads your words
+
+      --no-wake
+          Record it, and don't wake the author yet
+
+  -h, --help
+          Print help
+```
+
+### `otto changes drop`
+
+```text
+Drop a change: it won't land, its author is told, and the lander cleans up after it
+
+Usage: otto changes drop [OPTIONS] <CHANGE>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --text <TEXT>
+          Why, for its author
+
+  -h, --help
+          Print help
+```
+
 ## `otto answer`
 
 ```text
@@ -843,6 +960,7 @@ Usage: otto config <COMMAND>
 
 Commands:
   workdir  The default directory wakes run in, for runs that don't pass --workdir
+  lander   The run that lands approved changes — the only one that pushes them
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -862,6 +980,25 @@ Arguments:
           Set it to this directory (`~` is expanded; it must exist). Omit to print it
 
 Options:
+  -h, --help
+          Print help
+```
+
+### `otto config lander`
+
+```text
+The run that lands approved changes — the only one that pushes them
+
+Usage: otto config lander [OPTIONS] [RUN]
+
+Arguments:
+  [RUN]
+          Make this run the lander. Omit to print which run is
+
+Options:
+      --off
+          There is no lander: approving a change is refused until there is one
+
   -h, --help
           Print help
 ```
@@ -887,6 +1024,7 @@ Commands:
   publish           Keep something the run made where the person can find it: a new key is a new output, the same key again its next version
   stages            Declare the stages the run's work moves through, in order
   output-state      Mark an output waiting, done, or not needed any more
+  change            Code handed back: a wake submits it, and the lander lands it
   arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
   set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
@@ -1370,6 +1508,240 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+### `otto state change`
+
+```text
+Code handed back: a wake submits it, and the lander lands it
+
+Usage: otto state change <COMMAND>
+
+Commands:
+  submit    Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
+  withdraw  Take back a change you no longer want: overtaken, or the wrong approach
+  due       The lander: what waits on it, across every run — approved changes to land, then cleaning up
+  claim     The lander: take an approved change in hand, and print what lands
+  check     The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
+  landed    The lander: it is on its base branch now. otto looks, and tells its author
+  rebased   The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
+  bounce    The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+  cleaned   The lander: its worktree and branch are gone (otto looks), or say what was left and why
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto state change submit`
+
+```text
+Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
+
+Usage: otto state change submit [OPTIONS] --repo <REPO> --branch <BRANCH> --title <TITLE> --summary-file <PATH> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --repo <REPO>
+          The repository: its main checkout, or any worktree of it
+
+      --branch <BRANCH>
+          The branch the work is committed on
+
+      --title <TITLE>
+          What it does, in a few words, for a list: "Answering a stopped run's question points to otto resume"
+
+      --summary-file <PATH>
+          What you'd tell the person reviewing it: what it does and why first, then what could go wrong
+
+      --tests <TESTS>
+          What the tests said, in a line: "cargo test: 429 passed"
+
+      --base <BASE>
+          The branch it lands on. Omitted, the remote's default branch
+
+      --key <KEY>
+          What this run calls it, when not its branch: the same key again is its next version
+
+  -h, --help
+          Print help
+```
+
+### `otto state change withdraw`
+
+```text
+Take back a change you no longer want: overtaken, or the wrong approach
+
+Usage: otto state change withdraw --reason <REASON> <ID> <CHANGE>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  <CHANGE>
+          The change's number
+
+Options:
+      --reason <REASON>
+          Why, in a sentence: the person reads it on the change
+
+  -h, --help
+          Print help
+```
+
+### `otto state change due`
+
+```text
+The lander: what waits on it, across every run — approved changes to land, then cleaning up
+
+Usage: otto state change due [OPTIONS] <LANDER>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+Options:
+      --json
+          Print it as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto state change claim`
+
+```text
+The lander: take an approved change in hand, and print what lands
+
+Usage: otto state change claim <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>, as `otto state change due` lists it
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto state change check`
+
+```text
+The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
+
+Usage: otto state change check --head <HEAD> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --head <HEAD>
+          The commit you are about to put on the base branch
+
+  -h, --help
+          Print help
+```
+
+### `otto state change landed`
+
+```text
+The lander: it is on its base branch now. otto looks, and tells its author
+
+Usage: otto state change landed [OPTIONS] --sha <SHA> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --sha <SHA>
+          The commit now on the base branch
+
+      --note <NOTE>
+          Anything its author should know, in a sentence: "the main checkout has uncommitted changes, so it wasn't updated"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change rebased`
+
+```text
+The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
+
+Usage: otto state change rebased --head <HEAD> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --head <HEAD>
+          The rebased commit
+
+  -h, --help
+          Print help
+```
+
+### `otto state change bounce`
+
+```text
+The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+
+Usage: otto state change bounce --reason <REASON> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --reason <REASON>
+          What stopped it, specifically enough to fix: "a.txt conflicts with 3f2a1c0 on main"
+
+  -h, --help
+          Print help
+```
+
+### `otto state change cleaned`
+
+```text
+The lander: its worktree and branch are gone (otto looks), or say what was left and why
+
+Usage: otto state change cleaned [OPTIONS] <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --left <LEFT>
+          What you left on purpose, and why: "the worktree, which has uncommitted work in it"
+
+  -h, --help
+          Print help
 ```
 
 ### `otto state arm-timer`

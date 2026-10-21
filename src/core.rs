@@ -1792,6 +1792,75 @@ pub fn message_done(id: &str, which: Option<&str>, reply: Option<&str>, now: boo
 }
 
 // ---------------------------------------------------------------------------
+// changes
+// ---------------------------------------------------------------------------
+
+/// What a person's decision about changes did, and which run was woken to act on it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangeOutcome {
+    pub decided: Vec<crate::changes::Decided>,
+    /// The run that acts next — the lander for an approval, the author for a revision — when it was
+    /// woken, and why not when it wasn't.
+    pub woke: Option<String>,
+    pub not_woken: Option<String>,
+}
+
+/// Wake `id` in the background to act on what just changed, unless it can't take a wake now. A
+/// run already working hears a note before it stops; one waiting on a question hears it after.
+fn wake_to_act(id: &str) -> (Option<String>, Option<String>) {
+    let label = crate::paths::label_of(id);
+    let Ok(state) = read_run(id) else { return (None, Some(format!("{label} can't be read"))) };
+    if state.status.is_terminal() {
+        return (None, Some(format!("{label} is {}", crate::state::commands::status_str(state.status))));
+    }
+    if let Some(why) = why_not_wake_for_note(&state, LockLiveness.probe(id).is_busy()) {
+        return (None, Some(format!("{label}: {why}")));
+    }
+    match start_wake(id, Caller::Background.strategy(state.launcher.detach), None) {
+        Ok(_) => (Some(label), None),
+        Err(err) => (None, Some(format!("{label} did not start: {}", err.message))),
+    }
+}
+
+fn change_refs(refs: &[String]) -> Result<Vec<crate::changes::ChangeRef>, OttoError> {
+    if refs.is_empty() {
+        return Err(OttoError::usage("name the change: <run>/<number>, as `otto changes` lists it"));
+    }
+    refs.iter().map(|r| crate::changes::ChangeRef::parse(r)).collect()
+}
+
+/// Approve changes to land, and wake the lander to land them.
+pub fn approve_changes(refs: &[String], note: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let refs = change_refs(refs)?;
+    let decided = crate::changes::approve(&refs, crate::changes::LandMode::Push, note)?;
+    let lander = crate::config::lander()?.expect("approve refuses without a lander");
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander) };
+    Ok(ChangeOutcome { decided, woke, not_woken })
+}
+
+/// Ask a change's author for changes, and wake it to make them.
+pub fn revise_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let r = crate::changes::ChangeRef::parse(reference)?;
+    let decided = crate::changes::revise(&r, text)?;
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run) };
+    Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
+}
+
+/// Drop a change. Its author hears at its next wake; the lander is woken when there is cleaning up.
+pub fn drop_change(reference: &str, text: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
+    let r = crate::changes::ChangeRef::parse(reference)?;
+    let decided = crate::changes::drop_change(&r, text)?;
+    let cleanup = crate::changes::due()?.iter().any(|d| d.run == r.run && d.n == r.n);
+    let lander = crate::config::lander()?;
+    let (woke, not_woken) = match lander {
+        Some(lander) if cleanup && !no_wake => wake_to_act(&lander),
+        _ => (None, None),
+    };
+    Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
+}
+
+// ---------------------------------------------------------------------------
 // health
 // ---------------------------------------------------------------------------
 

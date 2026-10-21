@@ -33,7 +33,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
     "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "waiting",
-    "wait-overdue", "chat-started", "chat-ended",
+    "wait-overdue", "chat-started", "chat-ended", "change-submitted", "change-moved",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -390,6 +390,22 @@ pub enum Event {
     /// A wake declared the steps its work moves through (`otto state stages`).
     StagesSet {
         stages: Vec<String>,
+    },
+    /// A wake submitted a version of a change — code on a branch, to be reviewed and landed (`changes`).
+    ChangeSubmitted {
+        change: u32,
+        version: u32,
+        title: String,
+        sha: String,
+        branch: String,
+    },
+    /// A change moved on: approved, sent back, dropped, landed, cleaned up. `by` is `person`,
+    /// `author`, or the lander's run id; `what` says it in words, as the change's timeline does.
+    ChangeMoved {
+        change: u32,
+        state: crate::changes::ChangeState,
+        by: String,
+        what: String,
     },
     /// A person opened a chat about the run (`otto chat`). Not a wake: it changes nothing but the
     /// notes the person leaves from it.

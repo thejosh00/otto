@@ -2,6 +2,7 @@
 //! `run.json` atomically, and appends to `journal.jsonl` — nothing else may touch `run.json`.
 
 pub mod authorize;
+pub mod change;
 pub mod commands;
 pub mod locks;
 pub mod ops;

@@ -680,6 +680,19 @@ pub fn set_status(args: SetStatusArgs) -> Result<(), OttoError> {
              handoff so a stranger can check the claim, and stop."
         );
     }
+    if args.status == Status::Done {
+        let open = crate::changes::open_of(&crate::paths::run_dir(&id)?);
+        if !open.is_empty() {
+            let items: Vec<String> = open.iter().map(|item| format!("  - {item}")).collect();
+            eprintln!(
+                "otto: done, with {} change(s) this run handed back still under way:\n{}\n\
+                 A change that hasn't landed or been dropped is unfinished work, and whoever checks this claim will say so. \
+                 Wait for it — its note wakes you — or withdraw it (`otto state change withdraw`) and say why.",
+                open.len(),
+                items.join("\n")
+            );
+        }
+    }
     if !left_open.is_empty() {
         let items: Vec<String> = left_open.iter().map(|item| format!("  - {item}")).collect();
         eprintln!(

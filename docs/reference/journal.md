@@ -75,6 +75,8 @@ the budget events, the wake failures, and `usage-limited`.
 | `output-published` | `output`, `version`, `title`, `stage`, `file`, `link` | A wake published a version of an output (`otto state publish`) — the first when `version` is 1. Its text is at `file`, or it lives at `link` |
 | `output-state` | `output`, `state`, `by`, `note` | An output was marked `waiting`, `done` or `dropped` — by the `person` ("I sent it", `otto outputs --mark`) or a `wake` (`otto state output-state`) |
 | `stages-set` | `stages` | A wake declared the steps its work moves through (`otto state stages`) |
+| `change-submitted` | `change`, `version`, `title`, `sha`, `branch` | A wake handed back code committed on `branch` as a [change](../concepts.md#changes-code-handed-back) (`otto state change submit`) — its first version when `version` is 1 |
+| `change-moved` | `change`, `state`, `by`, `what` | A change moved on: approved, sent back, dropped, landed, cleaned up. `by` is `person`, `author`, or the lander's run id; `what` says it as the change's history on the page does |
 | `paused` | `until`, `reason` | A person paused the run (`otto pause`) |
 | `chat-started` | `session`, `launcher` | A person opened a [chat](../concepts.md#chats) about the run (`otto chat`). Not a wake: it changes nothing |
 | `chat-ended` | `session`, `turns`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `notes` | The chat ended: what it used, read from its transcript (the token fields are absent when that couldn't be read), and `notes`, those left while it was open |

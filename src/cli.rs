@@ -27,6 +27,8 @@ pub enum Command {
     Inbox(crate::human::InboxArgs),
     /// What a run has made: its reports, documents and drafts, every version kept.
     Outputs(crate::human::OutputsArgs),
+    /// Code runs have handed back: what waits on your review, what is landing, what landed.
+    Changes(crate::human::ChangesArgs),
     /// Answer the open gate, then continue the run.
     Answer(crate::human::AnswerArgs),
     /// Leave a note for the run, gated or not; its next wake reads it, verbatim.
@@ -114,6 +116,14 @@ pub enum ConfigCommand {
         /// Set it to this directory (`~` is expanded; it must exist). Omit to print it
         dir: Option<String>,
     },
+    /// The run that lands approved changes — the only one that pushes them
+    Lander {
+        /// Make this run the lander. Omit to print which run is
+        run: Option<String>,
+        /// There is no lander: approving a change is refused until there is one
+        #[arg(long, conflicts_with = "run")]
+        off: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -159,6 +169,11 @@ pub enum StateCommand {
     Stages(StagesArgs),
     /// Mark an output waiting, done, or not needed any more
     OutputState(OutputStateArgs),
+    /// Code handed back: a wake submits it, and the lander lands it
+    Change {
+        #[command(subcommand)]
+        command: crate::state::change::ChangeCommand,
+    },
     /// Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
     ArmTimer(ArmTimerArgs),
     /// Give the run a standing check script, or remove the one a wake gave it
@@ -194,6 +209,7 @@ impl StateCommand {
         use StateCommand::*;
         match self {
             Get(_) | List(_) | Due | CheckAuthorized(_) | Locks(_) | Tail(_) => false,
+            Change { command } => command.writes(),
             Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | OpenGate(_) | CloseGate(_)
             | Message(_) | Publish(_) | Stages(_) | OutputState(_) | ArmTimer(_) | SetCheck(_) | Tick(_)
             | Feedback(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,

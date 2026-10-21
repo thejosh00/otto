@@ -1,3 +1,4 @@
+mod changes;
 mod chat;
 mod cleanup;
 mod cli;
@@ -55,6 +56,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Show(args) => human::show(args),
         Command::Inbox(args) => human::inbox(args),
         Command::Outputs(args) => human::outputs(args),
+        Command::Changes(args) => human::changes(args),
         Command::Answer(args) => human::answer(args),
         Command::Pause(args) => human::pause(args),
         Command::Note(args) => human::note(args),
@@ -80,6 +82,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         },
         Command::Config { command } => match command {
             ConfigCommand::Workdir { dir } => human::config_workdir(dir),
+            ConfigCommand::Lander { run, off } => human::config_lander(run, off),
         },
         Command::Service { command } => match command {
             ServiceCommand::Start { port } => launchd::service_start(port),
@@ -106,6 +109,7 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::Publish(a) => commands::publish(a),
         StateCommand::Stages(a) => commands::stages(a),
         StateCommand::OutputState(a) => commands::output_state(a),
+        StateCommand::Change { command } => state::change::run(command),
         StateCommand::SetCheck(a) => commands::set_check(a),
         StateCommand::ArmTimer(a) => commands::arm_timer(a),
         StateCommand::Tick(a) => commands::tick(a),
