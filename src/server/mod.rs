@@ -113,6 +113,8 @@ pub fn router(state: AppState) -> Router {
         .route("/app.js", get(assets::app_js))
         .route("/style.css", get(assets::style_css))
         .route("/favicon.svg", get(assets::favicon))
+        .route("/fonts/jetbrains-mono.woff2", get(assets::font_mono))
+        .route("/fonts/ibm-plex-sans.woff2", get(assets::font_sans))
         .layer(axum::middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }

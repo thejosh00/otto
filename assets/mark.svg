@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 110" width="100" height="110" role="img" aria-label="otto">
+<style>
+  .ink { stroke: #0a0a12; } .cy { stroke: #00b8d4; } .mg { stroke: #ff2a6d; } .amber { fill: #d97706; }
+  @media (prefers-color-scheme: dark) {
+    .ink { stroke: #ecebf5; } .cy { stroke: #00e5ff; } .amber { fill: #f59e0b; }
+  }
+</style>
+<!-- the mark alone, with glitch and glow: 32px and up. Below that use web/favicon.svg (flat). -->
+<defs><filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+<g fill="none" stroke-width="10" stroke-linejoin="miter" stroke-linecap="butt">
+  <path d="M18 92 V22 H68 L82 36 V92" class="cy" transform="translate(-3 0)"/>
+  <path d="M18 92 V22 H68 L82 36 V92" class="mg" transform="translate(3 0)"/>
+  <path d="M18 92 V22 H68 L82 36 V92" class="ink"/>
+</g>
+<polygon points="50,46 62,58 50,70 38,58" class="amber" filter="url(#glow)"/>
+</svg>

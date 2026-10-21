@@ -10,11 +10,33 @@
 <body>
   <header class="top">
     <a class="brand" href="#/" aria-label="otto — agents">
-      <svg viewBox="0 0 92 110" width="20" height="24" aria-hidden="true">
-        <path class="brand-ink" d="M14 20 H78 M14 20 V90 M78 20 V90" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="46" cy="56" r="9" fill="var(--accent)"/>
+      <!-- assets/logo.svg, drawn here so it takes the page's colours; the cursor holds still -->
+      <svg class="logo" viewBox="0 0 336 120" width="90" height="32" aria-hidden="true">
+        <defs>
+          <filter id="brand-glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          <mask id="brand-slit" maskUnits="userSpaceOnUse" x="0" y="0" width="336" height="120"><rect width="336" height="120" fill="#fff"/><rect x="100" y="66" width="200" height="7" fill="#000"/></mask>
+          <clipPath id="brand-band"><rect x="100" y="66" width="200" height="7"/></clipPath>
+          <path id="brand-gate" d="M18 92 V22 H68 L82 36 V92"/>
+          <path id="brand-word" d="M117 53 H141 L151 63 V87 H127 L117 77 Z M176 30 V77 L186 87 H200 M166 53 H198 M218 30 V77 L228 87 H242 M208 53 H240 M252 53 H276 L286 63 V87 H262 L252 77 Z"/>
+        </defs>
+        <g fill="none" stroke-width="10" stroke-linejoin="miter" stroke-linecap="butt">
+          <use href="#brand-gate" class="logo-cy" transform="translate(-3 0)"/>
+          <use href="#brand-gate" class="logo-mg" transform="translate(3 0)"/>
+          <use href="#brand-gate" class="logo-ink"/>
+          <g mask="url(#brand-slit)">
+            <use href="#brand-word" class="logo-cy" transform="translate(-2 0)"/>
+            <use href="#brand-word" class="logo-mg" transform="translate(2 0)"/>
+            <use href="#brand-word" class="logo-ink"/>
+          </g>
+          <g clip-path="url(#brand-band)"><g transform="translate(6 0)">
+            <use href="#brand-word" class="logo-cy" transform="translate(-2 0)"/>
+            <use href="#brand-word" class="logo-mg" transform="translate(2 0)"/>
+            <use href="#brand-word" class="logo-ink"/>
+          </g></g>
+        </g>
+        <polygon class="logo-amber" points="50,46 62,58 50,70 38,58" filter="url(#brand-glow)"/>
+        <rect class="logo-amber" x="306" y="30" width="16" height="62" filter="url(#brand-glow)"/>
       </svg>
-      <span>otto</span>
     </a>
     <nav>
       <a href="#/" data-nav="agents">Agents</a>

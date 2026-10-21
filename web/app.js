@@ -661,7 +661,7 @@ function inboxView(selected) {
     document.getElementById("inbox-summary").textContent = data.open ? `${data.open} waiting for you` : "Nothing waiting for you";
     drawFilters(data.open);
     listBox.replaceChildren(filters,
-      data.changes ? h("a.inbox-line.changes-line", { href: "#/changes" }, `${data.changes} ${data.changes === 1 ? "change waits" : "changes wait"} for your review →`) : null,
+      ...(data.changes ? [h("a.inbox-line.changes-line", { href: "#/changes" }, `${data.changes} ${data.changes === 1 ? "change waits" : "changes wait"} for your review →`)] : []),
       items.length
       ? h("div", items.map((i) => h("a.mail-item" + (i.open ? "" : ".done"), {
         href: `#/inbox/${itemKey(i)}`,

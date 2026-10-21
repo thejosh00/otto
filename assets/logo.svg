@@ -1,20 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120" role="img" aria-label="otto">
-  <style>
-    .ink { stroke: #111318; }
-    .word { fill: #111318; }
-    @media (prefers-color-scheme: dark) {
-      .ink { stroke: #f2f3f5; }
-      .word { fill: #f2f3f5; }
-    }
-  </style>
-  <!-- gate: a token (the circle) mid-transit through a gate, otto's core unit of work -->
-  <g class="ink" fill="none" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M14 20 H78 M14 20 V90 M78 20 V90" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 336 120" width="336" height="120" role="img" aria-label="otto">
+<style>
+  .ink { stroke: #0a0a12; } .cy { stroke: #00b8d4; } .mg { stroke: #ff2a6d; } .amber { fill: #d97706; }
+  @media (prefers-color-scheme: dark) {
+    .ink { stroke: #ecebf5; } .cy { stroke: #00e5ff; } .amber { fill: #f59e0b; }
+  }
+</style>
+<!-- the gate, its top-right corner cut, with the token (the amber diamond) mid-transit; "otto" drawn with cut o's;
+     a cyan/magenta split and one slipped band for the glitch; the cursor blinks. Ink follows the viewer's colour scheme. -->
+<defs>
+  <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <mask id="slit" maskUnits="userSpaceOnUse" x="0" y="0" width="336" height="120"><rect width="336" height="120" fill="#fff"/><rect x="100" y="66" width="200" height="7" fill="#000"/></mask>
+  <clipPath id="band"><rect x="100" y="66" width="200" height="7"/></clipPath>
+  <path id="gate" d="M18 92 V22 H68 L82 36 V92"/>
+  <path id="word" d="M117 53 H141 L151 63 V87 H127 L117 77 Z M176 30 V77 L186 87 H200 M166 53 H198 M218 30 V77 L228 87 H242 M208 53 H240 M252 53 H276 L286 63 V87 H262 L252 77 Z"/>
+</defs>
+<g fill="none" stroke-width="10" stroke-linejoin="miter" stroke-linecap="butt">
+  <use href="#gate" class="cy" transform="translate(-3 0)"/>
+  <use href="#gate" class="mg" transform="translate(3 0)"/>
+  <use href="#gate" class="ink"/>
+  <g mask="url(#slit)">
+    <use href="#word" class="cy" transform="translate(-2 0)"/>
+    <use href="#word" class="mg" transform="translate(2 0)"/>
+    <use href="#word" class="ink"/>
   </g>
-  <circle cx="46" cy="56" r="9" fill="#d97706" />
-  <text x="112" y="88" class="word" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-        font-size="60" font-weight="700" textLength="168" lengthAdjust="spacingAndGlyphs">otto</text>
-  <rect x="294" y="26" width="16" height="62" fill="#d97706">
-    <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.45;0.5;0.95;1" dur="1.6s" repeatCount="indefinite" />
-  </rect>
+  <g clip-path="url(#band)"><g transform="translate(6 0)">
+    <use href="#word" class="cy" transform="translate(-2 0)"/>
+    <use href="#word" class="mg" transform="translate(2 0)"/>
+    <use href="#word" class="ink"/>
+  </g></g>
+</g>
+<polygon points="50,46 62,58 50,70 38,58" class="amber" filter="url(#glow)"/>
+<rect x="306" y="30" width="16" height="62" class="amber" filter="url(#glow)">
+  <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.45;0.5;0.95;1" dur="1.6s" repeatCount="indefinite"/>
+</rect>
 </svg>

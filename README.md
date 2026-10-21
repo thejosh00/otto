@@ -1,4 +1,4 @@
-<p align="left"><img src="assets/logo.svg" alt="otto" width="280" height="105"></p>
+<p align="left"><img src="assets/logo.svg" alt="otto" width="280" height="100"></p>
 
 **Turn any Claude command into an agent that works for days.**
 

@@ -22,3 +22,14 @@ pub async fn style_css() -> impl IntoResponse {
 pub async fn favicon() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "no-cache")], include_str!("../../web/favicon.svg"))
 }
+
+// The two faces the page is set in, carried along so it never reaches out to a font host.
+// Both under the SIL Open Font License; the texts sit beside them in web/fonts/.
+
+pub async fn font_mono() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "no-cache")], include_bytes!("../../web/fonts/jetbrains-mono.woff2").as_slice())
+}
+
+pub async fn font_sans() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "font/woff2"), (header::CACHE_CONTROL, "no-cache")], include_bytes!("../../web/fonts/ibm-plex-sans.woff2").as_slice())
+}
