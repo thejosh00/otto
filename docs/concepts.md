@@ -360,6 +360,8 @@ otto changes show 3/2 --patch      # one change: what its author said, its files
 otto changes approve 3/2 7/1       # land them: the lander is woken to do it
 otto changes revise 3/2 --text "keep the old flag working"   # back to its author, in your words
 otto changes drop 3/2              # it won't land; the lander cleans up after it
+otto changes approve 3/2 --pr      # as a pull request, which the lander keeps moving
+otto changes merge 3/2             # its pull request is approved and passing: merge it
 ```
 
 - **A change doesn't stop its run.** Submitting isn't a question: the run goes on with its next piece
@@ -380,6 +382,18 @@ otto changes drop 3/2              # it won't land; the lander cleans up after i
   only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
   the author is told it landed, and woken to do it.
+- **Or as a pull request.** `otto changes approve 3/2 --pr` (Open a PR on the page) has the lander open
+  one and keep it moving. What a reviewer asks, and CI failing, goes to the change's author as a note:
+  it changes the code and submits again, and the lander pushes that to the pull request without asking
+  you again — the pull request is where it is reviewed. A question gets a reply the author drafts and
+  you post with a click (`otto changes post`). Approved and passing, it is yours to merge (`otto
+  changes merge`), or GitHub merges it itself with `--merge-when-ready`. There is no run per pull
+  request: the lander's check script asks `gh` about every open one in one look, free when none moved.
+- **Asking without stopping.** A change's author can ask you something about it — a reviewer wants it
+  done another way, the scope grew — with `otto state change ask`. The change waits on your answer
+  (`otto changes answer`); the run doesn't.
+- **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
+  or been sent back 3 times is listed as stuck, and you're told once.
 
 The [README](../README.md#landing-changes) sets up a lander. A change's files live with the run that
 wrote it: `changes/index.json`, and each version's patch and summary beside it.

@@ -358,8 +358,9 @@ then tell them    → otto state message <id> --kind report --title "Today's rep
 
 When the work changes code in a repository, it goes back to the person as a **change**: commits on
 a branch of their own, which the person reviews on one page and a run of its own — the lander —
-puts on the base branch once they approve. You never push, merge or rebase the base branch
-yourself, and you don't open the PR: that is the lander's, and only the lander may.
+puts on the base branch once they approve — pushed, or as a pull request it keeps moving. You never
+push, merge or rebase the base branch yourself, and you don't open or comment on the PR: that is the
+lander's, and only the lander may.
 
 ```
 otto state lock <id> --repo <repo>       # then make the worktree and branch; unlock once they exist
@@ -384,9 +385,17 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
 - **What happens to it reaches you as a note** that starts `About change <n>@v<k>`:
   - *the person asked for changes*, or *the lander couldn't land it*: work in the same worktree, commit,
     and submit again with the same branch — it comes back to them as the next version.
+  - *on its pull request, a reviewer (or CI) said…*: a change to make is the same — commit, submit
+    again, and the lander pushes it to the pull request. A question to answer, or an ask the code
+    already meets (look before you assume it doesn't), is a reply you draft for the person to post:
+    `otto state change reply <id> <n> --comment <its id> --text "…"`.
   - *it landed*: do whatever your instructions say follows — install it, mark the ticket — and nothing
     more to the change. Leave the worktree and branch: the lander removes them.
   - *it was dropped*: it won't land; take it into account, and leave the cleaning up to the lander.
+- **A judgement that is the person's** — a reviewer wants it done another way, the scope grew — ask
+  about the change rather than guess: `otto state change ask <id> <n> --question-file <file>`,
+  written like a gate's question (options under `## Options`). It doesn't stop the run; the answer
+  comes as a note.
 - **No longer wanted** — overtaken, or the wrong approach: `otto state change withdraw <id> <n>
   --reason "…"`.
 - **When only your changes are left** to finish the work, sleep long (`arm-timer --in`, with

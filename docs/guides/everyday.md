@@ -57,6 +57,23 @@ otto note my-run "check case 12 too" --about 2026-10-16-refund-policy-qa   # abo
 A message tells you something is ready; the [output](../concepts.md#outputs-what-it-made-kept) is
 the thing itself, and stays after you're done with the message.
 
+## Reviewing code a run handed back
+
+```bash
+otto changes                           # by whose move: yours first, then in hand, waiting on reviewers, stuck, done
+otto changes show 3/2 --patch          # what its author said, its tests, its files and patch, what happened
+otto changes approve 3/2 7/1           # land them: the lander rebases if it must, checks, pushes, cleans up
+otto changes approve 3/2 --pr          # as a pull request the lander keeps moving
+otto changes revise 3/2 --text "keep the old flag working"   # back to its author, who is woken
+otto changes merge 3/2                 # its pull request is approved and passing
+otto changes post 3/2                  # post the replies to reviewers its author drafted
+otto changes answer 3/2 --text "Keep" # what its author asked you about it
+```
+
+The web UI's Changes does the same, with the patch file by file, and lands several at once. A
+[change](../concepts.md#changes-code-handed-back) needs a lander to land it — the
+[README](../../README.md#landing-changes) sets one up.
+
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run
 otto show my-run # where it stands, its handoff, and any open question in full

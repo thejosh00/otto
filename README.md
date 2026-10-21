@@ -112,6 +112,13 @@ clean rebase of the same patch lands; if the code around it changed, it comes ba
 conflicts, it goes back to the run that wrote it. Asking for changes sends your words to that run,
 and wakes it.
 
+Or open it as a pull request, for a repository where others review: the lander opens it and keeps
+it moving. What reviewers ask, and CI failing, goes to the run that wrote the change, which changes
+the code and hands it back again; the lander pushes that to the pull request. A reply to a reviewer
+is drafted for you to post with a click, and once it's approved and passing it's yours to merge — or
+it merges itself, if you said so. The Changes page shows every change by whose move it is — yours,
+an agent's, reviewers' or CI's — and says when one is stuck.
+
 One run, the **lander**, does the landing, and only it may. Set it up once, from your otto
 checkout:
 
@@ -122,7 +129,7 @@ otto config lander lander
 ```
 
 Approving a change wakes it straight away. So that waiting costs nothing, give it a check script
-that asks otto whether anything is due — no model, no tokens:
+that asks otto whether anything is due, or any pull request has moved — no model, no tokens:
 
 ```bash
 cat > changes-due.sh <<'EOF'
@@ -148,6 +155,8 @@ and never lands anything you didn't approve.
   ([sandboxing](docs/guides/sandboxing.md)).
 - **`--repo`** is what it may work in: the repositories your runs hand back changes to, or a folder
   above them all.
+- **Pull requests need `gh`**, signed in for each host (`gh auth status`), where the lander and its
+  check script run.
 
 ## otto improving itself
 
@@ -204,6 +213,7 @@ It is editing the procedure its own next wake follows, so:
 cargo test                    # the whole engine: no tmux, no model, no money
 test/live.sh                  # live tests against a real claude, side by side: ~5 min, real tokens
 test/live.sh live_devflow     # dev-flow from ticket to merge, and stopped at ready-to-push: ~10 min
+test/live.sh live_changes_pr  # a change as a pull request a reviewer asks about, against a stand-in gh: ~30 min
 ```
 
 Everything is unit-testable because the two things that touch the outside world are injected:

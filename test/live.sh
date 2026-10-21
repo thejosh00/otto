@@ -6,6 +6,7 @@
 #   test/live.sh                       # the routine set, ~5 minutes
 #   test/live.sh live_gate live_todo   # just these
 #   test/live.sh live_devflow          # dev-flow, both ways, ~10 minutes
+#   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #
 # live_revive pokes every run there is, so it runs after the rest, on its own. Its launchd half
 # (live_revive_launchd) needs the installed agent and is run by hand.
