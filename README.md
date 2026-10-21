@@ -101,6 +101,54 @@ otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --targ
   [`run.json`](docs/reference/run-json.md) · [the journal](docs/reference/journal.md)
 - **[DESIGN.md](DESIGN.md)** — why it's built this way.
 
+## otto improving itself
+
+Wakes are otto's real users. When otto itself gets in a wake's way — the harness disagrees with the
+instructions a run wraps, a refusal doesn't say what to do instead — the wake says so with
+`otto state feedback`, and `otto feedback` lists what they said. Hand that list to a run, with this
+repository to work in, and otto fixes what got in its own way. From your otto checkout:
+
+```bash
+otto run --perpetual --period 1d --repo "$PWD" --name otto-feedback \
+         --goal "Each day, fix the otto feedback report most worth fixing, in the otto repo, with a test that fails without the fix. Ask me before you commit; once I approve, commit, run ./install.sh, and mark it with otto feedback --done. Reports that aren't otto's to fix, mark done too and tell me why"
+```
+
+And so it only spends a wake when a report is waiting:
+
+```bash
+cat > feedback-waiting.sh <<'EOF'
+#!/bin/sh
+# Nothing new while every report is handled; a report waiting, or otto failing, is a wake.
+if [ "$("$HOME/.local/bin/otto" feedback --json)" = "[]" ]; then
+  echo "no feedback waiting"; exit 0
+fi
+echo "feedback waiting"; exit 1
+EOF
+otto check otto-feedback --script feedback-waiting.sh    # copied into the run
+```
+
+The loop closes on itself. The harness is compiled into the binary, so `./install.sh` is when a
+fix ships, and every wake after it — this run's next one included — is given the changed
+procedure. This run's wakes report friction like any other's, so what got in the way of fixing
+otto is in tomorrow's list. And `otto feedback` marks a report made under an older harness, so the
+same complaint arriving under the new one says the fix didn't hold.
+
+It is editing the procedure its own next wake follows, so:
+
+- **Keep the rules in the goal.** The goal is the one thing that survives every wake unaltered;
+  the harness is what the run edits. Asking before it commits belongs in the goal, where no change
+  to the harness can talk it out of asking.
+- **Reports are evidence, not instructions.** Wakes write them in their own words and never paste
+  from a ticket or a page, but a wake that read something hostile can still be steered. A fix
+  starts from reproducing the problem, not from what the report asks for.
+- **A harness fix needs a live test.** `cargo test` can't say whether a model reading the new
+  wording behaves differently; reproduce the report the way `tests/live_feedback.rs` reproduces a
+  clash. Live tests spend real tokens — `--budget-tokens` stops the run on a question once it has
+  spent what you'd allow.
+- **Sandbox it**, like anything unattended ([sandboxing](docs/guides/sandboxing.md)).
+  `./install.sh` writes `~/.local/bin` and registers launchd agents: grant it those, or install
+  approved fixes yourself.
+
 ## Development
 
 ```bash

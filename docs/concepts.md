@@ -445,6 +445,7 @@ Each report is stamped by otto with the run, the wake, what the run wraps and wh
 given (one from before the current harness says so). They're about otto, not the run's work, so they
 stay out of the inbox and nothing notifies you; the run's journal only notes that one was sent
 (`feedback-sent`). A wake sends two at most, in its own words, and the command never fails.
+[The README](../README.md#otto-improving-itself) sets up a run that works through them.
 
 ## Where everything lives
 
