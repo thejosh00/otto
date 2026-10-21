@@ -824,7 +824,17 @@ const LATELY_FIRST = 8;
 // in hand, then what finished this week. Picking one shows what its author said, the files, the
 // patch, and what happened to it; landing it is one click, and so is landing several.
 
-const MOVE_HEADINGS = [["you", "Waiting on you"], ["agents", "In hand"], ["nobody", "Done this week"]];
+const MOVE_HEADINGS = [["you", "Waiting on you"], ["stuck", "Stuck"], ["agents", "In hand"], ["others", "Waiting on reviewers or CI"], ["nobody", "Done this week"]];
+const prName = (l) => (l.pr && l.pr.number ? `PR #${l.pr.number}` : "Its pull request");
+
+/** Which list a change is in: what waits on you, then anything stuck, then by whose move it is. */
+function changeGroup(l) {
+  if (l.move === "you") return "you";
+  if (l.stuck) return "stuck";
+  if (l.move === "author" || l.move === "lander") return "agents";
+  if (l.move === "reviewers" || l.move === "ci") return "others";
+  return "nobody";
+}
 const shortSha = (s) => (s || "").slice(0, 7);
 
 /** Where a change is, in a few plain words. */
@@ -835,15 +845,25 @@ function changeStateText(l) {
     case "approved": return "Approved — waiting for the lander";
     case "landing": return "The lander is landing it";
     case "landed": return l.move === "lander" ? `Landed at ${shortSha(l.landedSha)} — cleaning up` : `Landed at ${shortSha(l.landedSha)}`;
+    case "needs-you": return "Its agent asks you something about it";
+    case "ready-to-merge": return `${prName(l)} is approved and passing — yours to merge`;
+    case "pr-open":
+      if (l.replies) return `${prName(l)}: ${l.replies === 1 ? "a reply" : `${l.replies} replies`} drafted for you to post`;
+      return l.move === "ci" ? `${prName(l)}: waiting on CI` : l.move === "lander" ? `${prName(l)}: the lander is on it` : `${prName(l)}: waiting on review`;
+    case "merged": return l.move === "lander" ? `${prName(l)} merged at ${shortSha(l.landedSha)} — cleaning up` : `${prName(l)} merged at ${shortSha(l.landedSha)}`;
+    case "closed": return `${prName(l)} was closed without merging`;
     default: return l.move === "lander" ? "Dropped — cleaning up" : "Dropped";
   }
 }
 
 function changeChip(l) {
-  const [cls, text] = l.move === "you" ? ["question", "Your review"]
+  const [cls, text] = l.move === "you"
+    ? ["question", l.state === "ready-to-merge" ? "Yours to merge" : l.state === "needs-you" ? "Asks you" : l.replies ? "Reply to post" : "Your review"]
     : l.state === "landed" ? ["done", "Landed"]
-    : l.state === "dropped" ? ["update", "Dropped"]
+    : l.state === "merged" ? ["done", "Merged"]
+    : l.state === "dropped" || l.state === "closed" ? ["update", l.state === "closed" ? "Closed" : "Dropped"]
     : l.state === "revising" ? ["draft", "Being revised"]
+    : l.state === "pr-open" ? ["report", l.move === "ci" ? "Waiting on CI" : l.move === "lander" ? "Lander on it" : "In review"]
     : ["report", l.state === "landing" ? "Landing" : "Approved"];
   return h(`span.kind.${cls}`, text);
 }
@@ -852,6 +872,7 @@ function changeFlags(l) {
   const flags = [];
   if (l.large) flags.push(h("span.flag", { title: "A person reviews one concern at a time" }, `Large: ${l.add + l.del} lines`));
   if (l.overlaps.length) flags.push(h("span.flag", { title: "Whichever lands second may not apply cleanly" }, `Touches what ${l.overlaps.join(", ")} does`));
+  if (l.stuck) flags.push(h("span.flag.stuck", `Stuck: ${l.stuck}`));
   return flags;
 }
 
@@ -875,11 +896,12 @@ function changesView(selected) {
     batch.replaceChildren(
       h("span", `${picked.size} picked`),
       h("button.small.primary", { onclick: (e) => land([...picked], e.currentTarget) }, picked.size === 1 ? "Land it" : `Land ${picked.size}`),
+      h("button.small", { onclick: (e) => land([...picked], e.currentTarget, { pr: true }) }, picked.size === 1 ? "Open a PR" : `Open ${picked.size} PRs`),
       h("button.small.ghost", { onclick: () => { picked.clear(); drawList(); } }, "Clear"));
   };
 
-  async function land(keys, button) {
-    const r = await busy(button, () => api("/changes/approve", { changes: keys }));
+  async function land(keys, button, how = {}) {
+    const r = await busy(button, () => api("/changes/approve", { changes: keys, ...how }));
     if (!r) return;
     keys.forEach((k) => picked.delete(k));
     toast(`${r.decided.length === 1 ? "Approved" : `Approved ${r.decided.length}`} — ${r.woke ? "the lander is on it" : r.notWoken ? `the lander lands ${r.decided.length === 1 ? "it" : "them"} when it next runs (${r.notWoken})` : "the lander lands them next"}`);
@@ -896,14 +918,14 @@ function changesView(selected) {
   }
 
   function drawList() {
-    const groups = MOVE_HEADINGS.map(([move, title]) => [title, data.changes.filter((l) => move === "agents" ? l.move === "author" || l.move === "lander" : l.move === move), move]);
+    const groups = MOVE_HEADINGS.map(([group, title]) => [title, data.changes.filter((l) => changeGroup(l) === group), group]);
     const parts = [batch];
     for (const [title, rows, move] of groups) {
       if (!rows.length) continue;
       parts.push(h("p.label.list-head", `${title} · ${rows.length}`));
       for (const l of rows) {
         const key = keyOf(l);
-        const box = move === "you" ? h("input", {
+        const box = move === "you" && l.state === "review" ? h("input", {
           type: "checkbox", checked: picked.has(key), "aria-label": `Pick ${l.title}`,
           onclick: (e) => { e.stopPropagation(); e.target.checked ? picked.add(key) : picked.delete(key); drawBatch(); },
         }) : h("span");
@@ -927,7 +949,7 @@ function changesView(selected) {
       return;
     }
     const yours = data.changes.filter((l) => l.move === "you").length;
-    document.getElementById("changes-summary").textContent = yours ? `${yours} waiting for your review` : "Nothing waiting for your review";
+    document.getElementById("changes-summary").textContent = yours ? `${yours} waiting on you` : "Nothing waiting on you";
     const banner = document.getElementById("lander-banner");
     const warning = !data.lander
       ? h("div.banner.warn", h("div", "No lander is set up, so nothing lands an approved change. Start one and name it with ", h("code", "otto config lander <agent>"), " — the README's \"Landing changes\" says how."))
@@ -989,7 +1011,7 @@ function changeDetail(d, actions) {
   const c = d.change;
   const v = d.version;
   const latest = c.versions[c.versions.length - 1];
-  const yours = l.move === "you" && v.k === latest.k;
+  const yours = c.state === "review" && v.k === latest.k;
   const parts = [
     h("div.pane-head",
       h("div.row", h("a", { href: `#/run/${enc(l.run)}` }, l.name), changeChip(l), h("span.faint", relative(l.since))),
@@ -998,6 +1020,56 @@ function changeDetail(d, actions) {
         `${v.commits} ${v.commits === 1 ? "commit" : "commits"}, ${v.stat.files.length} ${v.stat.files.length === 1 ? "file" : "files"}, `, lineCount(v.stat))),
     h("div.row", h("span.state-line", changeStateText(l)), ...changeFlags(l)),
   ];
+  if (c.pr) {
+    const pr = c.pr;
+    parts.push(h("div.row.pr-line",
+      h("a", { href: pr.url, target: "_blank", rel: "noopener" }, prName(l), " ↗"),
+      pr.ci ? h(`span.kind.${pr.ci === "passing" ? "done" : pr.ci === "failing" ? "question" : "update"}`, `CI ${pr.ci}`) : null,
+      pr.review && pr.review !== "none" ? h(`span.kind.${pr.review === "approved" ? "done" : pr.review === "changes-requested" ? "question" : "update"}`, pr.review === "changes-requested" ? "Changes requested" : pr.review === "approved" ? "Approved" : "Waiting on review") : null,
+      pr.mergeable === "conflicting" ? h("span.flag", "Conflicts with its base") : null,
+      pr.autoMerge ? h("span.faint", "merges itself once approved and passing") : null));
+  }
+  if (c.state === "needs-you" && c.ask) {
+    const words = h("textarea", { rows: 2, placeholder: "Or answer in your own words" });
+    const send = async (text, button) => {
+      if (!text.trim()) { toast("Write an answer first", true); return; }
+      const r = await busy(button, () => api(`/changes/${enc(l.run)}/${l.n}/answer`, { text }));
+      if (!r) return;
+      toast(r.woke ? "Answered — its agent is on it" : "Answered — its agent reads it when it next runs");
+      actions.moveOn();
+    };
+    parts.push(h("div.decide",
+      h("span.label", "Its agent asks"), md(c.ask.question),
+      (c.ask.options || []).length ? h("div.row", c.ask.options.map((o) => h(`button${o === c.ask.default ? ".primary" : ""}`, { onclick: (e) => send(o, e.currentTarget) }, o))) : null,
+      words, h("div.row", h("button", { onclick: (e) => send(words.value, e.currentTarget) }, "Answer"))));
+  }
+  const drafts = (c.replies || []).filter((r) => r.state === "draft"); // left out when there are none
+  if (drafts.length) {
+    const post = async (comment, button) => {
+      const r = await busy(button, () => api(`/changes/${enc(l.run)}/${l.n}/post`, { comment }));
+      if (!r) return;
+      toast(r.woke ? "The lander is posting it" : "The lander posts it when it next runs");
+      actions.moveOn();
+    };
+    parts.push(h("div.decide",
+      h("div.row.spread", h("span.label", `${drafts.length === 1 ? "A reply" : `${drafts.length} replies`} to reviewers, drafted by its agent`),
+        drafts.length > 1 ? h("button.small.primary", { onclick: (e) => post(null, e.currentTarget) }, "Post all") : null),
+      drafts.map((r) => h("div.draft-box",
+        h("div.row.spread", h("span.faint", `To ${r.comment}`), h("button.small.primary", { onclick: (e) => post(r.comment, e.currentTarget) }, "Post it")),
+        h("div.draft-text", r.text)))));
+  }
+  if (c.state === "ready-to-merge") {
+    parts.push(h("div.decide", h("div.row",
+      h("button.primary", {
+        onclick: async (e) => {
+          const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/merge`, {}));
+          if (!r) return;
+          toast(r.woke ? "The lander is merging it" : "The lander merges it when it next runs");
+          actions.moveOn();
+        },
+      }, `Merge ${prName(l)}`),
+      h("span.faint", "Approved and passing. The lander merges it, then cleans up."))));
+  }
   if (c.versions.length > 1) {
     parts.push(h("div.row.versions", h("span.label", "Version"),
       c.versions.map((x) => h("button.small" + (x.k === v.k ? ".primary" : ""), {
@@ -1009,6 +1081,7 @@ function changeDetail(d, actions) {
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
   if (yours) {
     const words = h("textarea.revise", { rows: 3, placeholder: "What to change — its agent reads your words (r)" });
+    const whenReady = h("input", { type: "checkbox" });
     parts.push(h("div.decide",
       h("div.row",
         h("button.primary.land", {
@@ -1016,6 +1089,12 @@ function changeDetail(d, actions) {
           title: d.lander ? `The lander puts it on ${c.base} and pushes it (a)` : "No lander is set up",
           onclick: (e) => actions.land([`${l.run}/${l.n}`], e.currentTarget),
         }, `Land on ${c.base}`),
+        h("button", {
+          disabled: !d.lander,
+          title: "The lander opens a pull request and keeps it moving; what reviewers ask goes to its agent",
+          onclick: (e) => actions.land([`${l.run}/${l.n}`], e.currentTarget, { pr: true, mergeWhenReady: whenReady.checked }),
+        }, "Open a PR"),
+        h("label.check", { title: "GitHub merges it once it is approved and passing" }, whenReady, "merge when ready"),
         h("button.danger", {
           onclick: async (e) => {
             const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/drop`, { text: words.value.trim() || null }));
@@ -1040,7 +1119,7 @@ function changeDetail(d, actions) {
     h("li", f.add == null ? h("span.pm.faint", "binary") : lineCount(f), " ", h("code", f.path)))));
   parts.push(d.patch != null ? patchView(d.patch) : h("p.faint", "Its patch was too big to keep here. To read it: ", h("code", d.commands[0])));
   parts.push(h("p.label", "What happened"), h("ul.lately.timeline", [...c.timeline].reverse().map((m) =>
-    h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : "otto"), " ", m.what)))));
+    h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : m.by === "reviewer" ? "On its PR" : "otto"), " ", m.what)))));
   return parts;
 }
 
