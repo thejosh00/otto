@@ -2579,15 +2579,17 @@ function processesView() {
     h("p.muted", "How a change goes from started to landed. A repository follows one, so approving a change does what that repository needs — pushed straight to its base, or opened as a pull request. What it says in words is for the agents: how to start a change, and how to land one."),
     editor, list,
     h("h2", "Repositories"),
-    h("p.muted", "Every repository follows standard until you give it another. Changes already approved land as they were approved."),
+    h("p.muted", "Every repository follows standard — a pull request — until you give it another; direct pushes straight to its base. Changes already approved land as they were approved."),
     projects);
   let data = null;
 
+  // The processes otto has without being told; redefined, one can be reset to otto's own.
+  const builtinName = (p) => ["standard", "direct"].includes(p.name);
   const modeWords = (p) => p.mode === "pr" ? `A pull request${p.mergeWhenReady ? ", merged once approved and passing" : ""}` : "Pushed to its base";
 
   function edit(p) {
     const name = h("input", { value: p ? p.name : "", disabled: !!p, placeholder: "reviewed" });
-    const mode = h("select", [["push", "Pushed to its base branch"], ["pr", "Opened as a pull request"]].map(([v, t]) => h("option", { value: v, selected: (p ? p.mode : "push") === v }, t)));
+    const mode = h("select", [["push", "Pushed to its base branch"], ["pr", "Opened as a pull request"]].map(([v, t]) => h("option", { value: v, selected: (p ? p.mode : "pr") === v }, t)));
     const whenReady = h("input", { type: "checkbox", checked: !!(p && p.mergeWhenReady) });
     const whenReadyBox = h("label.check", whenReady, "Merge it once it is approved and passing, without asking again");
     const allowText = h("input", { value: p && p.allowChanges ? p.allowChanges : "", placeholder: "trivial · small · anything but security — empty is nothing" });
@@ -2629,13 +2631,13 @@ function processesView() {
         h("div.row",
           h("button.small", { onclick: () => edit(p) }, "Change"),
           p.builtin ? null : h("button.small.danger", {
-            title: p.name === "standard" ? "Go back to the built-in standard" : "Repositories that follow it must be given another first",
+            title: builtinName(p) ? `Go back to the built-in ${p.name}` : "Repositories that follow it must be given another first",
             onclick: (e) => busy(e.currentTarget, async () => {
               await api("/processes/delete", { name: p.name });
-              toast(p.name === "standard" ? "standard is the built-in one again" : `Removed ${p.name}`);
+              toast(builtinName(p) ? `${p.name} is the built-in one again` : `Removed ${p.name}`);
               refresh();
             }),
-          }, p.name === "standard" ? "Reset" : "Remove"))),
+          }, builtinName(p) ? "Reset" : "Remove"))),
       h("dl.facts", { style: "margin-top:10px" },
         h("dt", "Approving"), h("dd", modeWords(p)),
         h("dt", "Starting"), h("dd", p.start || h("span.faint", "as the agent sees fit")),

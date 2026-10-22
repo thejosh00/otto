@@ -70,7 +70,8 @@ naming another.
 ## `processes`
 
 How a change goes from started to landed, for the repositories that follow it — optional; with
-none, the built-in `standard` is the only one. A process named `standard` replaces the built-in.
+none, the built-in `standard` and `direct` are the only ones. A process named like a built-in one
+replaces it.
 
 | Field | Required | Meaning |
 |---|---|---|
@@ -85,7 +86,9 @@ none, the built-in `standard` is the only one. A process named `standard` replac
 agents. How the babysitter reads `allowChanges` is its judgement, and the risk of it is yours: a
 bigger change than you meant can reach the pull request without you. Approving a change copies it
 onto the change, where `otto changes allow` (or the change's page) changes it for that one. The
-built-in `standard` pushes to the base, starting each change in a worktree of its own.
+built-in `standard` opens a pull request, and `direct` pushes to the base; both start each change in
+a worktree of its own. A pull request needs a remote to open it on: in a repository without one,
+approving is refused until it follows `direct`.
 
 ```bash
 otto config process                                       # every process, and who follows it

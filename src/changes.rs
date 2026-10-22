@@ -1006,6 +1006,15 @@ pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Resu
             refuse_unless(c, &[ChangeState::Review], "approved")?;
             let process = config.process_for(&c.repo);
             let chosen = how.unwrap_or(How { mode: process.mode, merge_when_ready: process.merge_when_ready });
+            if chosen.mode == LandMode::Pr && git(Path::new(&c.repo), &["remote"]).unwrap_or_default().trim().is_empty() {
+                return Err(OttoError::usage(format!(
+                    "{} has no remote to open a pull request on — land it with --push, or have the repository push straight to \
+                     its base: `otto config project {} --process {}`",
+                    home_relative(&c.repo),
+                    home_relative(&c.repo),
+                    crate::config::DIRECT_PROCESS
+                )));
+            }
             let overridden = chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready;
             let v = c.latest().clone();
             c.decision = Some(Decision {
@@ -2477,11 +2486,27 @@ mod tests {
         set_lander("c-ovrl");
         let repo = repo();
         submit("c-ovr", &submit_fix(&repo, "one")).unwrap();
-        approve(&[r("c-ovr", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        approve(&[r("c-ovr", 1)], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap();
         let c = change("c-ovr", 1);
         let d = c.decision.as_ref().unwrap();
-        assert_eq!((d.mode, d.process.as_deref(), d.overridden), (LandMode::Pr, Some("standard"), true));
+        assert_eq!((d.mode, d.process.as_deref(), d.overridden), (LandMode::Push, Some("standard"), true));
         assert!(c.timeline.last().unwrap().what.contains("rather than as standard says"), "{}", c.timeline.last().unwrap().what);
+    }
+
+    #[test]
+    fn a_pull_request_needs_a_remote_to_open_it_on() {
+        let _h = TempHome::new();
+        test_init("c-nor", "a goal").unwrap();
+        test_init("c-norl", "land changes").unwrap();
+        set_lander("c-norl");
+        let repo = repo();
+        submit("c-nor", &submit_fix(&repo, "one")).unwrap();
+        sh(&repo.main, &["remote", "remove", "origin"]);
+        let err = approve(&[r("c-nor", 1)], None, None).unwrap_err();
+        assert!(err.message.contains("no remote") && err.message.contains("--process direct"), "{}", err.message);
+        crate::config::save_project(repo.main.to_str().unwrap(), Some("direct")).unwrap();
+        approve(&[r("c-nor", 1)], None, None).unwrap();
+        assert_eq!(change("c-nor", 1).decision.unwrap().mode, LandMode::Push);
     }
 
     #[test]

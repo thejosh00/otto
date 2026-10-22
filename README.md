@@ -114,12 +114,13 @@ and wakes it.
 
 How much you stay in the loop is decided once per repository, not once per change: each follows a
 **process**, and approving a change does what its process says. Every repository follows
-`standard` — land it on `main` — until you give it another; one where others review can follow a
-process that opens a pull request instead. A process also says, in words, how a change starts and
+`standard` — open a pull request — until you give it another; one only you work in can follow
+`direct`, which pushes straight to `main`, and a repository with no remote has to. A process also says, in words, how a change starts and
 how one lands, for the agents doing it. A different way for one change is a click away.
 
 ```bash
-otto config process reviewed --mode pr --merge-when-ready --land "squash-merged; CI must pass"
+otto config project ~/work/notes --process direct
+otto config process reviewed --mode pr --merge-when-ready --allow-changes "trivial" --land "squash-merged; CI must pass"
 otto config project ~/work/svc --process reviewed
 ```
 

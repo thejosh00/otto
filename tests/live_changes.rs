@@ -135,6 +135,8 @@ fn live_changes() {
     git_ok(&repo, &["push", "--quiet", "origin", "main"]);
 
     checks.step(&format!("5 - approve it; the lander lands it (up to {}min)", land_timeout.as_secs() / 60));
+    // Its remote is a local one, with no pull requests: it pushes straight to main.
+    otto(&["config", "project", repo.to_str().unwrap(), "--process", "direct"]);
     let out = otto(&["changes", "approve", "author/1"]);
     checks.check(out.status.success(), "approved", format!("approve failed: {}", String::from_utf8_lossy(&out.stderr)));
     checks.check(stdout(&out).contains("woke"), "the lander was woken", format!("the lander wasn't woken: {}", stdout(&out)));

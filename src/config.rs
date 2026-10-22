@@ -74,8 +74,10 @@ pub struct Config {
     pub projects: BTreeMap<String, String>,
 }
 
-/// The process every repository follows until it is given another.
+/// The process every repository follows until it is given another: a pull request.
 pub const STANDARD_PROCESS: &str = "standard";
+/// The built-in process that pushes straight to the base, for a repository nobody else reviews.
+pub const DIRECT_PROCESS: &str = "direct";
 
 /// How a change goes from started to landed in a repository. Only `mode` and `mergeWhenReady` are
 /// otto's to act on — they decide what the lander is due to do; `start` and `land` are words, for
@@ -106,6 +108,21 @@ impl Process {
     fn standard() -> Self {
         Process {
             name: STANDARD_PROCESS.to_string(),
+            mode: LandMode::Pr,
+            merge_when_ready: false,
+            start: Some("A worktree of its own on a fresh branch from the base, made with the manage-pr skill.".to_string()),
+            land: Some(
+                "A pull request onto the base, merged the way the repository's README or CLAUDE.md says — else squash-merged — \
+                 once the person says so."
+                    .to_string(),
+            ),
+            allow_changes: None,
+        }
+    }
+
+    fn direct() -> Self {
+        Process {
+            name: DIRECT_PROCESS.to_string(),
             mode: LandMode::Push,
             merge_when_ready: false,
             start: Some("A worktree of its own on a fresh branch from the base, made with the manage-pr skill.".to_string()),
@@ -116,6 +133,16 @@ impl Process {
             ),
             allow_changes: None,
         }
+    }
+
+    /// The processes otto has without being told: `standard`, then `direct`.
+    fn builtins() -> [Process; 2] {
+        [Process::standard(), Process::direct()]
+    }
+
+    /// Whether this name is one otto has built in, redefined or not.
+    pub fn is_builtin_name(name: &str) -> bool {
+        Process::builtins().iter().any(|p| p.name.eq_ignore_ascii_case(name.trim()))
     }
 
     /// What approving does, in a few words: `pushed to its base`, `a pull request, merged when ready`.
@@ -204,13 +231,10 @@ impl Config {
 }
 
 impl Config {
-    /// Every process there is: the built-in `standard` first unless the config redefines it, then the
-    /// configured ones in file order.
+    /// Every process there is: the built-in `standard` and `direct` first, each unless the config
+    /// redefines it, then the configured ones in file order.
     pub fn processes(&self) -> Vec<Process> {
-        let mut all = Vec::new();
-        if !self.processes.iter().any(|p| p.name.eq_ignore_ascii_case(STANDARD_PROCESS)) {
-            all.push(Process::standard());
-        }
+        let mut all: Vec<Process> = Process::builtins().into_iter().filter(|b| !self.processes.iter().any(|p| p.name.eq_ignore_ascii_case(&b.name))).collect();
         all.extend(self.processes.iter().cloned());
         all
     }
@@ -219,7 +243,7 @@ impl Config {
         if let Some(p) = self.processes.iter().find(|p| p.name.eq_ignore_ascii_case(name.trim())) {
             return Some(p.clone());
         }
-        name.trim().eq_ignore_ascii_case(STANDARD_PROCESS).then(Process::standard)
+        Process::builtins().into_iter().find(|b| b.name.eq_ignore_ascii_case(name.trim()))
     }
 
     /// The process a person-typed name means, ignoring case.
@@ -348,12 +372,12 @@ pub fn allowed_changes(text: Option<String>) -> Option<String> {
 }
 
 /// Remove a process. One a repository follows is refused: give the repository another first. Removing
-/// a redefined `standard` brings back the built-in one.
+/// a redefined built-in brings back otto's own.
 pub fn delete_process(name: &str) -> Result<(), OttoError> {
     let config = load()?;
     let process = config.process(name)?;
     let followers = config.projects_of(&process.name);
-    if !followers.is_empty() && !process.name.eq_ignore_ascii_case(STANDARD_PROCESS) {
+    if !followers.is_empty() && !Process::is_builtin_name(&process.name) {
         return Err(OttoError::usage(format!(
             "{} follow{} \"{}\" — give {} another process first (`otto config project <repo> --process <name>`)",
             followers.iter().map(|r| crate::changes::home_relative(r)).collect::<Vec<_>>().join(", "),
@@ -506,9 +530,10 @@ mod tests {
     fn every_repository_follows_standard_until_given_another() {
         let _h = crate::paths::test_support::TempHome::new();
         let config = load().unwrap();
-        assert_eq!(config.processes().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["standard"]);
-        assert_eq!(config.process_for("/any/repo").mode, LandMode::Push);
+        assert_eq!(config.processes().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["standard", "direct"]);
+        assert_eq!(config.process_for("/any/repo").mode, LandMode::Pr, "a pull request, until a repository is given another");
         assert_eq!(config.process("STANDARD").unwrap().name, "standard");
+        assert_eq!(config.process("direct").unwrap().mode, LandMode::Push);
         assert!(config.process("reviewed").unwrap_err().to_string().contains("no process called"));
     }
 
@@ -536,12 +561,13 @@ mod tests {
     #[test]
     fn standard_can_be_redefined_and_reset() {
         let _h = crate::paths::test_support::TempHome::new();
-        save_process(process("standard", LandMode::Pr)).unwrap();
+        save_process(process("standard", LandMode::Push)).unwrap();
         let config = load().unwrap();
-        assert_eq!(config.processes().len(), 1, "the redefinition replaces the built-in one");
-        assert_eq!(config.process_for("/any").mode, LandMode::Pr);
+        assert_eq!(config.processes().len(), 2, "the redefinition replaces the built-in one");
+        assert_eq!(config.process_for("/any").mode, LandMode::Push);
         delete_process("standard").unwrap();
-        assert_eq!(load().unwrap().process_for("/any").mode, LandMode::Push);
+        assert_eq!(load().unwrap().process_for("/any").mode, LandMode::Pr);
+        assert!(delete_process("direct").unwrap_err().to_string().contains("built in"));
     }
 
     #[test]

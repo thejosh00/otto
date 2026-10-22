@@ -371,8 +371,9 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   not of each change, so it is said once: a **process** says what approving does — pushed to its
   base, or a pull request, merged when ready or not — and, in words, how a change starts there and
   how one lands. otto acts on the first; the run making the change and the lander read the words.
-  Every repository follows the built-in `standard` (pushed to its base) until it is given another
-  (`otto config process`, `otto config project`, or Processes on the Changes page). Approving records
+  Every repository follows the built-in `standard` (a pull request) until it is given another, such
+  as the built-in `direct`, which pushes to its base (`otto config process`, `otto config project`, or
+  Processes on the Changes page). Approving records
   the process with the approval, so changing it later doesn't change what is already approved; and
   `--pr` or `--push` lands one change another way.
 - **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
