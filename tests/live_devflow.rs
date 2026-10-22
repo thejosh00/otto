@@ -1,44 +1,96 @@
-//! tests/live_devflow.rs — drive dev-flow against a throwaway repo, ticket to merged.
+//! tests/live_devflow.rs — drive dev-flow against a throwaway repo, ticket to landed.
 //!
 //! The one test that exercises the CONDUCTOR: whether `workflows/dev-flow.md`, read by a live model,
 //! actually produces correct behavior. The unit tests cover `otto state` and `otto poke`; nothing else
 //! covers the prose, and the prose is where the two worst bugs in this project were found.
 //!
-//! Run from a normal terminal. Measured on a two-file repo for a one-function change: intake
-//! 1min, prepare 2min, plan ~1min — but the first run of all took 50min before the workflow
-//! told the conductor to size its effort to the change. Both variants side by side, each claim
-//! of done checked by a fresh wake: 9.5min (2026-10-17). Raise the timeouts (below) rather than
+//! dev-flow never pushes: it hands its branch back as a change, and the lander lands it as the
+//! repository's process says. So each variant checks that nothing left the machine until the
+//! person decided, and then what the decision did:
+//!
+//! - `live_devflow_land` gives its repo a process of its own, whose words say how a branch is named,
+//!   and approves the change: the lander lands it, and the run finishes on the note that says so.
+//! - `live_devflow_drop` drops it: nothing ever reaches the remote, and the run still finishes.
+//!
+//! Both share one `OTTO_HOME` of their own under the workspace, and one lander in it — the
+//! environment is the process's, and the two run side by side. The remotes are local bare repos:
+//! no network, no gh, no chance of touching a real PR. Measured before dev-flow handed back changes:
+//! ~10min a variant, most of it planning and implementing. Raise the timeouts (below) rather than
 //! concluding a run is stuck.
 //!
-//! The remote is a local bare clone, so the push and the merge are real operations against a
-//! throwaway — no network, no gh, no chance of touching a real PR. That is also a case the
-//! workflow must handle honestly: no PR host means `prNumber: null` with a recorded reason,
-//! never a pretend PR.
-//!
-//!   cargo test --test live_devflow -- --ignored --nocapture live_devflow_merge
-//!   cargo test --test live_devflow -- --ignored --nocapture live_devflow_verify
+//!   cargo test --test live_devflow -- --ignored --nocapture live_devflow_land
+//!   cargo test --test live_devflow -- --ignored --nocapture live_devflow_drop
 
 mod support;
 
-use std::path::Path;
-use std::time::Duration;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 use support::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum StopAt {
-    /// Phases 0-4 only: ends at "ready to push", nothing outward (2 gates).
-    Verify,
-    /// The whole pipeline: push and merge too (4 gates).
-    Merge,
+enum Decide {
+    /// Approve the change: the lander lands it.
+    Land,
+    /// Drop it: it never lands, and the run finishes anyway.
+    Drop,
 }
 
-impl StopAt {
+impl Decide {
     /// In the run id and the scratch dir, so the two variants can run side by side.
     fn label(self) -> &'static str {
         match self {
-            StopAt::Verify => "devflow-verify",
-            StopAt::Merge => "devflow-merge",
+            Decide::Land => "devflow-land",
+            Decide::Drop => "devflow-drop",
         }
+    }
+}
+
+/// How many variants run in this process, so the last to finish stops the lander.
+const VARIANTS: usize = 2;
+static FINISHED: AtomicUsize = AtomicUsize::new(0);
+
+/// The `OTTO_HOME` both variants share, and the id of the lander named in it — made once, by
+/// whichever variant gets here first.
+fn shared_home() -> &'static (PathBuf, String) {
+    static HOME: OnceLock<(PathBuf, String)> = OnceLock::new();
+    HOME.get_or_init(|| {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let home = workspace_dir().join(".work-trees").join(format!("otto-scratch-devflow-home-{stamp}"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var("OTTO_HOME", &home);
+        let land_flow = repo_path("workflows/land-flow.md");
+        let workdir = workspace_dir().join(".work-trees").display().to_string();
+        let out = otto(&[
+            "state", "init", "--name", "lander", "--perpetual", "--period", "10m",
+            "--instructions", land_flow.to_str().unwrap(),
+            "--repo", &workdir, "--workdir", &workdir,
+            "--goal", "Land the changes I approve, and clean up after them",
+        ]);
+        assert!(out.status.success(), "the lander: {}", String::from_utf8_lossy(&out.stderr));
+        let lander = stdout(&out).lines().last().unwrap_or("1").to_string();
+        assert!(otto(&["config", "lander", "lander"]).status.success(), "otto config lander failed");
+        (home, lander)
+    })
+}
+
+/// This variant is done with the shared home: the last one out stops the lander, and removes the
+/// home unless something failed.
+fn leave_home(failed: bool) {
+    static ANY_FAILED: AtomicUsize = AtomicUsize::new(0);
+    if failed {
+        ANY_FAILED.fetch_add(1, Ordering::SeqCst);
+    }
+    if FINISHED.fetch_add(1, Ordering::SeqCst) + 1 < VARIANTS {
+        return;
+    }
+    let _ = otto(&["stop", "lander", "--reason", "live test finished"]);
+    if ANY_FAILED.load(Ordering::SeqCst) == 0 && std::env::var("OTTO_TEST_KEEP").as_deref() != Ok("1") {
+        let _ = std::fs::remove_dir_all(&shared_home().0);
+    } else {
+        eprintln!("kept the otto home at {}", shared_home().0.display());
     }
 }
 
@@ -46,30 +98,52 @@ fn env_secs(key: &str, default: u64) -> Duration {
     Duration::from_secs(std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default))
 }
 
-#[test]
-#[ignore = "spawns a real claude session, builds a scratch repo, and spends real money — run with --ignored"]
-fn live_devflow_verify() {
-    run_devflow(StopAt::Verify);
+/// The run's first change, as it keeps it.
+fn change(run: &Run) -> Option<Value> {
+    let text = std::fs::read_to_string(run.dir.join("changes/index.json")).ok()?;
+    let index: Value = serde_json::from_str(&text).ok()?;
+    index["changes"].as_array()?.first().cloned()
+}
+
+/// Poke (this home only) until `done` says so, or the time is up.
+fn poke_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if done() {
+            return true;
+        }
+        let _ = otto(&["poke"]);
+        std::thread::sleep(Duration::from_secs(20));
+    }
+    done()
 }
 
 #[test]
-#[ignore = "spawns a real claude session, builds a scratch repo, and spends real money — run with --ignored"]
-fn live_devflow_merge() {
-    run_devflow(StopAt::Merge);
+#[ignore = "spawns real claude sessions, builds a scratch repo, and spends real money — run with --ignored"]
+fn live_devflow_land() {
+    run_devflow(Decide::Land);
 }
 
-fn run_devflow(stop_at: StopAt) {
+#[test]
+#[ignore = "spawns real claude sessions, builds a scratch repo, and spends real money — run with --ignored"]
+fn live_devflow_drop() {
+    run_devflow(Decide::Drop);
+}
+
+fn run_devflow(decide: Decide) {
     let plan_timeout = env_secs("OTTO_LIVE_DEVFLOW_PLAN_TIMEOUT", 2400);
-    let verify_timeout = env_secs("OTTO_LIVE_DEVFLOW_VERIFY_TIMEOUT", 3600);
-    let outward_timeout = env_secs("OTTO_LIVE_DEVFLOW_OUTWARD_TIMEOUT", 2400);
+    let submit_timeout = env_secs("OTTO_LIVE_DEVFLOW_SUBMIT_TIMEOUT", 3600);
+    let land_timeout = env_secs("OTTO_LIVE_DEVFLOW_LAND_TIMEOUT", 1800);
     let mut checks = Checks::new();
 
-    checks.step("0 - preconditions");
+    checks.step("0 - preconditions, and a home of its own with a lander in it");
     require_launcher(&mut checks);
+    let (home, lander) = shared_home();
+    checks.ok(format!("OTTO_HOME={}", home.display()));
 
     checks.step("1 - scratch repo with a real (local) remote");
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-    let mut scratch = ScratchRepo::new(&workspace_dir(), stop_at.label());
+    let mut scratch = ScratchRepo::new(&workspace_dir(), decide.label());
     let origin = scratch.origin_path();
     let repo = scratch.repo_path("greeter");
     git_ok(scratch.path(), &["init", "--quiet", "--bare", "--initial-branch=main", origin.to_str().unwrap()]);
@@ -100,11 +174,27 @@ fn run_devflow(stop_at: StopAt) {
     git_ok(&repo, &["remote", "set-head", "origin", "main"]);
     let seed = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.ok(format!("repo at {} (origin main @ {})", repo.display(), &seed[..8.min(seed.len())]));
-    let make_test_baseline = run_make_test(&repo);
-    checks.check(make_test_baseline, "its baseline is green", "the scratch repo starts red");
+    checks.check(run_make_test(&repo), "its baseline is green", "the scratch repo starts red");
 
-    checks.step("2 - start dev-flow (push gated: askBeforePush=true)");
-    let run_id = format!("{}-{stamp}", stop_at.label());
+    // Landing, the repo follows a process of its own, whose words name the branch: whether the run
+    // read them is on disk as the branch it made. Dropping, it follows standard.
+    let want_process = match decide {
+        Decide::Land => {
+            let process = format!("devflow-live-{stamp}");
+            let out = otto(&[
+                "config", "process", &process, "--mode", "push",
+                "--start", "On a branch named farewell/<slug>, in a worktree made with the manage-pr skill",
+            ]);
+            checks.check(out.status.success(), format!("process {process}"), format!("otto config process failed: {}", String::from_utf8_lossy(&out.stderr)));
+            let out = otto(&["config", "project", repo.to_str().unwrap(), "--process", &process]);
+            checks.check(out.status.success(), "the repo follows it", format!("otto config project failed: {}", String::from_utf8_lossy(&out.stderr)));
+            process
+        }
+        Decide::Drop => "standard".to_string(),
+    };
+
+    checks.step("2 - start dev-flow");
+    let run_id = format!("{}-{stamp}", decide.label());
     let instructions = repo_path("workflows/dev-flow.md");
     let request = format!(
         "In {}: add a farewell(name) function to greet.py returning \"Goodbye, <name>!\", mirroring greet() \
@@ -112,23 +202,16 @@ fn run_devflow(stop_at: StopAt) {
          passes and farewell(\"Ada\") == \"Goodbye, Ada!\".",
         repo.display()
     );
+    let workdir = scratch.path().display().to_string();
     let run = start_run(
         &mut checks,
         &run_id,
         &request,
         &[
-            "--instructions",
-            instructions.to_str().unwrap(),
-            "--repo",
-            repo.to_str().unwrap(),
-            "--phase",
-            "intake",
-            "--until",
-            "the change is merged to origin/main and the worktree is reaped",
-            "--policy",
-            "askBeforePush=true",
-            "--policy",
-            "autoMergeWhenGreen=false",
+            "--instructions", instructions.to_str().unwrap(),
+            "--repo", repo.to_str().unwrap(), "--workdir", &workdir,
+            "--phase", "intake",
+            "--until", "the change has landed on origin/main, or been dropped, and the ticket update and summary are written",
         ],
     );
 
@@ -139,20 +222,19 @@ fn run_devflow(stop_at: StopAt) {
     }
     checks.ok(format!("plan-review gate after {}min", checks.elapsed().as_secs() / 60));
     checks.check(is_nonempty_file(&run.artifact("spec.md")), "artifacts/spec.md", "no spec was written");
-    let spec_text = std::fs::read_to_string(run.artifact("spec.md")).unwrap_or_default().to_lowercase();
-    if spec_text.contains("criteri") {
-        checks.ok("the spec states acceptance criteria");
-    } else {
-        checks.note("the spec does not obviously state acceptance criteria — read it");
-    }
     let main_repo = run.field_str("facts.mainRepo");
     checks.check(main_repo == repo.display().to_string(), "facts.mainRepo resolved to the scratch repo", format!("facts.mainRepo={main_repo}"));
+    let process = run.field_str("facts.process");
+    checks.check(process == want_process, format!("facts.process={process}"), format!("facts.process={process}, not {want_process}"));
     let branch = run.field_str("facts.branch");
     let worktree = run.field_str("facts.worktree");
     let base = run.field_str("facts.base");
     checks.check(base == "main", "facts.base=main (from origin/HEAD)", format!("facts.base={base}"));
     checks.check(!branch.is_empty(), format!("facts.branch={branch}"), "no branch recorded");
-    let wt = std::path::PathBuf::from(&worktree);
+    if decide == Decide::Land {
+        checks.check(branch.starts_with("farewell/"), "named as the process says it starts", format!("{branch} isn't farewell/<slug>: the process's words weren't followed"));
+    }
+    let wt = PathBuf::from(&worktree);
     if !worktree.is_empty() && wt.is_dir() {
         checks.ok(format!("worktree at {worktree}"));
         let head_branch = stdout(&git(&wt, &["rev-parse", "--abbrev-ref", "HEAD"]));
@@ -168,179 +250,112 @@ fn run_devflow(stop_at: StopAt) {
     checks.check(await_idle(&run, Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the plan gate");
     check_todo(&mut checks, &run, &[("intake", "x"), ("prepare", "x"), ("plan", "~"), ("implement", " "), ("cleanup", " ")]);
     checks.check(is_nonempty_file(&run.artifact("plan.md")), "artifacts/plan.md", "no plan was written");
-    let plan_text = std::fs::read_to_string(run.artifact("plan.md")).unwrap_or_default();
-    if plan_text.contains("greet.py") {
-        checks.ok("the plan names the file it will change");
-    } else {
-        checks.note("the plan does not mention greet.py — read it before approving");
-    }
     checks.note(format!("read it: {} — or watch: otto attach {run_id}", run.artifact("plan.md").display()));
     if !answer_gate(&mut checks, &run, "plan-review", "Approve — implement it as written.", Duration::from_secs(300)) {
         checks.bail(&run, "could not answer the plan gate");
     }
 
-    checks.step(&format!("4 - the result gate (up to {}min)", verify_timeout.as_secs() / 60));
+    checks.step(&format!("4 - handed back as a change (up to {}min)", submit_timeout.as_secs() / 60));
     checks.note("implementing and verifying; subagents do the writing");
-    if !await_gate(&run, "result-review", verify_timeout) {
-        checks.bail(&run, &format!("no result gate within {}min", verify_timeout.as_secs() / 60));
+    let start = Instant::now();
+    while run.events("change-submitted") == 0 && start.elapsed() < submit_timeout && !run.is_over() {
+        std::thread::sleep(Duration::from_secs(10));
     }
-    checks.ok(format!("result-review gate after {}min", checks.elapsed().as_secs() / 60));
+    if run.events("change-submitted") == 0 {
+        checks.bail(&run, &format!("no change was submitted within {}min", submit_timeout.as_secs() / 60));
+    }
+    checks.ok(format!("change submitted after {}min", checks.elapsed().as_secs() / 60));
+    checks.check(await_idle(&run, Duration::from_secs(300)), "its wake has exited", "a wake is still running after submitting");
+    let c = change(&run).unwrap_or(Value::Null);
+    checks.check(c["state"] == "review", "the change waits for review", format!("the change is {}", c["state"]));
+    checks.check(c["branch"] == branch.as_str(), format!("from {branch}"), format!("from {}, not facts.branch", c["branch"]));
+    checks.check(run.field_str("facts.change") == "1", "facts.change=1", format!("facts.change={}", run.field_str("facts.change")));
+    checks.check(
+        run.gate_files_matching(".md").iter().all(|g| g.display().to_string().contains("plan-review")),
+        "no gate but the plan's — the change is the result review",
+        "it opened a gate besides plan-review",
+    );
     let commits: u32 = stdout(&git(&wt, &["rev-list", "--count", &format!("origin/main..{branch}")])).parse().unwrap_or(0);
     checks.check(commits >= 1, format!("{commits} commit(s) on the branch"), "nothing was committed");
-    let dirty = !stdout(&git(&wt, &["status", "--porcelain"])).is_empty();
-    checks.check(!dirty, "the worktree is clean", "uncommitted changes left behind");
-    let greet_py = std::fs::read_to_string(wt.join("greet.py")).unwrap_or_default();
-    checks.check(greet_py.contains("farewell"), "greet.py has farewell()", "farewell() was never written");
+    checks.check(stdout(&git(&wt, &["status", "--porcelain"])).is_empty(), "the worktree is clean", "uncommitted changes left behind");
+    checks.check(std::fs::read_to_string(wt.join("greet.py")).unwrap_or_default().contains("farewell"), "greet.py has farewell()", "farewell() was never written");
     checks.check(run_make_test(&wt), "make test passes in the worktree", "the suite fails there");
     checks.check(is_nonempty_file(&run.artifact("test-report.md")), "artifacts/test-report.md", "no test report");
-    checks.check(await_idle(&run, Duration::from_secs(300)), "the wake that asked has exited", "a wake is still running at the result gate");
-    check_todo(&mut checks, &run, &[("plan", "x"), ("implement", "x"), ("verify", "~"), ("publish", " ")]);
+    checks.check(is_nonempty_file(&run.artifact("change.md")), "artifacts/change.md — the review", "no change summary");
+    check_todo(&mut checks, &run, &[("verify", "x"), ("submit", "x"), ("review", "~"), ("cleanup", " ")]);
 
     checks.step("5 - nothing has left this machine");
     let branch_ref = format!("refs/heads/{branch}");
-    let branch_on_origin = git(&origin, &["show-ref", "--quiet", "--verify", &branch_ref]).status.success();
-    checks.check(!branch_on_origin, format!("origin has no {branch}"), "the branch is on origin before any push gate");
-    let head_at_verify = stdout(&git(&wt, &["rev-parse", "HEAD"]));
-    let push_authorized = otto(&["state", "check-authorized", &run_id, "--action", "push", "--head", &head_at_verify]).status.success();
-    checks.check(!push_authorized, "push is not authorized", "a push is somehow already authorized");
+    let on_origin = |b: &str| git(&origin, &["show-ref", "--quiet", "--verify", b]).status.success();
+    checks.check(!on_origin(&branch_ref), format!("origin has no {branch}"), "the branch is on origin before anyone approved it");
+    checks.check(stdout(&git(&origin, &["rev-parse", "main"])) == seed, "origin/main is untouched", "origin/main moved before anyone approved it");
 
-    if stop_at == StopAt::Verify {
-        checks.step("6 - stop at ready-to-push (option 3)");
-        if !answer_gate(&mut checks, &run, "result-review", "Stop here — leave it at ready-to-push.", Duration::from_secs(300)) {
-            checks.bail(&run, "could not answer the result gate");
+    let reference = format!("{run_id}/1");
+    match decide {
+        Decide::Land => {
+            checks.step(&format!("6 - approve it; the lander lands it as the process says (up to {}min)", land_timeout.as_secs() / 60));
+            let out = otto(&["changes", "approve", &reference]);
+            checks.check(out.status.success(), "approved", format!("approve failed: {}", String::from_utf8_lossy(&out.stderr)));
+            let d = change(&run).unwrap_or(Value::Null)["decision"].clone();
+            checks.check(d["mode"] == "push" && d["process"] == want_process.as_str(), "approved to push, as its process says", format!("the decision: {d}"));
+            let landed = poke_until(land_timeout, || change(&run).is_some_and(|c| c["state"] == "landed" && !c["cleaned"].is_null()));
+            if !landed {
+                println!("the change: {}", serde_json::to_string_pretty(&change(&run).unwrap_or(Value::Null)).unwrap_or_default());
+                Run::new(lander.clone()).journal_dump();
+                checks.bail(&run, "the change didn't land and get cleaned up");
+            }
+            let sha = change(&run).unwrap_or(Value::Null)["landed"]["sha"].as_str().unwrap_or("").to_string();
+            checks.ok(format!("landed at {}", &sha[..8.min(sha.len())]));
+            checks.check(stdout(&git(&origin, &["show", "main:greet.py"])).contains("Goodbye"), "origin/main has the farewell", "origin/main has no farewell");
+
+            checks.step("7 - told it landed, the run finishes");
+            let finished = poke_until(land_timeout, || run.is_over());
+            checks.check(finished && run.status() == "done", "status=done", format!("status={}", run.status()));
+            let landed_sha = run.field_str("facts.landedSha");
+            checks.check(!sha.is_empty() && landed_sha == sha, "facts.landedSha is the commit on main", format!("facts.landedSha={landed_sha}, landed at {sha}"));
+            check_todo(&mut checks, &run, &[("submit", "x"), ("review", "x"), ("cleanup", "x")]);
         }
-        checks.check(await_field(&run, "status", "done", outward_timeout), "status=done", format!("status={}", run.status()));
-        checks.check(is_nonempty_file(&run.artifact("ready-to-push.md")), "artifacts/ready-to-push.md", "no ready-to-push summary");
-        let branch_on_origin = git(&origin, &["show-ref", "--quiet", "--verify", &branch_ref]).status.success();
-        checks.check(!branch_on_origin, "still nothing on origin", "something pushed anyway");
-        checks.check(!repo_is_locked(&repo), "lock released", "the lock was never released");
-        checks.check(await_idle(&run, Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
-        check_todo(
-            &mut checks,
-            &run,
-            &[("verify", "x"), ("publish", "-"), ("babysit", "-"), ("land", "-"), ("cleanup", "-")],
-        );
-        check_nothing_left_open(&mut checks, &run);
-        if checks.fail_count() > 0 {
-            scratch.keep();
+        Decide::Drop => {
+            checks.step("6 - drop it");
+            let out = otto(&["changes", "drop", &reference, "--text", "Not needed after all — we're keeping greetings one-way."]);
+            checks.check(out.status.success(), "dropped", format!("drop failed: {}", String::from_utf8_lossy(&out.stderr)));
+            // A drop is heard at the run's next wake; its day-long timer stands in for that here.
+            let out = otto(&["wake", &run_id]);
+            checks.check(out.status.success(), "woke the run, as its timer would", format!("otto wake failed: {}", String::from_utf8_lossy(&out.stderr)));
+
+            checks.step("7 - the run finishes without it, and the lander cleans up after it");
+            let finished = poke_until(land_timeout, || run.is_over() && change(&run).is_some_and(|c| !c["cleaned"].is_null()));
+            checks.check(finished && run.status() == "done", "status=done", format!("status={}", run.status()));
+            checks.check(change(&run).is_some_and(|c| c["state"] == "dropped"), "the change stays dropped", "the change isn't dropped");
+            checks.check(run.field_str("facts.landedSha").is_empty(), "nothing recorded as landed", "a landedSha was recorded for a dropped change");
+            checks.check(!on_origin(&branch_ref), "still nothing on origin", "something reached origin anyway");
+            checks.check(stdout(&git(&origin, &["rev-parse", "main"])) == seed, "origin/main untouched", "origin/main moved");
+            check_todo(&mut checks, &run, &[("submit", "x"), ("review", "-"), ("cleanup", "x")]);
         }
-        finish_run(checks, &run, "done", Some(&wt), Some(&repo));
-        return;
     }
 
-    checks.step("6 - the push gate");
-    if !answer_gate(&mut checks, &run, "result-review", "Go to publish.", Duration::from_secs(300)) {
-        checks.bail(&run, "could not answer the result gate");
-    }
-    if !await_gate(&run, "push-confirm", outward_timeout) {
-        checks.bail(&run, "no push-confirm gate — publish did not ask first");
-    }
-    checks.ok("push-confirm gate is open");
-    let branch_on_origin = git(&origin, &["show-ref", "--quiet", "--verify", &branch_ref]).status.success();
-    checks.check(!branch_on_origin, "still nothing pushed", "the branch reached origin BEFORE the gate was answered");
-    if !answer_gate(&mut checks, &run, "push-confirm", "Approved — push it.", Duration::from_secs(300)) {
-        checks.bail(&run, "could not answer the push gate");
-    }
-
-    checks.step("7 - the push, and the authorization behind it");
-    let deadline = std::time::Instant::now() + outward_timeout;
-    loop {
-        if !run.field_str("facts.pushedSha").is_empty() {
-            break;
-        }
-        if matches!(run.status().as_str(), "failed" | "blocked") {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    let pushed = run.field_str("facts.pushedSha");
-    if pushed.is_empty() {
-        checks.bail(&run, "nothing was pushed after approval");
-    }
-    checks.ok(format!("facts.pushedSha={}", &pushed[..8.min(pushed.len())]));
-    let auth_push_head = run.field_str("authorizations.push.head");
-    checks.check(auth_push_head == pushed, "the authorization names the pushed commit", format!("authorized {auth_push_head} but pushed {pushed}"));
-    let auth_push_by = run.field_str("authorizations.push.by");
-    checks.check(auth_push_by == "human", "authorized by a human, via a gate", "the push authorization did not come from a gate");
-    let origin_branch_sha = stdout(&git(&origin, &["rev-parse", &branch_ref]));
-    checks.check(origin_branch_sha == pushed, format!("origin/{branch} is at the approved commit"), "origin holds a different commit");
-    let travels = otto(&["state", "check-authorized", &run_id, "--action", "push", "--head", &seed]).status.success();
-    checks.check(!travels, "it covers no other commit", "the authorization travels to other commits");
-    let merge_from_push = otto(&["state", "check-authorized", &run_id, "--action", "merge", "--head", &pushed]).status.success();
-    checks.check(!merge_from_push, "merge still needs its own approval", "approving a push also approved a merge");
-    let main_sha = stdout(&git(&origin, &["rev-parse", "main"]));
-    checks.check(main_sha == seed, "main is untouched so far", "main moved early");
-
-    checks.step("8 - the merge");
-    if !await_gate(&run, "merge-confirm", outward_timeout) {
-        checks.bail(&run, &format!("no merge-confirm gate within {}min", outward_timeout.as_secs() / 60));
-    }
-    checks.ok(format!("merge-confirm gate after {}min", checks.elapsed().as_secs() / 60));
-    if !answer_gate(&mut checks, &run, "merge-confirm", "Approved — merge it.", Duration::from_secs(300)) {
-        checks.bail(&run, "could not answer the merge gate");
-    }
-    if !await_field(&run, "status", "done", outward_timeout) {
-        checks.note("not done yet — checking what landed");
-    }
-    let merged = run.field_str("facts.mergedSha");
-    checks.check(!merged.is_empty(), format!("facts.mergedSha={}", &merged[..8.min(merged.len())]), "no merge was recorded");
-    let auth_merge_head = run.field_str("authorizations.merge.head");
-    checks.check(auth_merge_head == pushed, "the merge authorization names that commit", "the merge authorization does not match what was pushed");
-    let ancestor = git(&origin, &["merge-base", "--is-ancestor", &pushed, "main"]).status.success();
-    checks.check(ancestor, "origin/main contains the change", "main does not contain the pushed commit");
-    let authorized_events = run.events("authorized");
-    checks.check(authorized_events >= 2, "two authorizations: push and merge", "expected one authorization per outward action");
-
-    checks.step("9 - cleanup — the phase otto's contract cannot enforce");
-    // A real run went `land → done` and left its worktree behind, unmentioned in the journal.
-    // Both contract checks passed: `done` is a legal stopping state and the handoff was
-    // written. Nothing generic can verify that a declared phase's durableOutput exists
-    // (DESIGN.md §19.1), so this assertion is the only thing standing between "merged" and
-    // "finished".
-    checks.check(run.status() == "done", "status=done", format!("status={}", run.status()));
-    checks.check(!repo_is_locked(&repo), "lock released", "the repo lock outlived the run");
-    let worktree_list = stdout(&git(&repo, &["worktree", "list"]));
-    if worktree_list.contains(&branch) {
-        checks.bad("the worktree for the branch was never reaped — cleanup did not run");
-    } else {
-        checks.ok("worktree reaped");
-    }
-    let cleanup_ran = run.events("cleanup-complete") >= 1 || run.field_str("phase") == "cleanup";
-    checks.check(
-        cleanup_ran,
-        "cleanup ran as its own phase",
-        format!("no evidence cleanup ran (phase={}) — land must not set status done itself", run.field_str("phase")),
-    );
-    if wt.is_dir() {
-        checks.note(format!("worktree still at {} (cleanup should have offered to reap it)", wt.display()));
-    } else {
-        checks.ok("worktree reaped");
-    }
-    if is_nonempty_file(&run.artifact("summary.md")) {
-        checks.ok("artifacts/summary.md");
-    } else {
-        checks.note("no summary artifact");
-    }
+    checks.step("8 - nothing left behind");
+    // A real run once went straight from merging to `done`, skipping its cleanup unmentioned. Both
+    // contract checks passed: `done` is a legal stopping state and the handoff was written. Nothing
+    // generic can verify that a declared phase's durableOutput exists (DESIGN.md §19.1), so these
+    // assertions are what stands between "landed" and "finished".
+    checks.check(is_nonempty_file(&run.artifact("summary.md")), "artifacts/summary.md", "no summary — cleanup did not run");
+    checks.check(!repo_is_locked(&repo), "no repo lock held", "a repo lock outlived the run");
+    let worktrees = stdout(&git(&repo, &["worktree", "list"]));
+    checks.check(!worktrees.contains(&branch), "the lander reaped the worktree", format!("worktrees left: {worktrees}"));
     checks.check(await_idle(&run, Duration::from_secs(300)), "the finishing wake has exited", "a wake is still running at done");
-    // The scratch remote is a bare repo, so there is no PR host and `babysit` never happens.
-    check_todo(
-        &mut checks,
-        &run,
-        &[("publish", "x"), ("babysit", "-"), ("land", "x"), ("cleanup", "x")],
-    );
     check_nothing_left_open(&mut checks, &run);
 
-    if checks.fail_count() > 0 {
+    let failed = checks.fail_count() > 0;
+    if failed {
         scratch.keep();
     }
-    finish_run(checks, &run, "done", Some(&wt), Some(&repo));
+    leave_home(failed);
+    finish_run(checks, &run, "done", None, None);
 }
 
 /// `dev-flow`'s phases, in order: its todo has one item per phase, each starting with the name.
-const PHASES: [&str; 9] = ["intake", "prepare", "plan", "implement", "verify", "publish", "babysit", "land", "cleanup"];
+const PHASES: [&str; 8] = ["intake", "prepare", "plan", "implement", "verify", "submit", "review", "cleanup"];
 
 /// The mark on a phase's todo item — the first item whose text starts with the phase's name — as
 /// the file has it: `x`, ` `, `~`, `-` or `!`.

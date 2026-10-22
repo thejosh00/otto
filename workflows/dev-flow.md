@@ -1,16 +1,17 @@
-# dev-flow — ticket to reviewed code
+# dev-flow — ticket to landed code
 
-**Version** 1 · **First phase** `intake`
+**Version** 2 · **First phase** `intake`
 
-Read a ticket, prepare a worktree, plan, get the plan reviewed, implement, verify, get the
-result reviewed, push, babysit the review for as long as it takes, merge, clean up.
+Read a ticket, prepare a worktree, plan, get the plan reviewed, implement, verify, hand the result
+back as a **change**, answer what comes back for as long as it takes, clean up.
 
-**Phases 5–8 touch the world.** Push and merge cannot be undone by deleting a file, so they are
-not taken on a wake's judgement: each one needs an authorization **recorded on disk and
-bound to the exact commit** (`otto state authorize` / `check-authorized`). An approval given on
-Monday does not authorize what the branch became on Wednesday. An agent that decides on day three
-to merge because it looked ready is the failure everyone remembers; the machinery here exists so
-that it cannot.
+**This run never touches the world.** It doesn't push, open a pull request, or merge: it hands its
+branch back as a change (`otto state change submit`), the person approves it, and the lander lands
+it — pushed to the base or as a pull request, as the repository's **process** says
+(`otto config project <mainRepo>`). otto binds the approval to that version's commit and patch, so
+an approval given on Monday does not land what the branch became on Wednesday. An agent that decides
+on day three to merge because it looked ready is the failure everyone remembers; here it has no way
+to.
 
 ## Facts
 
@@ -23,16 +24,14 @@ that it cannot.
 | `base` | `prepare` | Base branch, from `origin/HEAD` — never assumed to be `main` |
 | `branch` | `prepare` | `<key-lowercase>-<slug>`, e.g. `sre-1234-retry-backoff`. With no ticket, just the slug: `farewell-greeting` |
 | `worktree` | `prepare` | Where the work happens. `manage-pr` chooses it; record what it reports |
+| `process` | `intake` | The process the repo follows, by name (`otto config project <mainRepo>`): what approving the change will do |
 | `testCmd` | `prepare` | The repo's test command, as `manage-pr` inferred it |
-| `pushedSha` | `publish` | The commit last pushed. What `check-authorized` is compared against |
-| `prNumber`, `prUrl` | `publish` | The PR, or `null` when the remote has no PR host |
-| `prHost` | `publish` | The remote's host, e.g. `github.com` or a GitHub Enterprise host. `gh` auth is per-host |
-| `prCommentCursor` | `babysit` | Highest review-comment id already handled. Makes polling cheap and exactly-once |
-| `ciStatus`, `reviewDecision` | `babysit` | Re-derived every tick, never remembered |
+| `change` | `submit` | The change's number within this run: `<id>/<change>` is how `otto changes` names it |
+| `landedSha` | `review` | The commit on the base once it landed, from the note that says so |
 
-**Policy defaults** for this workflow: `askBeforePush: true`, `autoMergeWhenGreen: false`,
-`maxAttempts: 3`. Both push flags are moot for phases 0–4 but are set at `intake` so the
-decision is on record from the start rather than made later under pressure.
+**Policy defaults** for this workflow: `maxAttempts: 3`, `maxTicksWithoutProgress: 14` (two weeks
+of a change nobody looks at, at a tick a day). How much the person stays in the loop after the plan
+is not this run's policy: it is the repository's process, set once for every change to it.
 
 ## Reconcile, per phase
 
@@ -45,19 +44,17 @@ Cheap and phase-scoped — never fetch a PR during `plan`. On every wake:
 - `implement` onward: `git -C <worktree> status --porcelain` and
   `git -C <worktree> log --oneline origin/<base>..HEAD`. What is committed is the truth about
   progress; a memory of having written code is not.
-- `publish` onward: `git -C <worktree> fetch origin` and
-  `git ls-remote origin <branch>` — has our commit actually landed on the remote?
-- `babysit` onward: `gh pr view <n> --json state,mergeable,reviewDecision,statusCheckRollup` plus
-  a comment query newer than `prCommentCursor`. **The PR may have been merged, closed, or
-  reassigned while you slept** — that possibility is the reason this phase re-derives rather than
-  resumes. A merged or closed PR goes straight to `cleanup`, whatever the plan said.
+- `review` onward: `otto changes show <id>/<change> --json` — its state, its versions, its pull
+  request if it has one, and what happened to it. **It may have landed, been dropped, or had its
+  pull request closed while you slept** — that possibility is the reason this phase re-derives rather
+  than resumes. Landed, merged, dropped or closed goes straight to `cleanup`, whatever the plan said.
+  Never fetch the pull request with `gh` yourself: what it says reaches you from the lander.
 
 ## Chaining
 
-`intake → prepare → plan` and `implement → verify` run **in one turn each**: their gates are
-`continue`, which means proceed now, not stop. The run yields at exactly four places — the
-`plan-review`, `result-review`, `push-confirm` and `merge-confirm` gates — plus each hourly
-`babysit` tick. Stopping anywhere else leaves the run with nothing to wake it (see the skill's
+`intake → prepare → plan` and `implement → verify → submit → review` run **in one turn each**:
+their gates are `continue`, which means proceed now, not stop. The run yields at exactly two places
+— the `plan-review` gate, and `review`'s sleep, from which each note about the change wakes it. Stopping anywhere else leaves the run with nothing to wake it (see the skill's
 wake loop): if you have to, open a gate first.
 
 ## The todo
@@ -73,19 +70,19 @@ never happened. Here its item stays `[ ]`, and otto flags a `done` run that leav
 - [ ] prepare — a worktree on the branch, baseline green
 - [ ] plan — artifacts/plan.md, approved at plan-review
 - [ ] implement — committed, lint and tests green
-- [ ] verify — artifacts/test-report.md, approved at result-review
-- [ ] publish — pushed, and the PR opened, at push-confirm
-- [ ] babysit — approved and green
-- [ ] land — merged, at merge-confirm
-- [ ] cleanup — worktree reaped, ticket update and summary written
+- [ ] verify — artifacts/test-report.md, every criterion accounted for
+- [ ] submit — handed back as a change
+- [ ] review — landed, as the repo's process says
+- [ ] cleanup — ticket update and summary written
 ```
 
 - **`[~]` while a phase is under way, including while its gate waits on a person; `[x]` once the
-  run moves past it.** What a later wake or a person will want from a phase (the branch, the PR,
-  the merged sha) goes on an indented line under its item, not in a new item.
-- **A phase the run does not go through is `[-]`, with why**: `babysit` when the remote has no PR
-  host; `publish` to `cleanup` after **Stop here**; `land` when someone else merged the PR.
-- **Ticks don't touch it.** `babysit` stays `[~]` for as long as review takes. A tick that
+  run moves past it.** What a later wake or a person will want from a phase (the branch, the
+  change's reference, its pull request, the landed sha) goes on an indented line under its item,
+  not in a new item.
+- **A phase the run does not go through is `[-]`, with why.** A change that was dropped leaves
+  `review` `[-]`, with what the person said.
+- **Ticks don't touch it.** `review` stays `[~]` for as long as review takes. A tick that
   rewrote the todo every hour would be paying to say nothing.
 - **It reports progress; it doesn't decide it.** Git, the gates on disk and the artifacts are the
   truth, and a re-entered phase re-derives from them as it always has, then corrects its item if
@@ -97,8 +94,8 @@ never happened. Here its item stays `[ ]`, and otto flags a `done` run that leav
 |---|---|
 | **goal** | Turn the request into a spec this run can be driven from, and choose the repo |
 | **preconditions** | `facts.target` is set |
-| **actions** | Write the todo (above). If the target looks like a Jira key (`[A-Z]+-\d+`), fetch it with the Jira MCP (`getJiraIssue`) and record `jiraKey` + `ticketUpdatedAt`; otherwise treat the target as the request itself. Distil into `artifacts/spec.md`: the problem, the acceptance criteria, what is explicitly out of scope, and open questions. Resolve the repo (see below) and `record-fact mainRepo=<abs path>`. Set policy explicitly |
-| **durableOutput** | `artifacts/todo.md`, `artifacts/spec.md`, `facts.jiraKey`, `facts.ticketUpdatedAt`, `facts.mainRepo` |
+| **actions** | Write the todo (above). If the target looks like a Jira key (`[A-Z]+-\d+`), fetch it with the Jira MCP (`getJiraIssue`) and record `jiraKey` + `ticketUpdatedAt`; otherwise treat the target as the request itself. Distil into `artifacts/spec.md`: the problem, the acceptance criteria, what is explicitly out of scope, and open questions. Resolve the repo (see below) and `record-fact mainRepo=<abs path>`; read its process (`otto config project <mainRepo>`) and `record-fact process=<name>`. Set policy explicitly |
+| **durableOutput** | `artifacts/todo.md`, `artifacts/spec.md`, `facts.jiraKey`, `facts.ticketUpdatedAt`, `facts.mainRepo`, `facts.process` |
 | **exitCondition** | `artifacts/spec.md` exists with acceptance criteria, and `facts.mainRepo` is a git repo |
 | **gate** | `continue` — **unless** the repo is ambiguous or the acceptance criteria cannot be stated, then **ask-human** |
 | **idempotency** | If `artifacts/todo.md`, `artifacts/spec.md` and `mainRepo` exist, adopt them; only re-read the ticket if reconciliation says it changed |
@@ -147,15 +144,14 @@ directory and never touch another run's; holding the lock through them (and thro
 human gate or sleep comes after) blocks every other run against this repo for no reason. That is
 exactly the failure mode `skills/otto/SKILL.md`'s locking rule warns about — *"a run that sleeps
 holding a lock blocks every other run against that repo for as long as it sleeps"* — and it is
-what happened to a real run: it sat at the `result-review` gate for over a day while a second
-run against the same repo waited on its lock the whole time. `publish`, `babysit` and `land` each
-re-acquire the lock for the few commands that actually touch shared repo state (the remote push,
-the upstream rebase, the merge) and release it again immediately after — see those phases.
+what happened to a real run: it sat at a review gate for over a day while a second run against
+the same repo waited on its lock the whole time. Nothing after `prepare` touches shared repo state
+— the push, the rebase, the merge are the lander's, under its own lock — so this run never locks
+again.
 
-**`--no-track` is not incidental.** Without it the new branch tracks `origin/<base>`, and a
-later `git push` with the usual `push.default` aims at the *base* branch. Nothing in phases 0–4
-pushes, so this cannot bite here — which is exactly why it has to be right here, before
-`publish` exists and the mistake becomes a push to `main`.
+**`--no-track` is not incidental.** Without it the new branch tracks `origin/<base>`, and a stray
+`git push` with the usual `push.default` aims at the *base* branch. This run never pushes — but a
+person who picks up its worktree might, and the mistake would be a push to `main`.
 
 **Why `manage-pr` and not our own worktree code.** It already knows the things that only hurt
 once: that a worktree contains no gitignored files, so a missing `.env` breaks tests in a way
@@ -234,227 +230,119 @@ Three real attempts and it is `blocked` plus a human gate carrying every diff tr
 | **actions** | Re-read `artifacts/spec.md`'s acceptance criteria and check each one explicitly. Run the fuller suite the repo offers (integration/E2E per `build-info`), delegated to a subagent so its output never enters this wake's context. Write the report |
 | **durableOutput** | `artifacts/test-report.md`: each acceptance criterion with its evidence, the commands run and their results, what was **not** covered, and the diffstat |
 | **exitCondition** | Every acceptance criterion is marked met, waived (with the reason), or not-covered (with why) |
-| **gate** | **ask-human** — result review |
-| **idempotency** | If `artifacts/test-report.md` exists and the branch head has not moved since it was written, adopt it and re-open the gate; if the head moved, the report is stale — re-run |
+| **gate** | `continue` — the change `submit` hands back is the result review, asked better than a gate could |
+| **idempotency** | If `artifacts/test-report.md` exists and the branch head has not moved since it was written, adopt it; if the head moved, the report is stale — re-run |
 
 Say what is untested. A report that claims everything is covered is the one nobody can act on,
-and the reviewer is about to decide whether to push this.
+and the person is about to decide whether this lands.
 
-Gate question — `open-gate --slug result-review`, then stop:
+**Criteria you can't meet** are not a reason to submit anyway, nor to stop silently: open a gate
+quoting the criterion and what you found, with options to waive it, to go back to `implement`, or
+to abandon.
 
-> `<key>`: implemented and verified. `artifacts/test-report.md` — K/N criteria met, lint+tests
-> green, X commits, diffstat. **Nothing has left this machine yet**; the next phase asks again
-> before it does.
->
-> - **Go to publish** *(default)* — `publish` confirms the push separately, so this is not yet a
->   decision to push.
-> - **More work** — say what; `implement` re-runs (attempt N of 3).
-> - **Stop here** — the run finishes at *ready to push*: `artifacts/ready-to-push.md` gets the
->   commands to push by hand, and the worktree is left for you.
-> - **Abandon** — the run ends `failed`, worktree left in place.
-
-**Stop here** is worth keeping: it is the whole of build phase 3's behaviour, still available for a
-change you would rather push yourself. On that answer, write `artifacts/ready-to-push.md` (worktree,
-branch, base, commits, verification summary, the exact push and PR commands), mark `publish` to
-`cleanup` `[-]` with the gate that stopped them (the worktree is left for you on purpose), a
-defensive bare `unlock` (a no-op by now — `prepare` already released it once the worktree was
-green), and `set-status --status done --reason "ready to push, by request"`.
-
-## Phase 5 — `publish`
-
-The first outward-facing act of the whole run.
+## Phase 5 — `submit`
 
 | | |
 |---|---|
-| **goal** | The branch on the remote, and a PR open on it |
-| **preconditions** | `result-review` closed and approved; tree clean; checks green; `git log origin/<base>..<branch>` non-empty |
-| **actions** | Check `gh` for the remote's host (B0, below), confirm with a human, authorize the exact head, **lock, push, unlock**, then open the PR |
-| **durableOutput** | `facts.pushedSha`, `facts.prNumber`, `facts.prUrl`, `facts.prHost`; `artifacts/publish-notes.md` |
-| **exitCondition** | `git ls-remote origin <branch>` returns `pushedSha`, either a PR exists or `prNumber: null` is recorded with the reason, and the repo lock is released |
-| **gate** | **ask-human confirm** — unless `policy.askBeforePush` is `false`, and even then the authorization must be recorded (from the policy, naming it) |
-| **idempotency** | If the remote already has this sha, the push is done — adopt it (and skip the lock/push block entirely — nothing to unlock either). If `gh pr list --head <branch>` returns a PR, **adopt that PR**; never open a second one for one branch. `otto state lock` is re-entrant; `otto state unlock` (no `--repo`) is a true no-op — but `unlock --repo <repo>` errors if this run isn't currently holding it, so only call it right after the matching `lock`, never speculatively |
+| **goal** | The verified branch, handed back to the person as a **change** |
+| **preconditions** | `verify` is complete; tree clean; `git log origin/<base>..<branch>` non-empty |
+| **actions** | Write `artifacts/change.md` — the review — then `otto state change submit`, and record the change's number |
+| **durableOutput** | `facts.change`; `artifacts/change.md` |
+| **exitCondition** | `otto changes show <id>/<change> --json` has a version at the branch's head |
+| **gate** | `continue` → `review` |
+| **idempotency** | Submitting the same commit again is not a new version — otto says it is unchanged — so re-entering this phase after a crash is safe. With `facts.change` set, submit the same `--branch`: a new head is its next version, never a second change |
 
 ```
-HEAD=$(git -C <worktree> rev-parse HEAD)
-# 1. confirm  — gate slug `push-confirm`, quoting the diffstat and the exact remote
-# 2. authorize — bind the approval to this commit, and nothing else
-otto state authorize <id> --action push --gate <NNN> --head $HEAD --quote "<verbatim>"
-# 3. refuse to act unauthorized, every time, even when you are sure
-otto state check-authorized <id> --action push --head $HEAD || stop
-otto state lock <id> --repo <mainRepo>       # only for the push itself
-git -C <worktree> push -u origin <branch>
-otto state unlock <id>                       # release before gh pr create — that's not a git-shared-state op
-otto state record-fact <id> pushedSha=$HEAD
-gh pr create --repo <owner/repo> --base <base> --head <branch> --title … --body-file …
+otto state change submit <id> --repo <mainRepo> --branch <branch> --title "<key>: <what it does>" \
+     --summary-file artifacts/change.md --tests "<what the suite said, in a line>"
+otto state record-fact <id> change=<n>       # the number submit printed
 ```
 
-**`gh` first (the B0 check `manage-pr` uses).** Derive the host from `git remote get-url origin`,
-then `gh auth status --hostname <host>`. Auth is per-host — a token for one GHE instance says
-nothing about `github.com` — and it must be established **outside** the sandbox, because the
-`~/.config` grant is read-only. No `gh` for this host means: push if authorized, record
-`prNumber: null` with the reason, and **gate** rather than pretending a PR exists. A remote with
-no PR host at all (a plain git remote) is the same case, and is normal for a scratch repo.
+**`artifacts/change.md` is what the person reviews**, so it is written for someone who wasn't
+here: what it does and why, first (the ticket, the approach the plan took); then each acceptance
+criterion and its evidence from `artifacts/test-report.md`; then what is **not** covered and what
+could go wrong. Name the plan gate it implements, and anything you deviated from.
 
-**Ordering matters.** Push *after* the authorization check and *before* `gh pr create`: a pushed
-branch with no PR is recoverable by a human in one command, while a PR whose branch never arrived
-is confusing to everyone who sees it.
+**Nothing leaves this machine here, or anywhere in this run.** Pushing, opening a pull request,
+merging: the lander does them, once the person approves, and only as the repository's process
+says. The approval is bound to this version's commit and patch by otto itself — a later commit is
+a new version the person sees before it lands.
 
-**"There is no PR" and "I cannot see the PR" are different, and confusing them is dangerous.**
-Decide which one you are in, and record it as `facts.prNumber` plus a reason:
+## Phase 6 — `review`
 
-| Situation | What it means | Next phase |
-|---|---|---|
-| The remote has no PR host at all (a path, a bare repo, a plain git server) | There is no review to wait for, and nobody will ever open one | **`land`** — skip `babysit`, and say plainly in the merge gate that nobody reviewed this |
-| A PR host exists, `gh` cannot authenticate or reach it | A review may be happening that you cannot see | **`blocked`** + a human gate. Do **not** proceed: merging code whose review state you cannot read is exactly the mistake the gates exist to prevent |
-| A PR host exists and `gh` works | Normal | `babysit` |
-
-The first row is what a scratch repo looks like, and it is why `tests/live_devflow.rs` can prove
-these phases without touching a real PR.
-
-Gate question — slug `push-confirm`:
-
-> `<key>`: ready to push `<branch>` → `<remote host>/<owner/repo>`, N commits, `<diffstat>`, onto
-> `<base>`. This is the first thing this run does that other people can see. `artifacts/test-report.md`
-> has the verification; `artifacts/plan.md` was approved at gate `<NNN>`.
->
-> - **Push and open a PR** *(default)* — then I watch the review hourly.
-> - **Push only** — no PR; you open it when you want. The run then waits at a gate rather than
->   guessing whether a review happened.
-> - **Not yet** — say what to change first; back to `implement`.
-> - **Abandon** — nothing is pushed; the branch stays local.
-
-## Phase 6 — `babysit`
-
-Where the days are spent. Ticks must be cheap: this runs hourly for as long as review takes.
+Where the days are spent: the change is with the person, the lander, and — as a pull request —
+its reviewers. This run waits, and does what comes back to it.
 
 | | |
 |---|---|
-| **goal** | Keep the PR fresh, responsive and green until it is approved and mergeable |
-| **preconditions** | `facts.prNumber` is set — with no PR there is nothing to babysit, and `publish` will have sent you to `land` instead; the worktree still exists |
-| **actions** | **Lock**, one `manage-pr` **babysit tick** per wake (rebase + confidently-actionable comments), push what it changed, **unlock** — see below |
-| **durableOutput** | Commits answering review; `facts.prCommentCursor` advanced; `facts.ciStatus`, `facts.reviewDecision` refreshed |
-| **exitCondition** | `reviewDecision == APPROVED` **and** CI green **and** mergeable → `land`. PR merged or closed by someone else → `cleanup` |
-| **gate** | `sleep(1h, until: approved && green)` — chain a one-shot cron per tick, per §5 |
-| **idempotency** | The cursor is the ledger: a comment at or below `prCommentCursor` is already handled, so a re-entered tick cannot answer the same comment twice. Advance it **only after** the work is committed |
+| **goal** | The change landed (or merged), or dropped |
+| **preconditions** | `facts.change` is set |
+| **actions** | Act on each note about the change (below); then sleep until the next one |
+| **durableOutput** | New versions of the change, replies drafted, questions asked; `facts.landedSha` once it lands |
+| **exitCondition** | `otto changes show <id>/<change> --json` says `landed` or `merged` → `cleanup`; `dropped` or `closed` → `cleanup`, reporting that it didn't land |
+| **gate** | `sleep` — `otto state arm-timer <id> --in 86400 --waiting-for "change <change> to land"` (a day). A request for changes, the lander bouncing it, and its landing each wake the run; a drop is heard at the next wake, which is what the timer is for |
+| **idempotency** | The change's state and its timeline are the ledger, not a memory: a request already answered by a later version is done. Notes are read once; re-derive from `otto changes show` when unsure |
 
-Each tick, in order:
+What reaches the run is a note that starts `About change <n>@v<k>`:
 
-2. **Reconcile first, decide second.** `gh pr view --json state,mergeable,reviewDecision,statusCheckRollup`.
-   Merged or closed → `set-phase cleanup` and stop. That outcome is not a failure; it is Tuesday.
-   (No lock needed yet — this is a read.)
-3. **Lock**, then **invoke the `manage-pr` babysit tick** — not its schedule. Otto owns the clock
-   (`arm-timer` + one-shot cron); `manage-pr` owns the work: its B0 `gh` check, the merged check,
-   the stale/overlap **rebase gate** (rebase only if >24h behind or the base's commits overlap our
-   files), its **confidently-actionable comments** rule (apply concrete unambiguous changes; skip
-   questions, opinions and anything needing judgement), and keeping the branch green. Do **not**
-   let otto's timer drive it and do not let it stop-on-change — otto decides what happens next.
-4. **Push what changed** — the one thing `manage-pr` will not do. New commits mean a new head, so
-   the old authorization is stale by design: re-authorize. Routine review-comment fixes on an
-   already-approved push are authorized by `policy.askBeforePush == false`; with
-   `askBeforePush: true` (the default) each new push needs its own confirm gate. That is the
-   trade-off you chose at intake.
-5. **Unlock — every path out of this tick, including "nothing happened".** The tick's git work
-   (rebase, push) is done by now whether or not anything changed; a tick that finds no work must
-   not fall through to `sleep(1h)` still holding the lock, or `babysit`'s hourly cadence becomes
-   the exact multi-day lock-hold this fix exists to avoid. Lock only for steps 3–4, per cycle,
-   never for the sleep in between.
-6. **Comments needing judgement** → open a human gate quoting the comment and the file, and stop
-   (after unlocking). Guessing at a reviewer's intent is worse than waiting for them.
-7. **Nothing happened** → `otto state tick <id>` (no `--progress`), re-arm, stop. One journal
-   line. This is the common case and it must stay nearly free.
-8. **Something happened** → `otto state tick <id> --progress`, then re-arm.
+- **The person asked for changes**, or **the lander couldn't land it** (a conflict, tests red after a
+  rebase): in the same worktree, make the change as `implement` does — commit, lint and tests green
+  — then `submit` it again with the same branch. Back to `implement` → `verify` → `submit` when it
+  is more than a small fix. A request that changes the approach the plan took goes back to `plan`,
+  and its gate.
+- **On its pull request, a reviewer (or CI) said…**: a change to make is the same as above; the
+  lander pushes the next version to the pull request without asking the person again. A question,
+  or an ask the code already meets — look before you assume it doesn't — is a reply drafted for
+  the person to post: `otto state change reply <id> <change> --comment <its id> --text "…"`.
+- **A judgement that is the person's** — a reviewer wants it done another way, the scope grew — is
+  asked about the change, not guessed: `otto state change ask <id> <change> --question-file <file>`.
+  It doesn't stop the run; the answer comes as a note.
+- **It landed** (or its pull request merged): `record-fact landedSha=<sha>` and go to `cleanup`.
+- **It was dropped** (or its pull request closed): go to `cleanup`; the run finishes without it.
 
-`policy.maxTicksWithoutProgress` (default 24) turns a month of silence into a human gate rather
-than a slow token leak. A review that is genuinely just slow is not "no progress" — the count
-resets whenever anything moves.
+Each wake that did something is `otto state tick <id> --progress`; one that found nothing new is a
+bare `tick`. `policy.maxTicksWithoutProgress` turns a change nobody looks at into a human gate
+rather than a slow token leak. The same request coming back `policy.maxAttempts` times is
+`blocked`, with a gate carrying each version and what was said about it.
 
-## Phase 7 — `land`
+**Never push, rebase onto the base, merge, or comment on the pull request yourself** — not even to
+"just fix CI". Those are the lander's; the run's part is the code, and the words it drafts for the
+person.
 
-| | |
-|---|---|
-| **goal** | The change on the base branch |
-| **preconditions** | Approved, green, mergeable, and the merge authorized for **this** head |
-| **actions** | Confirm (or invoke the policy), authorize, check, **lock**, merge, **unlock** |
-| **durableOutput** | `facts.mergedSha`, `facts.mergedAt`; `artifacts/merge-notes.md` |
-| **exitCondition** | The PR state is `MERGED`, or (no PR) `git ls-remote origin <base>` contains our head; repo lock released either way |
-| **gate** | **ask-human confirm** — unless `policy.autoMergeWhenGreen` is `true`, which authorizes it *by name* in the journal |
-| **idempotency** | Already merged → adopt and go to `cleanup`, skipping the lock/merge block entirely. This check is the phase's first act, because "merge" is the one action you must never do twice. `lock` is re-entrant; call bare `unlock` (no `--repo`) right after the merge, never speculatively — `unlock --repo <repo>` errors if this run isn't holding it |
+## Phase 7 — `cleanup`
 
-```
-HEAD=$(git -C <worktree> rev-parse HEAD)
-otto state authorize <id> --action merge --gate <NNN> --head $HEAD   # or --policy autoMergeWhenGreen
-otto state check-authorized <id> --action merge --head $HEAD || stop
-otto state lock <id> --repo <mainRepo>                     # the merge itself touches <base>
-gh pr merge <n> --<strategy> --repo <owner/repo>          # with a PR
-git -C <worktree> push origin HEAD:<base>                 # no PR host: a plain fast-forward
-otto state unlock <id>
-```
-
-**With no PR**, the merge is a push to the base — and it must **fast-forward**. If it will not
-(`git merge-base --is-ancestor origin/<base> HEAD` fails), the base has moved: **lock**, rebase
-per the stale/overlap gate, **unlock**, and re-ask — because the thing that was approved is no
-longer what would land. This rebase is its own short lock/unlock, separate from the merge's; do
-not hold the lock across the re-ask gate. Never force. And say it in the gate: with no PR, nobody
-has reviewed this but you.
-
-**The strategy is not yours to pick.** Squash, merge or rebase changes the base's history, and
-repos disagree. Read it from `build-info` if it is recorded there; otherwise ask in the gate and
-record the answer as `policy.mergeStrategy`.
-
-Gate question — slug `merge-confirm`:
-
-> `<key>`: `<PR url, or "no PR — plain remote">` is approved and green, mergeable, `<n>` commits at
-> `<sha>`. Merging puts this on `<base>` for everyone. `<strategy>` is the strategy
-> `<from build-info | you choose>`.
->
-> - **Merge** *(default)* — and then clean up.
-> - **Wait** — keep babysitting; ask again when something changes.
-> - **Stop here** — leave the PR open; the run finishes and you merge when you like.
-
-**`autoMergeWhenGreen` is opt-in per run and still leaves a record**: the authorization names the
-policy, so the journal says exactly what allowed the merge and at which commit. Turn it on once
-you trust the logs, not before.
-
-## Phase 8 — `cleanup`
-
-> **`land` must not set `status: done`.** Only this phase does. A real run went `land → done`
-> directly and left its worktree behind — the journal never mentioned `cleanup` at all, and otto's
-> contract could not notice, because `done` with a handoff written is a legal way to stop. If the
-> merge is the last thing you do, the run is not finished; it is finished when the worktree is
-> reaped and the ticket is updated. The todo is what makes the omission visible now: `cleanup`
-> would still be `[ ]`, and `set-status done` names it to the wake that tried, while it can still
-> do the work.
+> **Only this phase sets `status: done`.** A real run once went straight from merging to `done` and
+> left its work half finished — nothing on disk said cleanup never happened. The todo is what makes
+> that visible now: `cleanup` would still be `[ ]`, and `set-status done` names it to the wake that
+> tried, while it can still do the work.
 
 | | |
 |---|---|
 | **goal** | Leave nothing behind but the record |
-| **preconditions** | The PR is merged or closed |
-| **actions** | Reap the worktree (`manage-pr`'s Step 0 rules: contained-in-base, or the squash-merge heuristic — **offer**, do not force); `unlock` as a defensive no-op (each earlier phase already released it after its own git work — this catches a lock left behind by an interrupted phase); write the ticket update; mark `cleanup` `[x]` (or `[-]` with what was left and why); rewrite `handoff.md`; `set-status done` |
-| **durableOutput** | `artifacts/summary.md`; worktree gone; no lock held (should already be true) |
-| **exitCondition** | `status: done`, no lock held, and the worktree either removed or explicitly left with a reason |
+| **preconditions** | The change is landed, merged, dropped or closed |
+| **actions** | `unlock` as a defensive no-op; write the ticket update; mark `cleanup` `[x]`; rewrite `handoff.md`; `set-status done` |
+| **durableOutput** | `artifacts/summary.md`: what landed and where (`facts.landedSha`), or that it was dropped and why |
+| **exitCondition** | `status: done`, and no lock held |
 | **gate** | — |
-| **idempotency** | Every step is a no-op when already done: `unlock` is idempotent, and a worktree that is gone stays gone |
+| **idempotency** | Every step is a no-op when already done |
+
+**The worktree and branch are the lander's to remove**, once the change is landed or dropped —
+leave them. A dropped change still finishes the run: say so plainly in the summary and the ticket
+update, rather than reporting success.
 
 **The ticket is read-only here.** Every Jira write tool is denied in this environment, so
 `cleanup` writes what it *would* have posted to `artifacts/ticket-update.md` and says so in its
 report. Wiring it up is an allowed-list change plus one line in this file — not a code change.
 
-**Never `--force` a dirty worktree away.** Uncommitted changes in it are someone's work, even if
-you cannot see why. Say what you left and let a human decide.
-
 ## What a green run looks like
 
 `journal.jsonl`, in order: `run-created`, `phase-changed`(→intake), facts, `phase-changed`(→prepare),
 `lock-acquired`, facts, `lock-released`, `phase-changed`(→plan), `gate-opened`/`gate-closed`(plan-review),
-`phase-changed`(→implement), `phase-changed`(→verify), `gate-opened`/`gate-closed`(result-review),
-`phase-changed`(→publish), `gate-opened`/`gate-closed`(push-confirm), **`authorized`**(push),
-`lock-acquired`, facts(pushedSha, prNumber), `lock-released`, `phase-changed`(→babysit), then per
-tick either a bare `noop-tick` (never touches the lock) or `lock-acquired` … `lock-released` around
-a `progress-tick` — for as many days as the review takes — then `phase-changed`(→land),
-`gate-opened`/`gate-closed`(merge-confirm), **`authorized`**(merge), `lock-acquired`,
-facts(mergedSha), `lock-released`, `phase-changed`(→cleanup), `status-changed`(→done).
+`phase-changed`(→implement), `phase-changed`(→verify), `phase-changed`(→submit), `change-submitted`,
+facts(change), `phase-changed`(→review), then a quiet wait — a wake per note about the change, and a
+`change-submitted` for each version it takes — then facts(landedSha), `phase-changed`(→cleanup),
+`status-changed`(→done).
 
-Three or four human gates. Two `authorized` lines, each naming a commit. A `lock-acquired` /
-`lock-released` pair around each phase that actually touches shared repo state, and *nothing*
-holding the lock across a gate or a sleep. And a todo with every item `[x]`, or `[-]` with why
-(`babysit`, on a remote with no PR host). Everything else is the run doing its job.
+One gate of this run's own, the plan. One review of the change, on the Changes page or its pull
+request. A `lock-acquired` / `lock-released` pair around `prepare` only, and *nothing* holding the
+lock across a gate or a sleep. Nothing pushed by this run, ever. And a todo with every item `[x]`.

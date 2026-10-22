@@ -11,7 +11,7 @@ makes a workflow run well across many wakes.
 otto run --skill manage-pr --goal "get branch feat/x reviewed and merged" --repo ~/work/svc
 
 # any prose file: a runbook, a workflow table, a ticket
-otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to merged" --target PROJ-123
+otto run --instructions workflows/dev-flow.md --goal "PROJ-123 to landed" --target PROJ-123
 
 # nothing but a goal
 otto run --goal "Find and fix flaky tests in this repo, one per day" --perpetual
@@ -105,7 +105,7 @@ wants approved. Never instruct a wake to post a draft itself.
 
 | File | What it does |
 |---|---|
-| [workflows/dev-flow.md](../../workflows/dev-flow.md) | A ticket (or a described task) to reviewed, merged code: plan, review, implement, verify, push, babysit the review, merge |
+| [workflows/dev-flow.md](../../workflows/dev-flow.md) | A ticket (or a described task) to landed code: plan, review, implement, verify, hand it back as a change, answer what comes back until it lands |
 | [workflows/improve-flow.md](../../workflows/improve-flow.md) | Propose one improvement a day to a repository, perpetually |
 | [workflows/upgrade-flow.md](../../workflows/upgrade-flow.md) | Carry a dependency bump across many repositories |
 | [test/fixtures/hello-flow.md](../../test/fixtures/hello-flow.md) | The cheapest end-to-end check of otto itself: one gate, no real work |

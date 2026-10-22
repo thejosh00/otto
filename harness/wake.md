@@ -405,9 +405,7 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
 - **When only your changes are left** to finish the work, sleep long (`arm-timer --in`, with
   `--waiting-for "change <n> to land"`): the note about each one wakes you.
 
-`otto changes` lists every change and whose move it is. A run whose instructions carry their own
-way to push with an authorization (dev-flow does) keeps it; everything else hands code back this
-way.
+`otto changes` lists every change and whose move it is.
 
 ## The done-condition
 
