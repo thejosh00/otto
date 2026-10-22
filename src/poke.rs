@@ -261,19 +261,47 @@ pub struct CheckRun {
     pub timed_out: bool,
 }
 
+/// What a check script's environment passes through from whoever runs it, when set: the user's
+/// own basics, which launchd gives a job just as a terminal does. `SSH_AUTH_SOCK` is what lets a
+/// `git fetch` over ssh work. Everything else the caller has is dropped.
+const CHECK_ENV_PASSED: &[&str] = &["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "SSH_AUTH_SOCK"];
+
+/// Everything a check script's environment holds: the user's basics from `CHECK_ENV_PASSED`,
+/// launchd's `PATH`, `OTTO_HOME`, `OTTO_RUN_ID`, and `OTTO_REPO` when the run has a `repo` fact.
+/// Nothing else, so a script sees the same whether poke runs it under launchd or `otto check`
+/// runs it from a terminal.
+pub fn check_env(run_id: &str, state: &RunState) -> Vec<(&'static str, String)> {
+    let mut env: Vec<(&'static str, String)> = CHECK_ENV_PASSED
+        .iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (*key, value)))
+        .collect();
+    env.push(("PATH", crate::launchd::path_env()));
+    env.push(("OTTO_HOME", crate::paths::otto_home().display().to_string()));
+    env.push(("OTTO_RUN_ID", run_id.to_string()));
+    if let Some(repo) = state.facts.get("repo").and_then(serde_json::Value::as_str) {
+        env.push(("OTTO_REPO", repo.to_string()));
+    }
+    env
+}
+
 /// Run a check script the way poke does — same environment, same timeout, same reading of the
 /// exit code — without deciding anything. Shared with `otto check`, which runs a new script once
 /// on the spot so a broken one shows now rather than when the run is next due.
+///
+/// The environment is exactly `check_env`, whoever runs it: started from launchd it would get
+/// launchd's, from a terminal (`otto check`, a hand-run `otto poke`) the person's whole shell, and
+/// a script that passes the one can fail the other. `env -i` rather than a cleared `Command` so
+/// the `Exec` seam stays one argv and an environment to add.
 pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dyn Exec) -> CheckRun {
-    let mut env = std::collections::HashMap::new();
-    env.insert("OTTO_RUN_ID".to_string(), run_id.to_string());
-    if let Some(repo) = state.facts.get("repo").and_then(serde_json::Value::as_str) {
-        env.insert("OTTO_REPO".to_string(), repo.to_string());
-    }
+    let assignments: Vec<String> =
+        check_env(run_id, state).into_iter().map(|(key, value)| format!("{key}={value}")).collect();
+    let mut argv = vec!["/usr/bin/env", "-i"];
+    argv.extend(assignments.iter().map(String::as_str));
+    argv.push(script);
 
     // Isolated: a script killed at its timeout takes whatever it started down with it, so a
     // hung `curl` under it can't stall this pass — and every other run's — behind it.
-    let output = exec.exec_isolated(&[script], Some(&env), std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
+    let output = exec.exec_isolated(&argv, None, std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
     let note = crate::exec::truncate(output.stdout.trim(), CHECK_NOTE_MAX_CHARS);
     let note = (!note.is_empty()).then_some(note);
 
@@ -1257,5 +1285,33 @@ mod tests {
             DEADLINE_GRACE_MINUTES,
         );
         assert_eq!(decisions[0].action, Action::Skip, "nothing to reap is not worth a line");
+    }
+
+    #[test]
+    fn a_check_script_sees_the_same_environment_whoever_runs_it() {
+        // The test process stands in for a person's terminal: cargo gives it variables launchd
+        // never would. `otto check` used to pass them straight through to the script.
+        assert!(std::env::var_os("CARGO_MANIFEST_DIR").is_some(), "cargo sets this for every test");
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("check.sh");
+        // Written to a file: what it prints is cut to 200 characters, and a PATH alone is near that.
+        let seen_file = dir.path().join("env.txt");
+        std::fs::write(&script, format!("#!/bin/sh\n/usr/bin/env > '{}'\nexit 0\n", seen_file.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut state = base_state("7");
+        state.facts.insert("repo".to_string(), serde_json::json!("/work/acme"));
+
+        let run = execute_check("7", &state, script.to_str().unwrap(), &mut RealExec);
+
+        assert_eq!(run.code, 0);
+        let seen = std::fs::read_to_string(&seen_file).unwrap();
+        let seen: std::collections::HashMap<&str, &str> =
+            seen.lines().filter_map(|line| line.split_once('=')).collect();
+        assert!(!seen.contains_key("CARGO_MANIFEST_DIR"), "the caller's environment leaked in: {seen:?}");
+        assert_eq!(seen.get("PATH").copied(), Some(crate::launchd::path_env().as_str()), "launchd's PATH, always");
+        assert_eq!(seen.get("OTTO_RUN_ID").copied(), Some("7"));
+        assert_eq!(seen.get("OTTO_REPO").copied(), Some("/work/acme"));
+        // Present, not compared: other tests point OTTO_HOME and HOME elsewhere while this one runs.
+        assert!(seen.contains_key("OTTO_HOME") && seen.contains_key("HOME"), "{seen:?}");
     }
 }

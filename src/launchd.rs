@@ -31,7 +31,9 @@ fn plist_path() -> PathBuf {
     plist_path_for(LABEL)
 }
 
-fn path_env() -> String {
+/// The `PATH` every launchd job of otto's runs under — and so poke, and every check script poke
+/// runs, whoever started the pass.
+pub fn path_env() -> String {
     let local_bin = crate::paths::home_dir().join(".local").join("bin");
     format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:{}", local_bin.display())
 }

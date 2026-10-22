@@ -63,13 +63,16 @@ exit 1
 - **Exit deliberately.** Use `set -e` and an explicit final `exit`, rather than whatever the last
   command happened to return.
 - **Use absolute paths** for anything outside `/usr/bin` and Homebrew — the script runs under
-  launchd's minimal `PATH`, not your shell's.
+  launchd's minimal `PATH`, not your shell's, even when `otto check` runs it from your terminal.
 - **Be read-only.** The script has no `otto state` access and never will. If the run needs to
   record something (a cursor, a ledger line), that's the wake's job once the check says
   "changed" — as above, where the wake writes `seen-comment` after handling the comment.
 - **Keep it fast.** Poke gives it 10 seconds before treating it as an error.
 
-It gets two environment variables: `OTTO_RUN_ID`, and `OTTO_REPO` if the run has a `repo` fact.
+Its environment is the same whoever runs it, poke or `otto check`, and holds only: `HOME`,
+`USER`, `LOGNAME`, `SHELL`, `TMPDIR` and `SSH_AUTH_SOCK` as you have them; `PATH` set to
+`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin`; `OTTO_HOME`;
+`OTTO_RUN_ID`; and `OTTO_REPO` if the run has a `repo` fact.
 The first 200 characters of what it prints are kept as the "last result" `otto show` displays.
 
 ## Setting, seeing and removing it

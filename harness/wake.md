@@ -504,12 +504,14 @@ otto state arm-timer <id> --in <seconds> --check-script artifacts/ci-done.sh
 That check stands in front of that sleep only, asks again every `<seconds>` until something changes,
 and is gone once a wake happens.
 
-The script gets `OTTO_RUN_ID` and (if the run has one) `OTTO_REPO` in its environment — nothing
-else, because it has **no `otto state` access and never will**. Its only channel out is its exit
-code and up to 200 characters of stdout, which poke journals on a real change or an error (a
-no-change result never reaches the journal — only `run.json`'s own `check` field, so it stays
-cold-readable via `otto show` without spamming `otto logs`). It runs under launchd's minimal
-`PATH`, so use absolute paths for anything outside `/usr/bin` and Homebrew, and it has 10 seconds.
+The script's environment is exactly this, whether poke or `otto check` runs it: `HOME`, `USER`,
+`LOGNAME`, `SHELL`, `TMPDIR` and `SSH_AUTH_SOCK` as the user has them; `PATH` set to
+`/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin`; `OTTO_HOME`;
+`OTTO_RUN_ID`; and `OTTO_REPO` if the run has one. Nothing else, so use absolute paths for
+anything off that `PATH`. It has **no `otto state` access and never will**. Its only channel out
+is its exit code and up to 200 characters of stdout, which poke journals on a real change or an
+error (a no-change result never reaches the journal — only `run.json`'s own `check` field, so it
+stays cold-readable via `otto show` without spamming `otto logs`). It has 10 seconds.
 
 **Exit 0 for "nothing changed," exit 1 for "changed."** Anything else — a crash, a bad exit code,
 a timeout — is treated as "changed" too: poke fails open to a real wake rather than trust a script
