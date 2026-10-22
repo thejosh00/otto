@@ -363,6 +363,7 @@ push, merge or rebase the base branch yourself, and you don't open or comment on
 lander's, and only the lander may.
 
 ```
+otto config project <repo>               # its process: how a change starts here, and what approving it does
 otto state lock <id> --repo <repo>       # then make the worktree and branch; unlock once they exist
 … do the work in the worktree, commit it, run its tests …
 write what you'd tell the person reviewing it → artifacts/change-<slug>.md
@@ -371,8 +372,11 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
 → then carry on with the rest of the work
 ```
 
-- **Where it goes and what it's called**: as the instructions you wrap say, when they say. Otherwise
-  a worktree at `<the repo's parent>/.work-trees/<run name>/<slug>`, on branch `<run name>/<slug>`.
+- **Where it goes and what it's called**: as the repository's process says it starts (`otto config
+  project <repo>` — the person decided it for that repository), then as the instructions you wrap say.
+  Otherwise a worktree at `<the repo's parent>/.work-trees/<run name>/<slug>`, on branch
+  `<run name>/<slug>`. Its process also says whether approving pushes it or opens a pull request;
+  that is the lander's to do either way.
 - **One concern a change.** A person reviews it in a sitting, so two unrelated fixes are two
   branches and two changes. Over a few hundred lines, otto says so; split it if it is more than one
   thing.

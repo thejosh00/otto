@@ -83,6 +83,8 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Config { command } => match command {
             ConfigCommand::Workdir { dir } => human::config_workdir(dir),
             ConfigCommand::Lander { run, off } => human::config_lander(run, off),
+            ConfigCommand::Process(args) => human::config_process(args),
+            ConfigCommand::Project(args) => human::config_project(args),
         },
         Command::Service { command } => match command {
             ServiceCommand::Start { port } => launchd::service_start(port),

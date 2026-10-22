@@ -112,7 +112,18 @@ clean rebase of the same patch lands; if the code around it changed, it comes ba
 conflicts, it goes back to the run that wrote it. Asking for changes sends your words to that run,
 and wakes it.
 
-Or open it as a pull request, for a repository where others review: the lander opens it and keeps
+How much you stay in the loop is decided once per repository, not once per change: each follows a
+**process**, and approving a change does what its process says. Every repository follows
+`standard` — land it on `main` — until you give it another; one where others review can follow a
+process that opens a pull request instead. A process also says, in words, how a change starts and
+how one lands, for the agents doing it. A different way for one change is a click away.
+
+```bash
+otto config process reviewed --mode pr --merge-when-ready --land "squash-merged; CI must pass"
+otto config project ~/work/svc --process reviewed
+```
+
+As a pull request, the lander opens it and keeps
 it moving. What reviewers ask, and CI failing, goes to the run that wrote the change, which changes
 the code and hands it back again; the lander pushes that to the pull request. A reply to a reviewer
 is drafted for you to post with a click, and once it's approved and passing it's yours to merge — or
@@ -124,8 +135,8 @@ checkout:
 
 ```bash
 otto run --perpetual --period 10m --name lander --instructions workflows/land-flow.md \
-         --repo ~/workspace --goal "Land the changes I approve, and clean up after them" \
-  && otto config lander lander    # straight away: its first wake asks what is due to it
+         --repo ~/workspace --goal "Land the changes I approve, and clean up after them"
+otto config lander lander    # straight away: its first wake asks what is due to it
 ```
 
 Approving a change wakes it straight away. So that waiting costs nothing, give it a check script
@@ -144,8 +155,8 @@ otto check lander --script changes-due.sh --wake-after 0
 ```
 
 Each wake, for each approved change: it rebases onto the base branch if that moved (in a worktree
-of its own), runs the tests, checks the commit is what you approved, and lands it — the way the
-repository's own docs say it ships, a ship script if it has one, else a push to `main`. It brings the
+of its own), runs the tests, checks the commit is what you approved, and lands it — the way its
+process says, then the repository's own docs, a ship script if it has one, else a push to `main`. It brings the
 main checkout along when that's clean, tells the run that wrote the change (which then does whatever
 follows — installing it, closing a ticket), and removes the worktree and branch. It never writes code
 and never lands anything you didn't approve.

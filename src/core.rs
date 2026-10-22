@@ -1833,16 +1833,11 @@ fn change_refs(refs: &[String]) -> Result<Vec<crate::changes::ChangeRef>, OttoEr
     refs.iter().map(|r| crate::changes::ChangeRef::parse(r)).collect()
 }
 
-/// Approve changes to land — pushed, or as pull requests — and wake the lander to land them.
-pub fn approve_changes(
-    refs: &[String],
-    mode: crate::changes::LandMode,
-    merge_when_ready: bool,
-    note: Option<&str>,
-    no_wake: bool,
-) -> Result<ChangeOutcome, OttoError> {
+/// Approve changes to land — as each one's process says, or as `how` says — and wake the lander to
+/// land them.
+pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let refs = change_refs(refs)?;
-    let decided = crate::changes::approve(&refs, mode, merge_when_ready, note)?;
+    let decided = crate::changes::approve(&refs, how, note)?;
     let lander = crate::config::lander()?.expect("approve refuses without a lander");
     let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander) };
     Ok(ChangeOutcome { decided, woke, not_woken })

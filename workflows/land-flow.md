@@ -8,8 +8,9 @@ change on its base branch, tells the run that wrote it, and removes the worktree
 leaves behind. It is the only run that pushes, so it is the only one that needs to be able to.
 
 It never decides *whether* something lands — the person did, for one version, and otto holds the
-approval to that version's commit and patch. It decides only *how*, and when it can't, it says so
-and hands the change back. It does not write code: a change that needs code goes back to its author.
+approval to that version's commit and patch. Nor pushed or a pull request: the repository's
+**process** decided that, or the person did for this one, and `claim` says which (`mode`). It
+decides only *how*, and when it can't, it says so and hands the change back. It does not write code: a change that needs code goes back to its author.
 
 The run does not finish; you retire it. Approving a change wakes it; between approvals its check
 script keeps it asleep for free.
@@ -65,9 +66,10 @@ git -C <repo> fetch origin
    front of the person as a new version. Nothing lands until they approve that. Never land on any
    other exit-2.
 
-3. **Land it.** How a repository ships is read from **its base branch** — its CLAUDE.md, README or
-   CONTRIBUTING, a `scripts/ship.sh` they document — never from the change's own branch, which is
-   the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
+3. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
+   approved under (`process`), kept from the moment it was approved. Then how the repository ships,
+   read from **its base branch** — its CLAUDE.md, README or CONTRIBUTING, a `scripts/ship.sh` they
+   document — never from the change's own branch, which is the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
    main checkout (lectio's `scripts/ship.sh <branch>` rebases, tests, restarts and checks health
    itself). Otherwise:
 
@@ -116,7 +118,8 @@ otto state unlock <id>
 ```
 
 `mergeWhenReady` in what `claim` printed: also `gh pr merge <url> --auto` with the merge method the
-repository uses (its docs say; else `--squash`), and `--auto-merge` on `pr-pushed`. Leave the
+repository uses (its process's `land` says, else its docs; else `--squash`), and `--auto-merge` on
+`pr-pushed`. Leave the
 author's worktree and branch: what reviewers ask, its author answers there.
 
 ## Updating its pull request

@@ -357,16 +357,24 @@ otto state change submit <id> --repo ~/work/svc --branch svc-retry --title "Retr
 ```bash
 otto changes                       # what waits on your review, what is in hand, what landed this week
 otto changes show 3/2 --patch      # one change: what its author said, its files, its patch, what happened
-otto changes approve 3/2 7/1       # land them: the lander is woken to do it
+otto changes approve 3/2 7/1       # each as its repository's process says: the lander is woken to do it
 otto changes revise 3/2 --text "keep the old flag working"   # back to its author, in your words
 otto changes drop 3/2              # it won't land; the lander cleans up after it
-otto changes approve 3/2 --pr      # as a pull request, which the lander keeps moving
+otto changes approve 3/2 --pr      # as a pull request this once, whatever its process says
 otto changes merge 3/2             # its pull request is approved and passing: merge it
 ```
 
 - **A change doesn't stop its run.** Submitting isn't a question: the run goes on with its next piece
   of work, and what happens to the change reaches it as a note — you asked for changes, it landed, it
   was dropped. A run that hands back a lot of code doesn't wait on you between pieces.
+- **A repository has a process.** How much you stay in the loop is a property of the repository,
+  not of each change, so it is said once: a **process** says what approving does — pushed to its
+  base, or a pull request, merged when ready or not — and, in words, how a change starts there and
+  how one lands. otto acts on the first; the run making the change and the lander read the words.
+  Every repository follows the built-in `standard` (pushed to its base) until it is given another
+  (`otto config process`, `otto config project`, or Processes on the Changes page). Approving records
+  the process with the approval, so changing it later doesn't change what is already approved; and
+  `--pr` or `--push` lands one change another way.
 - **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
   that version, its commit and its `git patch-id`. Just before it pushes, the lander checks the commit
   it is about to put on the base (`otto state change check`): the approved commit, or a clean rebase of
@@ -382,12 +390,12 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
   the author is told it landed, and woken to do it.
-- **Or as a pull request.** `otto changes approve 3/2 --pr` (Open a PR on the page) has the lander open
-  one and keep it moving. What a reviewer asks, and CI failing, goes to the change's author as a note:
+- **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2 --pr` for one
+  change, has the lander open one and keep it moving. What a reviewer asks, and CI failing, goes to the change's author as a note:
   it changes the code and submits again, and the lander pushes that to the pull request without asking
   you again — the pull request is where it is reviewed. A question gets a reply the author drafts and
   you post with a click (`otto changes post`). Approved and passing, it is yours to merge (`otto
-  changes merge`), or GitHub merges it itself with `--merge-when-ready`. There is no run per pull
+  changes merge`), or GitHub merges it itself when its process, or `--merge-when-ready`, says so. There is no run per pull
   request: the lander's check script asks `gh` about every open one in one look, free when none moved.
 - **Asking without stopping.** A change's author can ask you something about it — a reviewer wants it
   done another way, the scope grew — with `otto state change ask`. The change waits on your answer

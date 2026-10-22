@@ -256,7 +256,7 @@ Usage: otto changes [OPTIONS]
 
 Commands:
   show     One change: what its author said, its files, what happened to it — and with --patch, the patch
-  approve  Approve changes to land on their base branch, and wake the lander to land them
+  approve  Approve changes to land as their repository's process says, and wake the lander to land them
   revise   Send a change back to its author, saying what to change, and wake it to do it
   drop     Drop a change: it won't land, its author is told, and the lander cleans up after it
   merge    Merge a change's pull request, now it is approved and passing — the lander does it
@@ -306,7 +306,7 @@ Options:
 ### `otto changes approve`
 
 ```text
-Approve changes to land on their base branch, and wake the lander to land them
+Approve changes to land as their repository's process says, and wake the lander to land them
 
 Usage: otto changes approve [OPTIONS] <CHANGES>...
 
@@ -319,10 +319,13 @@ Options:
           For the lander and the record, in a sentence
 
       --pr
-          As a pull request rather than pushed: the lander opens it and keeps it moving, and what reviewers ask goes to its author
+          As a pull request, whatever its process says: the lander opens it and keeps it moving, and what reviewers ask goes to its author
+
+      --push
+          Pushed to its base branch, whatever its process says
 
       --merge-when-ready
-          With --pr: merge it once it is approved and passing, without asking you again
+          As a pull request merged once it is approved and passing, without asking you again
 
       --no-wake
           Record it, and don't wake the lander yet
@@ -1024,6 +1027,8 @@ Usage: otto config <COMMAND>
 Commands:
   workdir  The default directory wakes run in, for runs that don't pass --workdir
   lander   The run that lands approved changes — the only one that pushes them
+  process  How a change goes from started to landed: make one, change one, or list them
+  project  Which process a repository follows: what approving its changes does
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -1061,6 +1066,68 @@ Arguments:
 Options:
       --off
           There is no lander: approving a change is refused until there is one
+
+  -h, --help
+          Print help
+```
+
+### `otto config process`
+
+```text
+How a change goes from started to landed: make one, change one, or list them
+
+Usage: otto config process [OPTIONS] [NAME]
+
+Arguments:
+  [NAME]
+          The process to show, make or change. Omit to list every process and who follows it
+
+Options:
+      --mode <MODE>
+          What approving a change does: push it to its base, or open a pull request. Needed to make one
+
+          Possible values:
+          - push: Onto its base branch, and pushed
+          - pr:   As a pull request, which the lander keeps moving: reviewers' asks go to its author
+
+      --merge-when-ready [<BOOL>]
+          With --mode pr: merge it once it is approved and passing, without asking again (or `false`)
+          
+          [possible values: true, false]
+
+      --start <START>
+          How a change begins, in words, for the run that makes it: a branch or a worktree, a ticket first
+
+      --land <LAND>
+          How an approved change lands, in words, for the lander: a ship script, a merge method
+
+      --delete
+          Remove it. One a repository follows is refused
+
+      --json
+          Print it as JSON
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+### `otto config project`
+
+```text
+Which process a repository follows: what approving its changes does
+
+Usage: otto config project [OPTIONS] [REPO]
+
+Arguments:
+  [REPO]
+          The repository: any checkout of it, or a directory inside one. Omit to list the repositories given a process
+
+Options:
+      --process <PROCESS>
+          Have it follow this process; `standard` is the one every repository follows until told otherwise
+
+      --json
+          Print it as JSON
 
   -h, --help
           Print help

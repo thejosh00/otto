@@ -1,9 +1,10 @@
 //! `$OTTO_HOME/config.json` — the machine's own settings, as opposed to any one run's.
 //!
-//! Two things: the **default working directory** a wake runs in, and the **launchers** — what a
-//! wake may be run under besides plain `claude`. Both live here rather than in the source because
-//! they are properties of the machine — where the work lives, which sandbox is installed — and
-//! differ between machines running the same otto.
+//! The **default working directory** a wake runs in, and the **launchers** — what a wake may be run
+//! under besides plain `claude`. Both live here rather than in the source because they are
+//! properties of the machine — where the work lives, which sandbox is installed — and differ
+//! between machines running the same otto. And the **processes**: how much the person stays in the
+//! loop when code changes in a repository, decided once per repository rather than once per change.
 //!
 //! ```json
 //! {
@@ -16,9 +17,11 @@
 //!
 //! A missing file is not an error: it means only the built-in `claude` launcher exists.
 
+use crate::changes::LandMode;
 use crate::error::OttoError;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 /// The launcher every machine has, and the default for a new run.
 pub const DEFAULT_LAUNCHER: &str = "claude";
@@ -62,6 +65,61 @@ pub struct Config {
     /// The run that lands approved changes — the only one that pushes them (`crate::changes`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lander: Option<String>,
+    /// Ways a change goes from started to landed, besides the built-in `standard`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub processes: Vec<Process>,
+    /// The process each repository follows, by its main checkout's absolute path. A repository not
+    /// here follows `standard`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, String>,
+}
+
+/// The process every repository follows until it is given another.
+pub const STANDARD_PROCESS: &str = "standard";
+
+/// How a change goes from started to landed in a repository. Only `mode` and `mergeWhenReady` are
+/// otto's to act on — they decide what the lander is due to do; `start` and `land` are words, for
+/// the run that makes a change and for the lander.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Process {
+    pub name: String,
+    /// What approving a change does: lands it on its base, or opens a pull request.
+    pub mode: LandMode,
+    /// As a pull request: merge it once it is approved and passing, without asking again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub merge_when_ready: bool,
+    /// How a change begins here — a branch, a worktree, a ticket first — for the run that makes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+    /// How an approved change lands here, for the lander.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land: Option<String>,
+}
+
+impl Process {
+    fn standard() -> Self {
+        Process {
+            name: STANDARD_PROCESS.to_string(),
+            mode: LandMode::Push,
+            merge_when_ready: false,
+            start: Some("A worktree of its own on a fresh branch from the base, made with the manage-pr skill.".to_string()),
+            land: Some(
+                "Rebased onto the base if it moved, tested, and pushed to it — or the repository's own ship script, when its \
+                 README or CLAUDE.md documents one."
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// What approving does, in a few words: `pushed to its base`, `a pull request, merged when ready`.
+    pub fn mode_words(&self) -> &'static str {
+        match (self.mode, self.merge_when_ready) {
+            (LandMode::Push, _) => "pushed to its base",
+            (LandMode::Pr, false) => "a pull request",
+            (LandMode::Pr, true) => "a pull request, merged when ready",
+        }
+    }
 }
 
 pub fn config_path() -> PathBuf {
@@ -84,6 +142,22 @@ pub fn parse(text: &str) -> Result<Config, OttoError> {
     for l in &config.launchers {
         if l.name.trim().is_empty() || l.command.trim().is_empty() {
             return Err(OttoError::usage("every launcher needs a name and a command"));
+        }
+    }
+    for (i, p) in config.processes.iter().enumerate() {
+        if p.name.trim().is_empty() || p.name != p.name.trim() {
+            return Err(OttoError::usage("every process needs a name, without spaces around it"));
+        }
+        if config.processes[..i].iter().any(|q| q.name.eq_ignore_ascii_case(&p.name)) {
+            return Err(OttoError::usage(format!("two processes are called \"{}\"", p.name)));
+        }
+        if p.merge_when_ready && p.mode != LandMode::Pr {
+            return Err(OttoError::usage(format!("process \"{}\": mergeWhenReady is for a pull request (mode \"pr\")", p.name)));
+        }
+    }
+    for (repo, name) in &config.projects {
+        if config.find_process(name).is_none() {
+            return Err(OttoError::usage(format!("{repo} follows a process there is none of: \"{name}\"")));
         }
     }
     Ok(config)
@@ -123,6 +197,44 @@ impl Config {
     }
 }
 
+impl Config {
+    /// Every process there is: the built-in `standard` first unless the config redefines it, then the
+    /// configured ones in file order.
+    pub fn processes(&self) -> Vec<Process> {
+        let mut all = Vec::new();
+        if !self.processes.iter().any(|p| p.name.eq_ignore_ascii_case(STANDARD_PROCESS)) {
+            all.push(Process::standard());
+        }
+        all.extend(self.processes.iter().cloned());
+        all
+    }
+
+    fn find_process(&self, name: &str) -> Option<Process> {
+        if let Some(p) = self.processes.iter().find(|p| p.name.eq_ignore_ascii_case(name.trim())) {
+            return Some(p.clone());
+        }
+        name.trim().eq_ignore_ascii_case(STANDARD_PROCESS).then(Process::standard)
+    }
+
+    /// The process a person-typed name means, ignoring case.
+    pub fn process(&self, name: &str) -> Result<Process, OttoError> {
+        self.find_process(name).ok_or_else(|| {
+            let names = self.processes().iter().map(|p| format!("\"{}\"", p.name)).collect::<Vec<_>>().join(", ");
+            OttoError::usage(format!("no process called \"{}\" — known: {names}. Make one with `otto config process {} --mode <push|pr>`", name.trim(), name.trim()))
+        })
+    }
+
+    /// The process a repository follows, by its main checkout: its own, else `standard`.
+    pub fn process_for(&self, repo: &str) -> Process {
+        self.projects.get(repo).and_then(|name| self.find_process(name)).unwrap_or_else(|| self.process(STANDARD_PROCESS).expect("standard always exists"))
+    }
+
+    /// The repositories that follow `name`, by main checkout.
+    pub fn projects_of(&self, name: &str) -> Vec<String> {
+        self.projects.iter().filter(|(_, p)| p.eq_ignore_ascii_case(name)).map(|(repo, _)| repo.clone()).collect()
+    }
+}
+
 /// A working directory as a person typed it — `~` expanded, made absolute, and required to exist,
 /// because a wake started in a directory that isn't there fails before it does anything.
 pub fn resolve_workdir(text: &str) -> Result<PathBuf, OttoError> {
@@ -150,6 +262,17 @@ pub fn default_workdir() -> Result<Option<PathBuf>, OttoError> {
 /// was — including keys this version of otto doesn't know. Returns the directory as resolved.
 pub fn save_workdir(text: &str) -> Result<PathBuf, OttoError> {
     let resolved = resolve_workdir(text)?;
+    edit(|object| {
+        // Stored as typed, so `~/work` stays portable if the file is copied to another machine.
+        object.insert("workdir".to_string(), serde_json::Value::String(text.trim().to_string()));
+        Ok(())
+    })?;
+    Ok(resolved)
+}
+
+/// Change `config.json` as JSON, keeping everything else in the file as it was, and save it only if
+/// the result still loads.
+fn edit(change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), OttoError>) -> Result<Config, OttoError> {
     let path = config_path();
     let mut value = match std::fs::read_to_string(&path) {
         Ok(existing) => serde_json::from_str::<serde_json::Value>(&existing)
@@ -160,12 +283,11 @@ pub fn save_workdir(text: &str) -> Result<PathBuf, OttoError> {
     let object = value
         .as_object_mut()
         .ok_or_else(|| OttoError::usage(format!("{} is not a JSON object", path.display())))?;
-    // Stored as typed, so `~/work` stays portable if the file is copied to another machine.
-    object.insert("workdir".to_string(), serde_json::Value::String(text.trim().to_string()));
-    parse(&value.to_string())?;
+    change(object)?;
+    let config = parse(&value.to_string())?;
     std::fs::create_dir_all(crate::paths::otto_home())?;
     crate::state::write_atomic(&path, &(serde_json::to_string_pretty(&value)? + "\n"))?;
-    Ok(resolved)
+    Ok(config)
 }
 
 /// The lander's run id, when one is set up.
@@ -177,24 +299,99 @@ pub fn lander() -> Result<Option<String>, OttoError> {
 /// in the file as it was. Kept by run id, which a rename doesn't change.
 pub fn save_lander(id: Option<&str>) -> Result<Option<String>, OttoError> {
     let id = id.map(crate::paths::resolve_run_id).transpose()?;
-    let path = config_path();
-    let mut value = match std::fs::read_to_string(&path) {
-        Ok(existing) => serde_json::from_str::<serde_json::Value>(&existing)
-            .map_err(|e| OttoError::usage(format!("{} is not valid: {e}", path.display())))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
-        Err(e) => return Err(e.into()),
-    };
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| OttoError::usage(format!("{} is not a JSON object", path.display())))?;
-    match &id {
-        Some(id) => object.insert("lander".to_string(), serde_json::Value::String(id.clone())),
-        None => object.remove("lander"),
-    };
-    parse(&value.to_string())?;
-    std::fs::create_dir_all(crate::paths::otto_home())?;
-    crate::state::write_atomic(&path, &(serde_json::to_string_pretty(&value)? + "\n"))?;
+    edit(|object| {
+        match &id {
+            Some(id) => object.insert("lander".to_string(), serde_json::Value::String(id.clone())),
+            None => object.remove("lander"),
+        };
+        Ok(())
+    })?;
     Ok(id)
+}
+
+/// Make or redefine a process, by name. Redefining `standard` replaces the built-in one.
+pub fn save_process(process: Process) -> Result<Process, OttoError> {
+    let process = Process { name: process.name.trim().to_string(), start: words(process.start), land: words(process.land), ..process };
+    edit(|object| {
+        let list = object.entry("processes").or_insert_with(|| serde_json::json!([]));
+        let list = list.as_array_mut().ok_or_else(|| OttoError::usage("\"processes\" in config.json is not a list"))?;
+        let value = serde_json::to_value(&process)?;
+        let same = |v: &serde_json::Value| v.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&process.name));
+        match list.iter_mut().find(|v| same(v)) {
+            Some(existing) => *existing = value,
+            None => list.push(value),
+        }
+        Ok(())
+    })?;
+    Ok(process)
+}
+
+fn words(text: Option<String>) -> Option<String> {
+    text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// Remove a process. One a repository follows is refused: give the repository another first. Removing
+/// a redefined `standard` brings back the built-in one.
+pub fn delete_process(name: &str) -> Result<(), OttoError> {
+    let config = load()?;
+    let process = config.process(name)?;
+    let followers = config.projects_of(&process.name);
+    if !followers.is_empty() && !process.name.eq_ignore_ascii_case(STANDARD_PROCESS) {
+        return Err(OttoError::usage(format!(
+            "{} follow{} \"{}\" — give {} another process first (`otto config project <repo> --process <name>`)",
+            followers.iter().map(|r| crate::changes::home_relative(r)).collect::<Vec<_>>().join(", "),
+            if followers.len() == 1 { "s" } else { "" },
+            process.name,
+            if followers.len() == 1 { "it" } else { "them" }
+        )));
+    }
+    if !config.processes.iter().any(|p| p.name.eq_ignore_ascii_case(&process.name)) {
+        return Err(OttoError::usage(format!("\"{}\" is built in: redefine it instead", process.name)));
+    }
+    edit(|object| {
+        if let Some(list) = object.get_mut("processes").and_then(|l| l.as_array_mut()) {
+            list.retain(|v| !v.get("name").and_then(|n| n.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(&process.name)));
+            if list.is_empty() {
+                object.remove("processes");
+            }
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// A repository as a person typed it — any checkout of it, or a directory inside one — as its main
+/// checkout, which is what a change records and what a project is kept by.
+pub fn resolve_project(repo: &str) -> Result<String, OttoError> {
+    let dir = resolve_workdir(repo)?;
+    Ok(crate::changes::main_repo(&dir)?.display().to_string())
+}
+
+/// Have a repository follow a process, or (`None`) the standard one again. Returns the repository as
+/// it is kept and the process it now follows.
+pub fn save_project(repo: &str, process: Option<&str>) -> Result<(String, Process), OttoError> {
+    let repo = resolve_project(repo)?;
+    let process = process.map(|name| load()?.process(name)).transpose()?;
+    let config = edit(|object| {
+        let map = object.entry("projects").or_insert_with(|| serde_json::json!({}));
+        let map = map.as_object_mut().ok_or_else(|| OttoError::usage("\"projects\" in config.json is not an object"))?;
+        match &process {
+            Some(p) if !p.name.eq_ignore_ascii_case(STANDARD_PROCESS) => map.insert(repo.clone(), serde_json::Value::String(p.name.clone())),
+            _ => map.remove(&repo),
+        };
+        if map.is_empty() {
+            object.remove("projects");
+        }
+        Ok(())
+    })?;
+    let process = config.process_for(&repo);
+    Ok((repo, process))
+}
+
+/// The process a repository follows, as stored: `repo` is a main checkout's absolute path, as a
+/// change records it. `standard` when the config can't be read, so a broken file never blocks a read.
+pub fn process_for(repo: &Path) -> Process {
+    load().map(|c| c.process_for(&repo.display().to_string())).unwrap_or_else(|_| Process::standard())
 }
 
 /// Where a run's wakes run: the directory the run recorded, else today's default. `None` — a run
@@ -241,7 +438,7 @@ mod tests {
 
     #[test]
     fn a_name_resolves_exactly_or_by_unique_prefix() {
-        let config = Config { workdir: None, launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")], lander: None };
+        let config = Config { workdir: None, launchers: vec![def("nono (sandbox)", "nono run -- claude"), def("nono-lite", "nono")], lander: None, ..Default::default() };
         assert_eq!(config.launcher("CLAUDE").unwrap().name, "claude");
         assert_eq!(config.launcher("nono (").unwrap().name, "nono (sandbox)");
         assert_eq!(config.launcher("nono-").unwrap().name, "nono-lite");
@@ -252,7 +449,7 @@ mod tests {
 
     #[test]
     fn the_config_can_redefine_claude() {
-        let config = Config { workdir: None, launchers: vec![def("claude", "/opt/claude")], lander: None };
+        let config = Config { workdir: None, launchers: vec![def("claude", "/opt/claude")], lander: None, ..Default::default() };
         assert_eq!(config.launchers().len(), 1);
         assert_eq!(config.launcher("claude").unwrap().command, "/opt/claude");
     }
@@ -282,6 +479,61 @@ mod tests {
     fn a_workdir_expands_the_home_directory() {
         let resolved = resolve_workdir("~").unwrap();
         assert_eq!(resolved, crate::paths::home_dir().canonicalize().unwrap());
+    }
+
+    fn process(name: &str, mode: LandMode) -> Process {
+        Process { name: name.into(), mode, merge_when_ready: false, start: None, land: None }
+    }
+
+    #[test]
+    fn every_repository_follows_standard_until_given_another() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let config = load().unwrap();
+        assert_eq!(config.processes().iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["standard"]);
+        assert_eq!(config.process_for("/any/repo").mode, LandMode::Push);
+        assert_eq!(config.process("STANDARD").unwrap().name, "standard");
+        assert!(config.process("reviewed").unwrap_err().to_string().contains("no process called"));
+    }
+
+    #[test]
+    fn a_process_is_made_changed_and_removed_keeping_the_rest_of_the_file() {
+        let _h = crate::paths::test_support::TempHome::new();
+        std::fs::write(config_path(), r#"{"lander":"9"}"#).unwrap();
+        save_process(Process { start: Some("  a branch  ".into()), ..process("reviewed", LandMode::Pr) }).unwrap();
+        save_process(Process { merge_when_ready: true, ..process("Reviewed", LandMode::Pr) }).unwrap();
+        let config = load().unwrap();
+        assert_eq!(config.lander.as_deref(), Some("9"), "the rest of the file survives");
+        assert_eq!(config.processes.len(), 1, "the same name, in any case, is the same process");
+        assert!(config.processes[0].merge_when_ready);
+        assert!(save_process(Process { merge_when_ready: true, ..process("direct", LandMode::Push) }).is_err(), "merging when ready is for a pull request");
+        assert!(config.projects.is_empty());
+        std::fs::write(config_path(), r#"{"processes":[{"name":"reviewed","mode":"pr"}],"projects":{"/r":"reviewed"}}"#).unwrap();
+        assert_eq!(load().unwrap().process_for("/r").name, "reviewed");
+        assert!(delete_process("reviewed").unwrap_err().to_string().contains("/r follows"), "a followed process is kept");
+        assert!(delete_process("standard").unwrap_err().to_string().contains("built in"));
+        std::fs::write(config_path(), r#"{"processes":[{"name":"reviewed","mode":"pr"}]}"#).unwrap();
+        delete_process("reviewed").unwrap();
+        assert!(load().unwrap().processes.is_empty());
+    }
+
+    #[test]
+    fn standard_can_be_redefined_and_reset() {
+        let _h = crate::paths::test_support::TempHome::new();
+        save_process(process("standard", LandMode::Pr)).unwrap();
+        let config = load().unwrap();
+        assert_eq!(config.processes().len(), 1, "the redefinition replaces the built-in one");
+        assert_eq!(config.process_for("/any").mode, LandMode::Pr);
+        delete_process("standard").unwrap();
+        assert_eq!(load().unwrap().process_for("/any").mode, LandMode::Push);
+    }
+
+    #[test]
+    fn a_project_following_a_process_there_is_none_of_is_refused() {
+        let _h = crate::paths::test_support::TempHome::new();
+        std::fs::write(config_path(), r#"{"projects":{"/r":"missing"}}"#).unwrap();
+        assert!(load().unwrap_err().to_string().contains("there is none of"));
+        std::fs::write(config_path(), r#"{"processes":[{"name":"a","mode":"pr"},{"name":"A","mode":"push"}]}"#).unwrap();
+        assert!(load().unwrap_err().to_string().contains("two processes"));
     }
 
     #[test]

@@ -239,6 +239,23 @@ pub struct Decision {
     /// The person said to merge its pull request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_asked: Option<Timestamp>,
+    /// The process its repository followed when it was approved (`crate::config::Process`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process: Option<String>,
+    /// That process's words on how a change lands, as they were then: changing the process later
+    /// doesn't change how an approved change lands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land: Option<String>,
+    /// The person chose how this one lands, rather than its process.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overridden: bool,
+}
+
+/// How the person said a change lands, instead of as its process says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct How {
+    pub mode: LandMode,
+    pub merge_when_ready: bool,
 }
 
 /// A change's pull request, as the lander last saw it.
@@ -485,7 +502,7 @@ fn ok(dir: &Path, args: &[&str]) -> bool {
 }
 
 /// The repository's main checkout, from it or from any of its worktrees.
-fn main_repo(repo: &Path) -> Result<PathBuf, OttoError> {
+pub fn main_repo(repo: &Path) -> Result<PathBuf, OttoError> {
     // Relative to `repo` when git says it relative (`--path-format=absolute` is git 2.31; macOS has older).
     let common = git(repo, &["rev-parse", "--git-common-dir"])
         .map_err(|e| OttoError::usage(format!("--repo {}: not a git repository ({e})", repo.display())))?;
@@ -935,15 +952,20 @@ pub struct Decided {
     pub state: ChangeState,
     /// The note the author was left, when one was.
     pub note: Option<String>,
+    /// How it lands, for an approval: `to land on main`, `as a pull request onto main`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how: Option<String>,
 }
 
-/// Approve the latest version of each change, to land as `mode`. Refused whole when there is no
-/// lander to land them, and each one refused that isn't waiting for review.
-pub fn approve(refs: &[ChangeRef], mode: LandMode, merge_when_ready: bool, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
-    if merge_when_ready && mode != LandMode::Pr {
+/// Approve the latest version of each change, to land as its repository's process says — or as
+/// `how` says, when the person chose. Refused whole when there is no lander to land them, and each
+/// one refused that isn't waiting for review.
+pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
+    if how.is_some_and(|h| h.merge_when_ready && h.mode != LandMode::Pr) {
         return Err(OttoError::usage("merging when ready is for a pull request: approve it with --pr"));
     }
-    if crate::config::lander()?.is_none() {
+    let config = crate::config::load()?;
+    if config.lander.is_none() {
         return Err(OttoError::usage(
             "no lander is set up, so nothing would land an approved change — start one and name it with `otto config lander \
              <run>` (the README's \"Landing changes\" says how), or land it yourself: `otto changes show <change>` has the commands",
@@ -954,27 +976,34 @@ pub fn approve(refs: &[ChangeRef], mode: LandMode, merge_when_ready: bool, note:
     for r in refs {
         out.push(with_change(r, |path, _state, c| {
             refuse_unless(c, &[ChangeState::Review], "approved")?;
+            let process = config.process_for(&c.repo);
+            let chosen = how.unwrap_or(How { mode: process.mode, merge_when_ready: process.merge_when_ready });
+            let overridden = chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready;
             let v = c.latest().clone();
             c.decision = Some(Decision {
-                mode,
+                mode: chosen.mode,
                 version: v.k,
                 sha: v.sha.clone(),
                 patch_id: v.patch_id.clone(),
                 at: Timestamp::now(),
                 note: note.clone(),
-                merge_when_ready,
+                merge_when_ready: chosen.merge_when_ready,
                 merge_asked: None,
+                process: Some(process.name.clone()),
+                land: process.land.clone(),
+                overridden,
             });
             c.enter(ChangeState::Approved);
-            let how = match (mode, merge_when_ready) {
+            let how = match (chosen.mode, chosen.merge_when_ready) {
                 (LandMode::Push, _) => format!("to land on {}", c.base),
                 (LandMode::Pr, false) => format!("as a pull request onto {}", c.base),
                 (LandMode::Pr, true) => format!("as a pull request onto {}, merged once it is approved and passing", c.base),
             };
-            let what = format!("approved v{} {how}{}", v.k, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
+            let by = if overridden { format!(" rather than as {} says", process.name) } else { format!(", as {} says", process.name) };
+            let what = format!("approved v{} {how}{by}{}", v.k, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
             c.moment("you", &what);
             moved(path, c, "person", &what)?;
-            Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
+            Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: Some(how) })
         })?);
     }
     Ok(out)
@@ -996,7 +1025,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
              `otto state change submit` — so it comes back to them as the next version."
         ))?;
         moved(path, c, "person", &format!("asked for changes: {text}"))?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
     })
 }
 
@@ -1019,7 +1048,7 @@ pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoErr
         };
         let note = tell_author(path, state, c, &body)?;
         moved(path, c, "person", &what)?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
     })
 }
 
@@ -1061,6 +1090,12 @@ pub struct Due {
     pub sha: Option<String>,
     pub patch_id: Option<String>,
     pub mode: Option<LandMode>,
+    /// As a pull request: merge it once it is approved and passing (`gh pr merge --auto`).
+    pub merge_when_ready: bool,
+    /// The process it was approved under, and its words on how a change lands there: the lander
+    /// follows them before anything the repository's docs say.
+    pub process: Option<String>,
+    pub land: Option<String>,
     pub approved_at: Option<Timestamp>,
     /// What its author said about it, absolute: the commit message and PR body come from here.
     pub summary: String,
@@ -1102,6 +1137,9 @@ fn due_of(run: &str, name: &str, dir: &Path, c: &Change) -> Option<Due> {
         sha: d.map(|d| d.sha.clone()),
         patch_id: d.map(|d| d.patch_id.clone()),
         mode: d.map(|d| d.mode),
+        merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
+        process: d.and_then(|d| d.process.clone()),
+        land: d.and_then(|d| d.land.clone()),
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
@@ -1161,6 +1199,9 @@ pub fn due_with_prs() -> Result<Vec<Due>, OttoError> {
                 sha: c.decision.as_ref().map(|d| d.sha.clone()),
                 patch_id: c.decision.as_ref().map(|d| d.patch_id.clone()),
                 mode: c.decision.as_ref().map(|d| d.mode),
+                merge_when_ready: c.decision.as_ref().is_some_and(|d| d.merge_when_ready),
+                process: c.decision.as_ref().and_then(|d| d.process.clone()),
+                land: c.decision.as_ref().and_then(|d| d.land.clone()),
                 approved_at: c.decision.as_ref().map(|d| d.at),
                 summary: dir.join(&c.latest().summary).display().to_string(),
                 landed_sha: None,
@@ -1642,7 +1683,7 @@ pub fn merge(r: &ChangeRef) -> Result<Decided, OttoError> {
         d.merge_asked = Some(Timestamp::now());
         c.moment("you", "said to merge its pull request");
         moved(path, c, "person", "said to merge its pull request")?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None })
     })
 }
 
@@ -1660,7 +1701,7 @@ pub fn post(r: &ChangeRef, comment: Option<&str>) -> Result<Decided, OttoError> 
         let what = format!("said to post {n} repl{}", if n == 1 { "y" } else { "ies" });
         c.moment("you", &what);
         moved(path, c, "person", &what)?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None })
     })
 }
 
@@ -1681,7 +1722,7 @@ pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
         c.moment("you", format!("answered: {}", first_line(&answer)));
         let note = tell_author(path, state, c, &format!("You asked: {question}\n\nThe person answered:\n\n{answer}"))?;
         moved(path, c, "person", &format!("answered: {}", first_line(&answer)))?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
     })
 }
 
@@ -1789,6 +1830,10 @@ pub struct Line {
     pub replies: usize,
     /// Why it looks stuck, when it does: its move has sat too long, or it keeps coming back.
     pub stuck: Option<String>,
+    /// The process it follows: the one it was approved under, else its repository's now.
+    pub process: String,
+    /// How it lands, or would if approved now as its process says.
+    pub mode: LandMode,
 }
 
 /// How long a change may sit with an agent, and with reviewers, before it reads as stuck.
@@ -1850,8 +1895,15 @@ pub fn lander_ref() -> Option<LanderRef> {
     })
 }
 
-fn line(run: &RunState, short: &str, c: &Change) -> Line {
+fn line(run: &RunState, short: &str, c: &Change, config: &crate::config::Config) -> Line {
     let v = c.latest();
+    let (process, mode) = match &c.decision {
+        Some(d) => (d.process.clone().unwrap_or_else(|| crate::config::STANDARD_PROCESS.to_string()), d.mode),
+        None => {
+            let p = config.process_for(&c.repo);
+            (p.name, p.mode)
+        }
+    };
     let lines = v.stat.add + v.stat.del;
     Line {
         reference: format!("{short}/{}", c.n),
@@ -1882,6 +1934,8 @@ fn line(run: &RunState, short: &str, c: &Change) -> Line {
         asking: (c.state == ChangeState::NeedsYou).then(|| c.ask.as_ref().map(|a| crate::gate::title(&a.question, 120))).flatten(),
         replies: c.replies.iter().filter(|r| r.state == ReplyState::Draft).count(),
         stuck: stuck(c, crate::clock::now()),
+        process,
+        mode,
     }
 }
 
@@ -1889,6 +1943,7 @@ fn line(run: &RunState, short: &str, c: &Change) -> Line {
 pub fn list(all: bool) -> Result<ChangesView, OttoError> {
     let ids = crate::paths::all_run_ids();
     let cutoff = crate::clock::now() - time::Duration::days(DONE_SHOWN_DAYS);
+    let config = crate::config::load().unwrap_or_default();
     let mut rows: Vec<(Line, Vec<String>)> = Vec::new();
     for entry in crate::state::read_all_runs()? {
         let crate::state::RunEntry::Readable(state) = entry else { continue };
@@ -1899,7 +1954,7 @@ pub fn list(all: bool) -> Result<ChangesView, OttoError> {
                 continue;
             }
             let files = c.latest().stat.files.iter().map(|f| f.path.clone()).collect();
-            rows.push((line(&state, &short, &c), files));
+            rows.push((line(&state, &short, &c, &config), files));
         }
     }
     // Two open changes to one repository that touch one file: whichever lands second may not apply.
@@ -1941,7 +1996,8 @@ pub fn yours() -> usize {
 pub fn of_run(state: &RunState) -> Vec<Line> {
     let Ok(dir) = crate::paths::run_dir(&state.id) else { return Vec::new() };
     let short = crate::paths::short_id(&state.id);
-    let mut out: Vec<Line> = index_or_empty(&dir).changes.iter().map(|c| line(state, &short, c)).collect();
+    let config = crate::config::load().unwrap_or_default();
+    let mut out: Vec<Line> = index_or_empty(&dir).changes.iter().map(|c| line(state, &short, c, &config)).collect();
     out.reverse();
     out
 }
@@ -1967,6 +2023,8 @@ pub struct Detail {
     pub patch: Option<String>,
     pub summary: String,
     pub lander: Option<LanderRef>,
+    /// The process its repository follows now: what approving it does.
+    pub process: crate::config::Process,
     /// To look at it, or land it by hand, from a terminal.
     pub commands: Vec<String>,
 }
@@ -1988,13 +2046,15 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
     if !change.state.is_over() {
         commands.push(format!("git -C {repo} push origin {}:{}", short_sha(&v.sha), change.base));
     }
-    let mut line = line(&state, &short, &change);
+    let config = crate::config::load().unwrap_or_default();
+    let process = config.process_for(&change.repo);
+    let mut line = line(&state, &short, &change, &config);
     if let Ok(all) = list(true) {
         if let Some(l) = all.changes.into_iter().find(|l| l.run == state.id && l.n == r.n) {
             line.overlaps = l.overlaps;
         }
     }
-    Ok(Detail { line, change, version: v, patch, summary, lander: lander_ref(), commands })
+    Ok(Detail { line, change, version: v, patch, summary, lander: lander_ref(), process, commands })
 }
 
 #[cfg(test)]
@@ -2115,17 +2175,69 @@ mod tests {
         test_init("c-lander", "land changes").unwrap();
         let repo = repo();
         submit("c-app", &submit_fix(&repo, "t")).unwrap();
-        let err = approve(&[r("c-app", 1)], LandMode::Push, false, None).unwrap_err();
+        let err = approve(&[r("c-app", 1)], None, None).unwrap_err();
         assert!(err.message.contains("no lander"), "{}", err.message);
         set_lander("c-lander");
-        let out = approve(&[r("c-app", 1)], LandMode::Push, false, Some("ship it")).unwrap();
+        let out = approve(&[r("c-app", 1)], None, Some("ship it")).unwrap();
         assert_eq!(out[0].state, ChangeState::Approved);
         let c = change("c-app", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.version, d.sha.as_str()), (1, c.latest().sha.as_str()));
         assert_eq!(c.whose_move(), Move::Lander);
-        assert!(approve(&[r("c-app", 1)], LandMode::Push, false, None).is_err(), "only a change waiting for review is approved");
+        assert!(approve(&[r("c-app", 1)], None, None).is_err(), "only a change waiting for review is approved");
         assert_eq!(due().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn approving_follows_the_repositorys_process_and_keeps_it() {
+        let _h = TempHome::new();
+        test_init("c-proc", "a goal").unwrap();
+        test_init("c-procl", "land changes").unwrap();
+        set_lander("c-procl");
+        let repo = repo();
+        submit("c-proc", &submit_fix(&repo, "one")).unwrap();
+        assert_eq!(read(&r("c-proc", 1), None).unwrap().process.name, "standard", "a repository not given one follows standard");
+
+        crate::config::save_process(crate::config::Process {
+            name: "reviewed".into(),
+            mode: LandMode::Pr,
+            merge_when_ready: true,
+            start: None,
+            land: Some("squash-merge it".into()),
+        })
+        .unwrap();
+        // Any checkout of it names the repository: here, its worktree.
+        crate::config::save_project(repo.wt.to_str().unwrap(), Some("reviewed")).unwrap();
+        let l = &list(false).unwrap().changes[0];
+        assert_eq!((l.process.as_str(), l.mode), ("reviewed", LandMode::Pr));
+
+        let out = approve(&[r("c-proc", 1)], None, None).unwrap();
+        assert!(out[0].how.as_deref().unwrap().contains("pull request"));
+        let d = change("c-proc", 1).decision.unwrap();
+        assert_eq!((d.mode, d.merge_when_ready, d.process.as_deref(), d.land.as_deref(), d.overridden), (LandMode::Pr, true, Some("reviewed"), Some("squash-merge it"), false));
+        let due = &due().unwrap()[0];
+        assert_eq!((due.todo.as_str(), due.merge_when_ready, due.land.as_deref()), ("open its pull request", true, Some("squash-merge it")));
+
+        // Changing the process later doesn't change what was approved under it.
+        crate::config::save_project(repo.main.to_str().unwrap(), Some("standard")).unwrap();
+        assert!(crate::config::load().unwrap().projects.is_empty(), "standard is no assignment at all");
+        assert_eq!(change("c-proc", 1).decision.unwrap().mode, LandMode::Pr);
+        assert_eq!(list(false).unwrap().changes[0].process, "reviewed");
+    }
+
+    #[test]
+    fn the_person_can_land_one_change_another_way_than_its_process() {
+        let _h = TempHome::new();
+        test_init("c-ovr", "a goal").unwrap();
+        test_init("c-ovrl", "land changes").unwrap();
+        set_lander("c-ovrl");
+        let repo = repo();
+        submit("c-ovr", &submit_fix(&repo, "one")).unwrap();
+        approve(&[r("c-ovr", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let c = change("c-ovr", 1);
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((d.mode, d.process.as_deref(), d.overridden), (LandMode::Pr, Some("standard"), true));
+        assert!(c.timeline.last().unwrap().what.contains("rather than as standard says"), "{}", c.timeline.last().unwrap().what);
     }
 
     #[test]
@@ -2137,7 +2249,7 @@ mod tests {
         let repo = repo();
         submit("c-land", &submit_fix(&repo, "t")).unwrap();
         set_lander("c-l");
-        approve(&[r("c-land", 1)], LandMode::Push, false, None).unwrap();
+        approve(&[r("c-land", 1)], None, None).unwrap();
         assert!(claim("c-other", &r("c-land", 1)).unwrap_err().message.contains("isn't the lander"));
         let d = claim("c-l", &r("c-land", 1)).unwrap();
         assert_eq!(d.todo, "land");
@@ -2192,7 +2304,7 @@ mod tests {
         set_lander("c-lr");
         let repo = repo();
         submit("c-rev", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-rev", 1)], LandMode::Push, false, None).unwrap();
+        approve(&[r("c-rev", 1)], None, None).unwrap();
         let out = revise(&r("c-rev", 1), "call it louder").unwrap();
         assert_eq!(out.state, ChangeState::Revising);
         let c = change("c-rev", 1);
@@ -2223,7 +2335,7 @@ mod tests {
         set_lander("c-bl");
         let repo = repo();
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], LandMode::Push, false, None).unwrap();
+        approve(&[r("c-b", 1)], None, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let c = bounce("c-bl", &r("c-b", 1), "a.txt conflicts with main").unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::Revising, Move::Author));
@@ -2232,7 +2344,7 @@ mod tests {
         std::fs::write(repo.wt.join("a.txt"), "one\nTwo\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "again"]);
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], LandMode::Push, false, None).unwrap();
+        approve(&[r("c-b", 1)], None, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
         let c = rebased("c-bl", &r("c-b", 1), &head).unwrap();
@@ -2271,8 +2383,8 @@ mod tests {
         set_lander("c-prl");
         let repo = repo();
         submit("c-pr", &submit_fix(&repo, "Shout")).unwrap();
-        assert!(approve(&[r("c-pr", 1)], LandMode::Push, true, None).is_err(), "merging when ready is for a pull request");
-        approve(&[r("c-pr", 1)], LandMode::Pr, false, None).unwrap();
+        assert!(approve(&[r("c-pr", 1)], Some(How { mode: LandMode::Push, merge_when_ready: true }), None).is_err(), "merging when ready is for a pull request");
+        approve(&[r("c-pr", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         assert_eq!(due().unwrap()[0].todo, "open its pull request");
         let d = claim("c-prl", &r("c-pr", 1)).unwrap();
         let v1 = d.sha.unwrap();

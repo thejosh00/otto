@@ -62,8 +62,8 @@ the thing itself, and stays after you're done with the message.
 ```bash
 otto changes                           # by whose move: yours first, then in hand, waiting on reviewers, stuck, done
 otto changes show 3/2 --patch          # what its author said, its tests, its files and patch, what happened
-otto changes approve 3/2 7/1           # land them: the lander rebases if it must, checks, pushes, cleans up
-otto changes approve 3/2 --pr          # as a pull request the lander keeps moving
+otto changes approve 3/2 7/1           # as each one's process says: pushed to its base, or a pull request
+otto changes approve 3/2 --pr          # as a pull request this once, whatever its process says
 otto changes revise 3/2 --text "keep the old flag working"   # back to its author, who is woken
 otto changes merge 3/2                 # its pull request is approved and passing
 otto changes post 3/2                  # post the replies to reviewers its author drafted

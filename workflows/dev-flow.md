@@ -131,6 +131,7 @@ happened before the lock was acquired. Nothing went wrong; nothing had to go wro
 be a bad habit.)
 
 ```
+otto config project <mainRepo>               # its process: when its "starting" says otherwise, follow it
 otto state lock <id> --repo <mainRepo>       # §9: two runs must never share a worktree
 git -C <mainRepo> fetch origin               # best-effort; a stale ref is not a failure
 git -C <mainRepo> symbolic-ref refs/remotes/origin/HEAD   # → facts.base, never assumed

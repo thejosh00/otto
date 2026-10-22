@@ -10,7 +10,11 @@ silently does nothing.
   "launchers": [
     { "name": "nono (sandbox)", "command": "nono run --profile nolabs-ai/claude -- claude", "grantFlag": "--allow" }
   ],
-  "lander": "9"
+  "lander": "9",
+  "processes": [
+    { "name": "reviewed", "mode": "pr", "mergeWhenReady": true, "land": "Squash-merged; CI must pass first" }
+  ],
+  "projects": { "/Users/me/work/svc": "reviewed" }
 }
 ```
 
@@ -61,6 +65,44 @@ otto config lander --off       # none
 ```
 
 The [README](../../README.md#landing-changes) sets one up.
+
+## `processes`
+
+How a change goes from started to landed, for the repositories that follow it — optional; with
+none, the built-in `standard` is the only one. A process named `standard` replaces the built-in.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | What `otto config project --process` takes, ignoring case |
+| `mode` | yes | What approving a change does: `push` (lands it on its base) or `pr` (opens a pull request the lander keeps moving) |
+| `mergeWhenReady` | no | With `pr`: GitHub merges it once it is approved and passing, without asking again |
+| `start` | no | How a change begins, in words, for the run that makes it: a worktree or a branch, a ticket first |
+| `land` | no | How an approved change lands, in words, for the lander: a ship script, a merge method |
+
+`mode` and `mergeWhenReady` are otto's to act on; `start` and `land` are read by the agents. The
+built-in `standard` pushes to the base, starting each change in a worktree of its own.
+
+```bash
+otto config process                                       # every process, and who follows it
+otto config process reviewed --mode pr --merge-when-ready # make one, or change one
+otto config process reviewed --land "Squash-merged"       # change only what it says about landing
+otto config process reviewed --delete                     # one a repository follows is refused
+```
+
+## `projects`
+
+The process each repository follows, keyed by its main checkout's absolute path. A repository not
+listed follows `standard`. Any checkout of a repository, or a directory inside one, names it.
+
+```bash
+otto config project ~/work/svc --process reviewed   # give it a process
+otto config project ~/work/svc                      # print the one it follows (--json for agents)
+otto config project ~/work/svc --process standard   # back to standard
+otto config project                                 # every repository given one
+```
+
+Approving a change records the process it was approved under, with its `land` words, so changing a
+repository's process changes only what is approved after.
 
 ## Environment variables
 

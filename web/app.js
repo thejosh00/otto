@@ -886,7 +886,8 @@ function changesView(selected) {
   let shownKey = null;
   const keyOf = (l) => `${l.run}/${l.n}`;
   view.replaceChildren(
-    h("div.view-title", h("h1", "Changes"), h("span.faint", { id: "changes-summary" })),
+    h("div.view-title", h("h1", "Changes"), h("span.faint", { id: "changes-summary" }),
+      h("a.view-link", { href: "#/processes", title: "How each repository's changes land" }, "Processes")),
     h("div", { id: "lander-banner" }),
     h("div.mail", listBox, pane));
 
@@ -895,8 +896,8 @@ function changesView(selected) {
     batch.hidden = picked.size === 0;
     batch.replaceChildren(
       h("span", `${picked.size} picked`),
-      h("button.small.primary", { onclick: (e) => land([...picked], e.currentTarget) }, picked.size === 1 ? "Land it" : `Land ${picked.size}`),
-      h("button.small", { onclick: (e) => land([...picked], e.currentTarget, { pr: true }) }, picked.size === 1 ? "Open a PR" : `Open ${picked.size} PRs`),
+      h("button.small.primary", { title: "Each as its repository's process says", onclick: (e) => land([...picked], e.currentTarget) }, picked.size === 1 ? "Approve it" : `Approve ${picked.size}`),
+      h("button.small", { title: "As pull requests, whatever their processes say", onclick: (e) => land([...picked], e.currentTarget, { pr: true }) }, picked.size === 1 ? "As a PR" : "As PRs"),
       h("button.small.ghost", { onclick: () => { picked.clear(); drawList(); } }, "Clear"));
   };
 
@@ -931,7 +932,7 @@ function changesView(selected) {
         }) : h("span");
         parts.push(h("a.mail-item.change-item" + (move === "nobody" ? ".done" : ""), { href: `#/changes/${enc(l.run)}/${l.n}`, "aria-current": String(key === selected), dataset: { key } },
           box,
-          h("span.from", `${l.name} · ${l.repo.split("/").pop()}`), h("span.when", relative(l.since)),
+          h("span.from", `${l.name} · ${l.repo.split("/").pop()}${l.process === "standard" ? "" : ` · ${l.process}`}`), h("span.when", relative(l.since)),
           h("span.title", l.title),
           h("span.chip-row", changeChip(l), lineCount(l), ...changeFlags(l))));
       }
@@ -1081,20 +1082,24 @@ function changeDetail(d, actions) {
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
   if (yours) {
     const words = h("textarea.revise", { rows: 3, placeholder: "What to change — its agent reads your words (r)" });
-    const whenReady = h("input", { type: "checkbox" });
+    const p = d.process;
+    const asPr = p.mode === "pr";
+    const key = `${l.run}/${l.n}`;
     parts.push(h("div.decide",
+      h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/processes" }, p.name), ": ",
+        asPr ? `approving opens a pull request${p.mergeWhenReady ? " that merges itself once approved and passing" : ""}` : `approving lands it on ${c.base}`,
+        p.land ? ` — ${p.land}` : ""),
       h("div.row",
         h("button.primary.land", {
           disabled: !d.lander,
-          title: d.lander ? `The lander puts it on ${c.base} and pushes it (a)` : "No lander is set up",
-          onclick: (e) => actions.land([`${l.run}/${l.n}`], e.currentTarget),
-        }, `Land on ${c.base}`),
+          title: !d.lander ? "No lander is set up" : asPr ? "The lander opens a pull request and keeps it moving; what reviewers ask goes to its agent (a)" : `The lander puts it on ${c.base} and pushes it (a)`,
+          onclick: (e) => actions.land([key], e.currentTarget),
+        }, asPr ? (p.mergeWhenReady ? "Open a PR, merge when ready" : "Open a PR") : `Land on ${c.base}`),
         h("button", {
           disabled: !d.lander,
-          title: "The lander opens a pull request and keeps it moving; what reviewers ask goes to its agent",
-          onclick: (e) => actions.land([`${l.run}/${l.n}`], e.currentTarget, { pr: true, mergeWhenReady: whenReady.checked }),
-        }, "Open a PR"),
-        h("label.check", { title: "GitHub merges it once it is approved and passing" }, whenReady, "merge when ready"),
+          title: `Not as ${p.name} says, this once`,
+          onclick: (e) => actions.land([key], e.currentTarget, asPr ? { push: true } : { pr: true }),
+        }, asPr ? `Land on ${c.base} instead` : "Open a PR instead"),
         h("button.danger", {
           onclick: async (e) => {
             const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/drop`, { text: words.value.trim() || null }));
@@ -2477,6 +2482,116 @@ function systemView() {
 }
 
 // ---------------------------------------------------------------------------
+// #/processes — how much you stay in the loop, per repository
+// ---------------------------------------------------------------------------
+
+function processesView() {
+  const list = h("div");
+  const editor = h("div");
+  const projects = h("div");
+  view.replaceChildren(
+    h("a.back", { href: "#/changes" }, "← Changes"),
+    h("div.view-title", h("h1", "Processes"),
+      h("button.small", { onclick: () => edit(null) }, "New process")),
+    h("p.muted", "How a change goes from started to landed. A repository follows one, so approving a change does what that repository needs — pushed straight to its base, or opened as a pull request. What it says in words is for the agents: how to start a change, and how to land one."),
+    editor, list,
+    h("h2", "Repositories"),
+    h("p.muted", "Every repository follows standard until you give it another. Changes already approved land as they were approved."),
+    projects);
+  let data = null;
+
+  const modeWords = (p) => p.mode === "pr" ? `A pull request${p.mergeWhenReady ? ", merged once approved and passing" : ""}` : "Pushed to its base";
+
+  function edit(p) {
+    const name = h("input", { value: p ? p.name : "", disabled: !!p, placeholder: "reviewed" });
+    const mode = h("select", [["push", "Pushed to its base branch"], ["pr", "Opened as a pull request"]].map(([v, t]) => h("option", { value: v, selected: (p ? p.mode : "push") === v }, t)));
+    const whenReady = h("input", { type: "checkbox", checked: !!(p && p.mergeWhenReady) });
+    const whenReadyBox = h("label.check", whenReady, "Merge it once it is approved and passing, without asking again");
+    const sync = () => { whenReadyBox.hidden = mode.value !== "pr"; };
+    mode.addEventListener("change", sync);
+    sync();
+    const start = h("textarea", { rows: 2, placeholder: "A worktree of its own on a fresh branch from the base" }, p && p.start ? p.start : "");
+    const landText = h("textarea", { rows: 2, placeholder: "Squash-merged; scripts/ship.sh restarts the service" }, p && p.land ? p.land : "");
+    editor.replaceChildren(h("div.card", { style: "margin-bottom:14px" },
+      h("h3", p ? `Change ${p.name}` : "A new process"),
+      h("label.field", h("span", "Name"), name),
+      h("label.field", h("span", "Approving a change"), mode, h("small", "otto acts on this: it decides what the lander does next.")), whenReadyBox,
+      h("label.field", h("span", "Starting a change"), start, h("small", "For the agent that makes it: a branch or a worktree, a ticket first.")),
+      h("label.field", h("span", "Landing a change"), landText, h("small", "For the lander: a ship script, a merge method, anything to check first.")),
+      h("div.row", { style: "margin-top:12px" },
+        h("button.primary", {
+          onclick: (e) => busy(e.currentTarget, async () => {
+            if (!name.value.trim()) { toast("Give it a name", true); name.focus(); return; }
+            const saved = await api("/processes", {
+              name: name.value.trim(), mode: mode.value, mergeWhenReady: mode.value === "pr" && whenReady.checked,
+              start: start.value.trim() || null, land: landText.value.trim() || null,
+            });
+            toast(`Saved ${saved.name}`);
+            editor.replaceChildren();
+            refresh();
+          }),
+        }, "Save"),
+        h("button.ghost", { onclick: () => editor.replaceChildren() }, "Cancel"))));
+    (p ? mode : name).focus();
+  }
+
+  function drawProcesses() {
+    list.replaceChildren(...data.processes.map((p) => h("div.card",
+      h("div.row.spread", h("h3", p.name, p.builtin ? h("span.pill", { style: "margin-left:8px" }, "built in") : null),
+        h("div.row",
+          h("button.small", { onclick: () => edit(p) }, "Change"),
+          p.builtin ? null : h("button.small.danger", {
+            title: p.name === "standard" ? "Go back to the built-in standard" : "Repositories that follow it must be given another first",
+            onclick: (e) => busy(e.currentTarget, async () => {
+              await api("/processes/delete", { name: p.name });
+              toast(p.name === "standard" ? "standard is the built-in one again" : `Removed ${p.name}`);
+              refresh();
+            }),
+          }, p.name === "standard" ? "Reset" : "Remove"))),
+      h("dl.facts", { style: "margin-top:10px" },
+        h("dt", "Approving"), h("dd", modeWords(p)),
+        h("dt", "Starting"), h("dd", p.start || h("span.faint", "as the agent sees fit")),
+        h("dt", "Landing"), h("dd", p.land || h("span.faint", "as the repository's docs say")),
+        h("dt", "Followed by"), h("dd", p.name === "standard" ? "every repository not given another"
+          : p.projects.length ? p.projects.join(", ") : h("span.faint", "no repository yet"))))));
+  }
+
+  function drawProjects() {
+    const options = (value) => data.processes.map((p) => h("option", { value: p.name, selected: p.name === value }, p.name));
+    const assign = (repo, process, button) => busy(button, async () => {
+      const r = await api("/projects", { repo, process });
+      toast(`${r.repo} follows ${r.process.name}`);
+      refresh();
+    });
+    const repo = h("input", { placeholder: "~/workspace/my-repo", list: "known-repos" });
+    const pick = h("select", options("standard"));
+    projects.replaceChildren(
+      h("datalist", { id: "known-repos" }, data.known.map((r) => h("option", { value: r }))),
+      data.projects.length ? h("table.table",
+        h("thead", h("tr", ["Repository", "Follows"].map((c) => h("th", c)))),
+        h("tbody", data.projects.map((pr) => {
+          const select = h("select", options(pr.process));
+          select.addEventListener("change", () => assign(pr.repo, select.value, select));
+          return h("tr", h("td.mono", pr.repo), h("td", select));
+        }))) : null,
+      h("div.assign", repo, pick,
+        h("button", {
+          onclick: (e) => {
+            if (!repo.value.trim()) { toast("Name a repository", true); repo.focus(); return; }
+            assign(repo.value.trim(), pick.value, e.currentTarget);
+          },
+        }, "Give it this process")));
+  }
+
+  async function refresh() {
+    try { data = await api("/processes"); } catch (err) { list.replaceChildren(h("div.banner.bad", err.message)); return; }
+    drawProcesses();
+    drawProjects();
+  }
+  refresh();
+}
+
+// ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
 
@@ -2487,7 +2602,7 @@ function route() {
   const run = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
   const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
   const changes = hash.match(/^#\/changes(?:\/([^/]+\/\d+))?$/);
-  const section = run ? "agents" : inbox ? "inbox" : changes ? "changes" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
+  const section = run ? "agents" : inbox ? "inbox" : changes || hash === "#/processes" ? "changes" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
@@ -2495,6 +2610,7 @@ function route() {
   else if (hash === "#/new") newRunView();
   else if (hash === "#/system" || hash === "#/agent") systemView();
   else if (hash === "#/usage") usageView();
+  else if (hash === "#/processes") processesView();
   else agentsView();
   window.scrollTo(0, 0);
 }

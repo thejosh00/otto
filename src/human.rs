@@ -440,7 +440,7 @@ pub struct ChangesArgs {
 pub enum ChangesCommand {
     /// One change: what its author said, its files, what happened to it — and with --patch, the patch
     Show(ChangesShowArgs),
-    /// Approve changes to land on their base branch, and wake the lander to land them
+    /// Approve changes to land as their repository's process says, and wake the lander to land them
     Approve(ChangesApproveArgs),
     /// Send a change back to its author, saying what to change, and wake it to do it
     Revise(ChangesReviseArgs),
@@ -501,12 +501,15 @@ pub struct ChangesApproveArgs {
     /// For the lander and the record, in a sentence
     #[arg(long)]
     pub note: Option<String>,
-    /// As a pull request rather than pushed: the lander opens it and keeps it moving, and what
-    /// reviewers ask goes to its author
-    #[arg(long)]
+    /// As a pull request, whatever its process says: the lander opens it and keeps it moving, and
+    /// what reviewers ask goes to its author
+    #[arg(long, conflicts_with = "push")]
     pub pr: bool,
-    /// With --pr: merge it once it is approved and passing, without asking you again
-    #[arg(long, requires = "pr")]
+    /// Pushed to its base branch, whatever its process says
+    #[arg(long)]
+    pub push: bool,
+    /// As a pull request merged once it is approved and passing, without asking you again
+    #[arg(long, conflicts_with = "push")]
     pub merge_when_ready: bool,
     /// Record it, and don't wake the lander yet
     #[arg(long)]
@@ -538,10 +541,10 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
     match args.command {
         Some(ChangesCommand::Show(a)) => return changes_show(a),
         Some(ChangesCommand::Approve(a)) => {
-            let mode = if a.pr { crate::changes::LandMode::Pr } else { crate::changes::LandMode::Push };
-            let out = crate::core::approve_changes(&a.changes, mode, a.merge_when_ready, a.note.as_deref(), a.no_wake)?;
+            let how = approve_how(a.pr, a.push, a.merge_when_ready);
+            let out = crate::core::approve_changes(&a.changes, how, a.note.as_deref(), a.no_wake)?;
             for d in &out.decided {
-                println!("{} approved{}: \"{}\"", d.reference, if a.pr { " as a pull request" } else { "" }, d.title);
+                println!("{} approved {}: \"{}\"", d.reference, d.how.as_deref().unwrap_or(""), d.title);
             }
             print_woke(&out, "the lander lands them when it next wakes");
             return Ok(());
@@ -624,6 +627,16 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
         println!("No lander is set up, so an approved change has nothing to land it — see the README's \"Landing changes\".");
     }
     Ok(())
+}
+
+/// How the person said changes land, when they said: `None` leaves each to its process.
+pub fn approve_how(pr: bool, push: bool, merge_when_ready: bool) -> Option<crate::changes::How> {
+    use crate::changes::{How, LandMode};
+    match (pr || merge_when_ready, push) {
+        (true, _) => Some(How { mode: LandMode::Pr, merge_when_ready }),
+        (false, true) => Some(How { mode: LandMode::Push, merge_when_ready: false }),
+        (false, false) => None,
+    }
 }
 
 fn print_woke(out: &crate::core::ChangeOutcome, otherwise: &str) {
@@ -768,9 +781,18 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::ReadyToMerge {
         println!("\notto changes merge {}      merge its pull request", l.reference);
     } else if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::Review {
+        let (as_said, other, other_words) = match d.process.mode {
+            crate::changes::LandMode::Push => (format!("land it on {}", d.change.base), "--pr  ", "as a pull request instead".to_string()),
+            crate::changes::LandMode::Pr => (
+                format!("open it as a pull request{}", if d.process.merge_when_ready { ", merged when ready" } else { "" }),
+                "--push",
+                format!("land it on {} instead", d.change.base),
+            ),
+        };
         println!(
-            "\notto changes approve {r}      land it on {}\notto changes approve {r} --pr  as a pull request\notto changes revise {r} --text \"…\"\notto changes drop {r}",
-            d.change.base,
+            "\n{} follows the {} process.\notto changes approve {r}         {as_said}\notto changes approve {r} {other}  {other_words}\notto changes revise {r} --text \"…\"\notto changes drop {r}",
+            l.repo,
+            d.process.name,
             r = l.reference
         );
         if d.lander.is_none() {
@@ -797,6 +819,146 @@ pub fn config_lander(run: Option<String>, off: bool) -> Result<(), OttoError> {
             None => println!("not set — `otto config lander <run>` names the run that lands approved changes (the README's \"Landing changes\")"),
         },
     }
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ConfigProcessArgs {
+    /// The process to show, make or change. Omit to list every process and who follows it
+    pub name: Option<String>,
+    /// What approving a change does: push it to its base, or open a pull request. Needed to make one
+    #[arg(long, value_enum)]
+    pub mode: Option<crate::changes::LandMode>,
+    /// With --mode pr: merge it once it is approved and passing, without asking again (or `false`)
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    pub merge_when_ready: Option<bool>,
+    /// How a change begins, in words, for the run that makes it: a branch or a worktree, a ticket first
+    #[arg(long)]
+    pub start: Option<String>,
+    /// How an approved change lands, in words, for the lander: a ship script, a merge method
+    #[arg(long)]
+    pub land: Option<String>,
+    /// Remove it. One a repository follows is refused
+    #[arg(long, conflicts_with_all = ["mode", "merge_when_ready", "start", "land"])]
+    pub delete: bool,
+    /// Print it as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ConfigProjectArgs {
+    /// The repository: any checkout of it, or a directory inside one. Omit to list the repositories
+    /// given a process
+    pub repo: Option<String>,
+    /// Have it follow this process; `standard` is the one every repository follows until told otherwise
+    #[arg(long, requires = "repo")]
+    pub process: Option<String>,
+    /// Print it as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+fn print_process(p: &crate::config::Process, followers: &[String]) {
+    println!("{} — approving a change: {}", p.name, p.mode_words());
+    if let Some(start) = &p.start {
+        println!("  starting one: {start}");
+    }
+    if let Some(land) = &p.land {
+        println!("  landing one:  {land}");
+    }
+    if !followers.is_empty() {
+        println!("  followed by:  {}", followers.iter().map(|r| crate::changes::home_relative(r)).collect::<Vec<_>>().join(", "));
+    }
+}
+
+pub fn config_process(a: ConfigProcessArgs) -> Result<(), OttoError> {
+    let config = crate::config::load()?;
+    let Some(name) = a.name else {
+        let all = config.processes();
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&all)?);
+            return Ok(());
+        }
+        for (i, p) in all.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            let followers = if p.name.eq_ignore_ascii_case(crate::config::STANDARD_PROCESS) { vec!["every repository not given another".to_string()] } else { config.projects_of(&p.name) };
+            print_process(p, &followers);
+        }
+        return Ok(());
+    };
+    if a.delete {
+        crate::config::delete_process(&name)?;
+        println!("removed process \"{}\"", name.trim());
+        return Ok(());
+    }
+    let changing = a.mode.is_some() || a.merge_when_ready.is_some() || a.start.is_some() || a.land.is_some();
+    if !changing {
+        let p = config.process(&name)?;
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&p)?);
+        } else {
+            print_process(&p, &config.projects_of(&p.name));
+        }
+        return Ok(());
+    }
+    let existing = config.process(&name).ok();
+    let mode = a.mode.or(existing.as_ref().map(|p| p.mode)).ok_or_else(|| {
+        OttoError::usage(format!("there is no process \"{}\" yet: say what approving does with --mode push or --mode pr", name.trim()))
+    })?;
+    // A process switched to push stops merging when ready, rather than refusing to save.
+    let merge_when_ready = match (a.merge_when_ready, mode) {
+        (Some(m), _) => m,
+        (None, crate::changes::LandMode::Push) => false,
+        (None, crate::changes::LandMode::Pr) => existing.as_ref().is_some_and(|p| p.merge_when_ready),
+    };
+    let saved = crate::config::save_process(crate::config::Process {
+        name: existing.as_ref().map(|p| p.name.clone()).unwrap_or(name),
+        mode,
+        merge_when_ready,
+        start: a.start.or(existing.as_ref().and_then(|p| p.start.clone())),
+        land: a.land.or(existing.as_ref().and_then(|p| p.land.clone())),
+    })?;
+    println!("{} process \"{}\"", if existing.is_some() { "changed" } else { "made" }, saved.name);
+    print_process(&saved, &crate::config::load()?.projects_of(&saved.name));
+    Ok(())
+}
+
+pub fn config_project(a: ConfigProjectArgs) -> Result<(), OttoError> {
+    let Some(repo) = a.repo else {
+        let config = crate::config::load()?;
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&config.projects)?);
+        } else if config.projects.is_empty() {
+            println!("every repository follows \"standard\" — `otto config project <repo> --process <name>` gives one another");
+        } else {
+            for (repo, process) in &config.projects {
+                println!("{}  {process}", crate::changes::home_relative(repo));
+            }
+            println!("every other repository follows \"standard\"");
+        }
+        return Ok(());
+    };
+    let (repo, process) = match &a.process {
+        Some(name) => crate::config::save_project(&repo, Some(name))?,
+        None => {
+            let repo = crate::config::resolve_project(&repo)?;
+            let process = crate::config::process_for(std::path::Path::new(&repo));
+            (repo, process)
+        }
+    };
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "repo": repo, "process": process }))?);
+        return Ok(());
+    }
+    if a.process.is_some() {
+        println!("{} follows \"{}\" now: changes already approved land as they were approved", crate::changes::home_relative(&repo), process.name);
+    } else {
+        println!("{}", crate::changes::home_relative(&repo));
+    }
+    print_process(&process, &[]);
     Ok(())
 }
 

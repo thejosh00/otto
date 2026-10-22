@@ -124,6 +124,10 @@ pub enum ConfigCommand {
         #[arg(long, conflicts_with = "run")]
         off: bool,
     },
+    /// How a change goes from started to landed: make one, change one, or list them
+    Process(crate::human::ConfigProcessArgs),
+    /// Which process a repository follows: what approving its changes does
+    Project(crate::human::ConfigProjectArgs),
 }
 
 #[derive(Subcommand, Debug)]

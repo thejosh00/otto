@@ -422,16 +422,18 @@ pub struct ApproveBody {
     changes: Vec<String>,
     #[serde(default)]
     note: Option<String>,
-    /// As pull requests rather than pushed.
+    /// As pull requests, or pushed, whatever their process says. Neither: as it says.
     #[serde(default)]
     pr: bool,
+    #[serde(default)]
+    push: bool,
     #[serde(default)]
     merge_when_ready: bool,
 }
 
 pub async fn approve_changes(Json(body): Json<ApproveBody>) -> Response {
-    let mode = if body.pr { crate::changes::LandMode::Pr } else { crate::changes::LandMode::Push };
-    blocking(move || crate::core::approve_changes(&body.changes, mode, body.merge_when_ready, body.note.as_deref(), false)).await
+    let how = crate::human::approve_how(body.pr, body.push, body.merge_when_ready);
+    blocking(move || crate::core::approve_changes(&body.changes, how, body.note.as_deref(), false)).await
 }
 
 pub async fn merge_change(Path((id, n)): Path<(String, u32)>) -> Response {
@@ -464,4 +466,92 @@ pub async fn revise_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<
 
 pub async fn drop_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
     blocking(move || crate::core::drop_change(&format!("{id}/{n}"), body.text.as_deref(), false)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessesView {
+    processes: Vec<ProcessRow>,
+    /// Repositories given a process other than `standard`.
+    projects: Vec<ProjectRow>,
+    /// Repositories changes have come from, for picking one.
+    known: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessRow {
+    #[serde(flatten)]
+    process: crate::config::Process,
+    /// `standard` as otto ships it, not redefined in `config.json`.
+    builtin: bool,
+    projects: Vec<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectRow {
+    repo: String,
+    process: String,
+}
+
+/// Every process, who follows each, and the repositories there are to give one.
+pub async fn processes() -> Response {
+    blocking(|| {
+        let config = crate::config::load()?;
+        let processes = config
+            .processes()
+            .into_iter()
+            .map(|p| ProcessRow {
+                builtin: !config.processes.iter().any(|q| q.name.eq_ignore_ascii_case(&p.name)),
+                projects: config.projects_of(&p.name).iter().map(|r| crate::changes::home_relative(r)).collect(),
+                process: p,
+            })
+            .collect();
+        let projects = config.projects.iter().map(|(repo, p)| ProjectRow { repo: crate::changes::home_relative(repo), process: p.clone() }).collect();
+        let mut known: Vec<String> = crate::changes::list(true)?.changes.into_iter().map(|l| l.repo).collect();
+        known.sort();
+        known.dedup();
+        Ok::<_, OttoError>(ProcessesView { processes, projects, known })
+    })
+    .await
+}
+
+/// Make or change a process, as `otto config process` does.
+pub async fn save_process(Json(body): Json<crate::config::Process>) -> Response {
+    blocking(move || crate::config::save_process(body)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct NameBody {
+    name: String,
+}
+
+pub async fn delete_process(Json(body): Json<NameBody>) -> Response {
+    blocking(move || crate::config::delete_process(&body.name).map(|()| serde_json::json!({ "deleted": body.name }))).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectBody {
+    repo: String,
+    /// `None`, or `standard`: the standard process again.
+    process: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSet {
+    repo: String,
+    process: crate::config::Process,
+}
+
+/// Have a repository follow a process, as `otto config project --process` does.
+pub async fn set_project(Json(body): Json<ProjectBody>) -> Response {
+    blocking(move || {
+        let (repo, process) = crate::config::save_project(&body.repo, body.process.as_deref())?;
+        Ok::<_, OttoError>(ProjectSet { repo: crate::changes::home_relative(&repo), process })
+    })
+    .await
 }
