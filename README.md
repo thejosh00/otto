@@ -5,8 +5,9 @@
 Turn anything Claude can do into an agent that works for days, and checks in with you.
 
 otto takes a thing Claude knows how to do — an existing Claude Code skill, a runbook, a prose
-instruction, or just a goal — and keeps it working, without a session that has to stay alive. It asks you when it needs a decision, puts what it finds in your inbox, and
-keeps everything it makes where you can find it again.
+instruction, or just a goal — and keeps it working, without a session that has to stay alive. It
+asks you when it needs a decision, puts what it finds in your inbox, and keeps everything it makes
+where you can find it again.
 
 - Explain one failing eval a day, forever.
 - Carry a ticket from research through a design you approve to filed Jira tickets.
