@@ -1893,7 +1893,8 @@ pub fn post_replies(reference: &str, comment: Option<&str>, no_wake: bool) -> Re
 pub fn answer_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::answer(&r, text)?;
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run) };
+    let told = decided.wake.clone().unwrap_or_else(|| r.run.clone());
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&told) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }
 

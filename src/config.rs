@@ -95,6 +95,11 @@ pub struct Process {
     /// How an approved change lands here, for the lander.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land: Option<String>,
+    /// What the babysitter may change on a pull request without the person, in words it judges by —
+    /// `trivial`, `small`, `anything but security`. `None` is nothing: every change goes to its author
+    /// or the person. The person takes the risk of how it reads them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_changes: Option<String>,
 }
 
 impl Process {
@@ -109,6 +114,7 @@ impl Process {
                  README or CLAUDE.md documents one."
                     .to_string(),
             ),
+            allow_changes: None,
         }
     }
 
@@ -311,7 +317,13 @@ pub fn save_lander(id: Option<&str>) -> Result<Option<String>, OttoError> {
 
 /// Make or redefine a process, by name. Redefining `standard` replaces the built-in one.
 pub fn save_process(process: Process) -> Result<Process, OttoError> {
-    let process = Process { name: process.name.trim().to_string(), start: words(process.start), land: words(process.land), ..process };
+    let process = Process {
+        name: process.name.trim().to_string(),
+        start: words(process.start),
+        land: words(process.land),
+        allow_changes: allowed_changes(process.allow_changes),
+        ..process
+    };
     edit(|object| {
         let list = object.entry("processes").or_insert_with(|| serde_json::json!([]));
         let list = list.as_array_mut().ok_or_else(|| OttoError::usage("\"processes\" in config.json is not a list"))?;
@@ -328,6 +340,11 @@ pub fn save_process(process: Process) -> Result<Process, OttoError> {
 
 fn words(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// What may change without the person, or `None` for nothing — which `none`, said in words, is too.
+pub fn allowed_changes(text: Option<String>) -> Option<String> {
+    words(text).filter(|t| !t.eq_ignore_ascii_case("none"))
 }
 
 /// Remove a process. One a repository follows is refused: give the repository another first. Removing
@@ -482,7 +499,7 @@ mod tests {
     }
 
     fn process(name: &str, mode: LandMode) -> Process {
-        Process { name: name.into(), mode, merge_when_ready: false, start: None, land: None }
+        Process { name: name.into(), mode, merge_when_ready: false, start: None, land: None, allow_changes: None }
     }
 
     #[test]

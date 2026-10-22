@@ -1036,7 +1036,7 @@ function changesView(selected) {
       return;
     }
     if (shownKey !== selected) return; // another was picked while this one loaded
-    pane.replaceChildren(...changeDetail(d, { land, moveOn: () => { moveOn(); refresh(); refreshChrome(); }, version: (k) => drawPane(k) }));
+    pane.replaceChildren(...changeDetail(d, { land, moveOn: () => { moveOn(); refresh(); refreshChrome(); }, version: (k) => drawPane(k), refresh: () => drawPane() }));
   }
 
   // j/k to move, a to land, r to ask for changes — not while typing.
@@ -1096,7 +1096,7 @@ function changeDetail(d, actions) {
       actions.moveOn();
     };
     parts.push(h("div.decide",
-      h("span.label", "Its agent asks"), md(c.ask.question),
+      h("span.label", c.ask.by ? "The babysitter asks — its agent has finished" : "Its agent asks"), md(c.ask.question),
       (c.ask.options || []).length ? h("div.row", c.ask.options.map((o) => h(`button${o === c.ask.default ? ".primary" : ""}`, { onclick: (e) => send(o, e.currentTarget) }, o))) : null,
       words, h("div.row", h("button", { onclick: (e) => send(words.value, e.currentTarget) }, "Answer"))));
   }
@@ -1127,13 +1127,39 @@ function changeDetail(d, actions) {
       }, `Merge ${prName(l)}`),
       h("span.faint", "Approved and passing. The lander merges it, then cleans up."))));
   }
+  // On its pull request: what the babysitter may change without you, said here and changed here.
+  if (c.decision && c.decision.mode === "pr" && !["merged", "closed", "dropped", "landed"].includes(c.state)) {
+    const allowed = c.decision.allowChanges;
+    const box = h("div.row.allow");
+    const show = () => box.replaceChildren(
+      h("span.label", "Changed without you"), h("span", allowed || h("span.faint", "nothing — every change goes to its agent, or to you")),
+      h("button.small.ghost", { onclick: editing }, "Change"));
+    function editing() {
+      const input = h("input", { value: allowed || "", placeholder: "trivial · small · anything but security · none" });
+      box.replaceChildren(h("span.label", "Changed without you"), input,
+        h("button.small.primary", {
+          onclick: async (e) => {
+            const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/allow`, { text: input.value.trim() || "none" }));
+            if (!r) return;
+            toast("Saved — the babysitter goes by it from its next look");
+            actions.refresh();
+          },
+        }, "Save"),
+        h("button.small.ghost", { onclick: show }, "Cancel"));
+      input.focus();
+    }
+    show();
+    parts.push(box);
+  }
   if (c.versions.length > 1) {
+    const by = (x) => x.by === "lander" ? "Rebased by the lander" : x.by === "babysitter" ? `Changed by the babysitter without you — ${x.why || ""}` : "From its agent";
     parts.push(h("div.row.versions", h("span.label", "Version"),
       c.versions.map((x) => h("button.small" + (x.k === v.k ? ".primary" : ""), {
-        title: `${x.by === "lander" ? "Rebased by the lander" : "From its agent"}, ${relative(x.at)}`,
+        title: `${by(x)}, ${relative(x.at)}`,
         onclick: () => actions.version(x.k),
-      }, `v${x.k}${x.by === "lander" ? " (rebased)" : ""}`))));
+      }, `v${x.k}${x.by === "lander" ? " (rebased)" : x.by === "babysitter" ? " (babysitter)" : ""}`))));
   }
+  if (v.by === "babysitter") parts.push(h("p.hint", "The babysitter made this version without you: ", v.why || ""));
   parts.push(md(d.summary));
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
   if (yours) {
@@ -1144,7 +1170,8 @@ function changeDetail(d, actions) {
     parts.push(h("div.decide",
       h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/processes" }, p.name), ": ",
         asPr ? `approving opens a pull request${p.mergeWhenReady ? " that merges itself once approved and passing" : ""}` : `approving lands it on ${c.base}`,
-        p.land ? ` — ${p.land}` : ""),
+        p.land ? ` — ${p.land}` : "",
+        asPr ? `. The babysitter changes ${p.allowChanges ? `what is ${p.allowChanges}` : "nothing"} on it without you.` : ""),
       h("div.row",
         h("button.primary.land", {
           disabled: !d.lander,
@@ -2563,7 +2590,10 @@ function processesView() {
     const mode = h("select", [["push", "Pushed to its base branch"], ["pr", "Opened as a pull request"]].map(([v, t]) => h("option", { value: v, selected: (p ? p.mode : "push") === v }, t)));
     const whenReady = h("input", { type: "checkbox", checked: !!(p && p.mergeWhenReady) });
     const whenReadyBox = h("label.check", whenReady, "Merge it once it is approved and passing, without asking again");
-    const sync = () => { whenReadyBox.hidden = mode.value !== "pr"; };
+    const allowText = h("input", { value: p && p.allowChanges ? p.allowChanges : "", placeholder: "trivial · small · anything but security — empty is nothing" });
+    const allowBox = h("label.field", h("span", "Changed on its pull request without you"), allowText,
+      h("small", "For the babysitter, in words it judges by: what a reviewer or CI asks that it may change itself. It reads them as it will; the rest goes to the change's agent, or to you."));
+    const sync = () => { whenReadyBox.hidden = mode.value !== "pr"; allowBox.hidden = mode.value !== "pr"; };
     mode.addEventListener("change", sync);
     sync();
     const start = h("textarea", { rows: 2, placeholder: "A worktree of its own on a fresh branch from the base" }, p && p.start ? p.start : "");
@@ -2574,6 +2604,7 @@ function processesView() {
       h("label.field", h("span", "Approving a change"), mode, h("small", "otto acts on this: it decides what the lander does next.")), whenReadyBox,
       h("label.field", h("span", "Starting a change"), start, h("small", "For the agent that makes it: a branch or a worktree, a ticket first.")),
       h("label.field", h("span", "Landing a change"), landText, h("small", "For the lander: a ship script, a merge method, anything to check first.")),
+      allowBox,
       h("div.row", { style: "margin-top:12px" },
         h("button.primary", {
           onclick: (e) => busy(e.currentTarget, async () => {
@@ -2581,6 +2612,7 @@ function processesView() {
             const saved = await api("/processes", {
               name: name.value.trim(), mode: mode.value, mergeWhenReady: mode.value === "pr" && whenReady.checked,
               start: start.value.trim() || null, land: landText.value.trim() || null,
+              allowChanges: mode.value === "pr" ? (allowText.value.trim() || null) : null,
             });
             toast(`Saved ${saved.name}`);
             editor.replaceChildren();
@@ -2608,6 +2640,7 @@ function processesView() {
         h("dt", "Approving"), h("dd", modeWords(p)),
         h("dt", "Starting"), h("dd", p.start || h("span.faint", "as the agent sees fit")),
         h("dt", "Landing"), h("dd", p.land || h("span.faint", "as the repository's docs say")),
+        ...(p.mode === "pr" ? [h("dt", "Without you"), h("dd", p.allowChanges || h("span.faint", "nothing — the babysitter changes no code itself"))] : []),
         h("dt", "Followed by"), h("dd", p.name === "standard" ? "every repository not given another"
           : p.projects.length ? p.projects.join(", ") : h("span.faint", "no repository yet"))))));
   }

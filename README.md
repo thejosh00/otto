@@ -125,7 +125,9 @@ otto config project ~/work/svc --process reviewed
 
 As a pull request, the lander opens it, and another of otto's agents, the **babysitter**, watches it
 until it merges or closes. What reviewers ask, and CI failing, goes to the run that wrote the change,
-which changes the code and hands it back again; the lander pushes that to the pull request. A reply to a reviewer
+which changes the code and hands it back again; the lander pushes that to the pull request. Or the
+babysitter fixes it itself, when it's within what you said it may change without you — `trivial`,
+`small`, `anything but security`, in your words, per repository's process (`--allow-changes`). A reply to a reviewer
 is drafted for you to post with a click, and once it's approved and passing it's yours to merge — or
 it merges itself, if you said so. The Changes page shows every change by whose move it is — yours,
 an agent's, reviewers' or CI's — and says when one is stuck.

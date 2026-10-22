@@ -454,6 +454,10 @@ pub async fn post_replies(Path((id, n)): Path<(String, u32)>, Json(body): Json<P
     blocking(move || crate::core::post_replies(&format!("{id}/{n}"), body.comment.as_deref(), false)).await
 }
 
+pub async fn allow_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
+    blocking(move || crate::changes::allow(&crate::changes::ChangeRef::parse(&format!("{id}/{n}"))?, body.text.as_deref())).await
+}
+
 pub async fn answer_change(Path((id, n)): Path<(String, u32)>, Json(body): Json<ChangeWordsBody>) -> Response {
     blocking(move || crate::core::answer_change(&format!("{id}/{n}"), body.text.as_deref().unwrap_or(""), false)).await
 }

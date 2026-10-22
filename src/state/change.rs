@@ -19,6 +19,9 @@ pub enum ChangeCommand {
     Due(DueArgs),
     /// The babysitter: every open pull request that has moved since it last looked
     Watch(WatchArgs),
+    /// The babysitter: it changed the code on a pull request itself, as the person allowed — the
+    /// lander pushes it
+    Fix(FixArgs),
     /// The lander: take an approved change in hand, and print what lands
     Claim(LanderArgs),
     /// The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
@@ -61,13 +64,36 @@ pub struct ReplyArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct AskArgs {
-    /// The run: its number or name (a unique prefix of the name will do)
+    /// The run that wrote it: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// The change's number
     pub change: u32,
     /// The question, written to be answered cold: where it stands, the decision, options under `## Options`
     #[arg(long = "question-file", value_name = "PATH", required = true)]
     pub question_file: String,
+    /// The babysitter asking, rather than its author: the answer comes to it
+    #[arg(long, value_name = "BABYSITTER")]
+    pub by: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct FixArgs {
+    /// The babysitter run: its number or name
+    pub babysitter: String,
+    /// The change: <run>/<number>
+    pub change: String,
+    /// The commit with the fix, on top of what its pull request has
+    #[arg(long, required = true)]
+    pub head: String,
+    /// What it changed and why, for the person reading the change
+    #[arg(long = "summary-file", value_name = "PATH", required = true)]
+    pub summary_file: String,
+    /// What the tests said, in a line
+    #[arg(long)]
+    pub tests: Option<String>,
+    /// Why this is within what the person allowed: the words you went by, or their answer
+    #[arg(long, required = true)]
+    pub why: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -274,6 +300,15 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
         }
         ChangeCommand::Due(a) => due(a),
         ChangeCommand::Watch(a) => watch(a),
+        ChangeCommand::Fix(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            let given = std::path::Path::new(&a.summary_file);
+            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&crate::paths::resolve_run_id(&a.babysitter)?)?.join(given) };
+            let summary = std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {}: {e}", a.summary_file)))?;
+            let c = changes::fix(&a.babysitter, &r, &changes::Fix { head: &a.head, summary: &summary, tests: a.tests.as_deref(), why: &a.why })?;
+            println!("{} v{} goes to its pull request: the lander pushes it, and its author is told", r.display(), c.latest().k);
+            Ok(())
+        }
         ChangeCommand::Reply(a) => {
             let id = crate::paths::resolve_run_id(&a.id)?;
             changes::reply_draft(&ChangeRef { run: id, n: a.change }, &a.comment, &a.text)?;
@@ -283,9 +318,14 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
         ChangeCommand::Ask(a) => {
             let id = crate::paths::resolve_run_id(&a.id)?;
             let given = std::path::Path::new(&a.question_file);
-            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
+            // Relative to whoever asks: the babysitter keeps its question with its own artifacts.
+            let asker = match &a.by {
+                Some(by) => crate::paths::resolve_run_id(by)?,
+                None => id.clone(),
+            };
+            let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&asker)?.join(given) };
             let question = std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {}: {e}", a.question_file)))?;
-            let c = changes::ask(&ChangeRef { run: id, n: a.change }, &question)?;
+            let c = changes::ask_as(a.by.as_deref(), &ChangeRef { run: id, n: a.change }, &question)?;
             println!(
                 "asked about change {}{} — carry on with other work; the answer reaches you as a note",
                 c.n,

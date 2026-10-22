@@ -106,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/changes/{id}/{n}/merge", post(handlers::merge_change))
         .route("/changes/{id}/{n}/post", post(handlers::post_replies))
         .route("/changes/{id}/{n}/answer", post(handlers::answer_change))
+        .route("/changes/{id}/{n}/allow", post(handlers::allow_change))
         .route("/health", get(handlers::health))
         .route("/runs/{id}/logs", get(handlers::logs))
         .route("/runs/{id}/logs/stream", get(live::logs_stream))

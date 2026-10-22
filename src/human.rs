@@ -469,6 +469,9 @@ pub enum ChangesCommand {
     Post(ChangesPostArgs),
     /// Answer what a change's author asked you about it
     Answer(ChangesAnswerArgs),
+    /// What the babysitter may change on a change's pull request without you, in words it judges by —
+    /// "trivial", "small", "anything but security" — or "none"
+    Allow(ChangesAllowArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -484,6 +487,14 @@ pub struct ChangesPostArgs {
     /// Only the reply to this comment. Omitted, every reply drafted for it
     #[arg(long)]
     pub comment: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct ChangesAllowArgs {
+    /// The change: <run>/<number>
+    pub change: String,
+    /// What may change without you; "none" for nothing
+    pub words: String,
 }
 
 #[derive(clap::Args, Debug)]
@@ -582,6 +593,16 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
             let out = crate::core::merge_change(&a.change, false)?;
             println!("{}: its pull request is yours to merge, and you said merge it", out.decided[0].reference);
             print_woke(&out, "the lander merges it when it next wakes");
+            return Ok(());
+        }
+        Some(ChangesCommand::Allow(a)) => {
+            let d = crate::changes::allow(&crate::changes::ChangeRef::parse(&a.change)?, Some(&a.words))?;
+            let allowed = crate::config::allowed_changes(Some(a.words.clone()));
+            println!(
+                "{}: the babysitter changes {} on its pull request without you",
+                d.reference,
+                allowed.map(|w| format!("what is {w}")).unwrap_or_else(|| "nothing".to_string())
+            );
             return Ok(());
         }
         Some(ChangesCommand::Post(a)) => {
@@ -859,8 +880,12 @@ pub struct ConfigProcessArgs {
     /// How an approved change lands, in words, for the lander: a ship script, a merge method
     #[arg(long)]
     pub land: Option<String>,
+    /// With --mode pr: what the babysitter may change on a pull request without you, in words it judges by —
+    /// "trivial", "small", "anything but security" — or "none"
+    #[arg(long, value_name = "WORDS")]
+    pub allow_changes: Option<String>,
     /// Remove it. One a repository follows is refused
-    #[arg(long, conflicts_with_all = ["mode", "merge_when_ready", "start", "land"])]
+    #[arg(long, conflicts_with_all = ["mode", "merge_when_ready", "start", "land", "allow_changes"])]
     pub delete: bool,
     /// Print it as JSON
     #[arg(long)]
@@ -887,6 +912,9 @@ fn print_process(p: &crate::config::Process, followers: &[String]) {
     }
     if let Some(land) = &p.land {
         println!("  landing one:  {land}");
+    }
+    if p.mode == crate::changes::LandMode::Pr {
+        println!("  on its pull request, changed without you: {}", p.allow_changes.as_deref().unwrap_or("nothing"));
     }
     if !followers.is_empty() {
         println!("  followed by:  {}", followers.iter().map(|r| crate::changes::home_relative(r)).collect::<Vec<_>>().join(", "));
@@ -915,7 +943,7 @@ pub fn config_process(a: ConfigProcessArgs) -> Result<(), OttoError> {
         println!("removed process \"{}\"", name.trim());
         return Ok(());
     }
-    let changing = a.mode.is_some() || a.merge_when_ready.is_some() || a.start.is_some() || a.land.is_some();
+    let changing = a.mode.is_some() || a.merge_when_ready.is_some() || a.start.is_some() || a.land.is_some() || a.allow_changes.is_some();
     if !changing {
         let p = config.process(&name)?;
         if a.json {
@@ -941,6 +969,7 @@ pub fn config_process(a: ConfigProcessArgs) -> Result<(), OttoError> {
         merge_when_ready,
         start: a.start.or(existing.as_ref().and_then(|p| p.start.clone())),
         land: a.land.or(existing.as_ref().and_then(|p| p.land.clone())),
+        allow_changes: a.allow_changes.or(existing.as_ref().and_then(|p| p.allow_changes.clone())),
     })?;
     println!("{} process \"{}\"", if existing.is_some() { "changed" } else { "made" }, saved.name);
     print_process(&saved, &crate::config::load()?.projects_of(&saved.name));

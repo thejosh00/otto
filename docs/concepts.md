@@ -393,7 +393,10 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2 --pr` for one
   change, has the lander open one, and the **babysitter** watch it until it merges or closes. What a reviewer asks, and CI failing, goes to the change's author as a note:
   it changes the code and submits again, and the lander pushes that to the pull request without asking
-  you again — the pull request is where it is reviewed. A question gets a reply the author drafts and
+  you again — the pull request is where it is reviewed. How much the babysitter may change itself is
+  yours to say, in words, per process and per pull request (`allowChanges`: `trivial`, `small`,
+  `anything but security`; nothing until you say): within them it fixes the code, and the lander
+  pushes that; beyond them it goes to the author, or, the author finished, to you as a question. A question gets a reply the author drafts and
   you post with a click (`otto changes post`). Approved and passing, it is yours to merge (`otto
   changes merge`), or GitHub merges it itself when its process, or `--merge-when-ready`, says so. There is no run per pull
   request: the babysitter's check script asks `gh` about every open one in one look, free when none moved.

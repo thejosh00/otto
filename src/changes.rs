@@ -186,8 +186,12 @@ pub struct ChangeVersion {
     /// `git patch-id --stable` of the whole patch: the same after a clean rebase.
     pub patch_id: String,
     pub at: Timestamp,
-    /// `author`, or `lander` for a rebase the lander made.
+    /// `author`; `lander` for a rebase the lander made; `babysitter` for a fix it made on the pull
+    /// request without the person (`fix`).
     pub by: String,
+    /// The babysitter's word for why its fix is within what the person allowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<u32>,
     /// The patch, relative to the run directory; `None` when it was too big to keep.
@@ -251,6 +255,11 @@ pub struct Decision {
     /// The person chose how this one lands, rather than its process.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub overridden: bool,
+    /// As a pull request: what the babysitter may change on it without the person, in their words
+    /// (`crate::config::Process::allow_changes`). From its process when approved; the person can
+    /// change it after (`allow`). `None` is nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow_changes: Option<String>,
 }
 
 /// How the person said a change lands, instead of as its process says.
@@ -316,6 +325,9 @@ pub struct Reply {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ask {
+    /// The babysitter, by run id, when it asked rather than the change's author: the answer goes to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
     pub question: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
@@ -758,6 +770,16 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 _ => {}
             }
             let latest = c.latest();
+            if c.pr.is_some() && latest.by == "babysitter" && latest.sha != sha && !ok(&repo, &["merge-base", "--is-ancestor", &latest.sha, &sha]) {
+                return Err(OttoError::conflict(format!(
+                    "the babysitter changed change {} on its pull request at {} (v{}), and {branch} doesn't have that — it would \
+                     undo it. Bring the branch to it first (`git merge --ff-only {}` in its worktree), then submit again",
+                    c.n,
+                    short_sha(&latest.sha),
+                    latest.k,
+                    latest.sha
+                )));
+            }
             if latest.sha == sha && latest.base_sha == snap.base_sha {
                 let c = &mut index.changes[i];
                 c.title = title.clone();
@@ -797,6 +819,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             stat: snap.stat.clone(),
             summary: summary_rel,
             tests: tests.clone(),
+            why: None,
         };
         let lines = version.stat.add + version.stat.del;
         let (c, was) = match existing {
@@ -957,6 +980,9 @@ pub struct Decided {
     /// How it lands, for an approval: `to land on main`, `as a pull request onto main`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub how: Option<String>,
+    /// The run told, when it isn't the change's author: the babysitter, for what it asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<String>,
 }
 
 /// Approve the latest version of each change, to land as its repository's process says — or as
@@ -994,6 +1020,7 @@ pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Resu
                 process: Some(process.name.clone()),
                 land: process.land.clone(),
                 overridden,
+                allow_changes: if chosen.mode == LandMode::Pr { process.allow_changes.clone() } else { None },
             });
             c.enter(ChangeState::Approved);
             let how = match (chosen.mode, chosen.merge_when_ready) {
@@ -1005,7 +1032,7 @@ pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Resu
             let what = format!("approved v{} {how}{by}{}", v.k, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
             c.moment("you", &what);
             moved(path, c, "person", &what)?;
-            Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: Some(how) })
+            Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: Some(how), wake: None })
         })?);
     }
     Ok(out)
@@ -1027,7 +1054,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
              `otto state change submit` — so it comes back to them as the next version."
         ))?;
         moved(path, c, "person", &format!("asked for changes: {text}"))?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None })
     })
 }
 
@@ -1050,7 +1077,7 @@ pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoErr
         };
         let note = tell_author(path, state, c, &body)?;
         moved(path, c, "person", &what)?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None })
     })
 }
 
@@ -1119,6 +1146,8 @@ pub struct Due {
     /// follows them before anything the repository's docs say.
     pub process: Option<String>,
     pub land: Option<String>,
+    /// As a pull request: what the babysitter may change on it without the person.
+    pub allow_changes: Option<String>,
     pub approved_at: Option<Timestamp>,
     /// What its author said about it, absolute: the commit message and PR body come from here.
     pub summary: String,
@@ -1168,6 +1197,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
         process: d.and_then(|d| d.process.clone()),
         land: d.and_then(|d| d.land.clone()),
+        allow_changes: d.and_then(|d| d.allow_changes.clone()),
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
@@ -1229,6 +1259,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
                 process: d.and_then(|d| d.process.clone()),
                 land: d.and_then(|d| d.land.clone()),
+                allow_changes: d.and_then(|d| d.allow_changes.clone()),
                 approved_at: d.map(|d| d.at),
                 summary: dir.join(&c.latest().summary).display().to_string(),
                 landed_sha: None,
@@ -1434,6 +1465,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             stat: snap.stat,
             summary,
             tests,
+            why: None,
         });
         c.decision = None;
         c.enter(ChangeState::Review);
@@ -1603,6 +1635,123 @@ pub fn pr_seen(babysitter: &str, r: &ChangeRef, seen: &Seen) -> Result<Change, O
     })
 }
 
+/// What the babysitter may change on a change's pull request without the person: their words, or
+/// (`None`, or `none`) nothing. Its process said, when it was approved; this is the person changing it.
+pub fn allow(r: &ChangeRef, words: Option<&str>) -> Result<Decided, OttoError> {
+    let words = crate::config::allowed_changes(check_say(words, "what may change")?);
+    with_change(r, |path, _state, c| {
+        if c.state.is_over() || c.decision.as_ref().is_none_or(|d| d.mode != LandMode::Pr) {
+            return Err(OttoError::conflict(format!(
+                "change {} isn't approved as a pull request: what may change without you is for one",
+                r.display()
+            )));
+        }
+        c.decision.as_mut().expect("checked").allow_changes = words.clone();
+        let what = match &words {
+            Some(w) => format!("let the babysitter change it without asking: {w}"),
+            None => "let the babysitter change nothing without asking".to_string(),
+        };
+        c.moment("you", &what);
+        moved(path, c, "person", &what)?;
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None, wake: None })
+    })
+}
+
+/// What the babysitter's fix is.
+pub struct Fix<'a> {
+    /// The commit, on top of what its pull request has.
+    pub head: &'a str,
+    /// What it changed and why, for the person reading the change.
+    pub summary: &'a str,
+    pub tests: Option<&'a str>,
+    /// Why this is within what the person allowed: the words it went by, or their answer.
+    pub why: &'a str,
+}
+
+/// The babysitter changed the code on a change's pull request itself, as the person allowed — its
+/// process's `allowChanges`, or their answer to what it asked. It goes to the pull request without
+/// asking again, like its author's next version: the lander pushes it. otto doesn't judge the size of
+/// it; the words do, and the person takes the risk of how they read.
+pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError> {
+    let babysitter = require_babysitter(babysitter)?;
+    let summary = f.summary.trim();
+    if summary.is_empty() || summary.len() > SUMMARY_MAX_BYTES {
+        return Err(OttoError::usage(format!("--summary-file: what it changed and why, 1 to {SUMMARY_MAX_BYTES} bytes")));
+    }
+    let why = check_say(Some(f.why), "--why")?.ok_or_else(|| OttoError::usage("--why: why this is within what the person allowed"))?;
+    let tests = f.tests.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "fixed")?;
+        let Some(d) = c.decision.as_ref().filter(|_| c.pr.is_some()) else {
+            return Err(OttoError::conflict(format!("change {} has no pull request: its author changes it", r.display())));
+        };
+        let answered = c.ask.as_ref().is_some_and(|a| a.by.as_deref() == Some(babysitter.as_str()) && a.answered_at.is_some() && a.at.dt() >= c.latest().at.dt());
+        if d.allow_changes.is_none() && !answered {
+            return Err(OttoError::conflict(format!(
+                "the person allows no change to {} without them — relay it to its author, or, its author finished, ask them (`otto state \
+                 change ask --by`)",
+                r.display()
+            )));
+        }
+        let repo = PathBuf::from(&c.repo);
+        let sha = rev(&repo, f.head)?;
+        let latest = c.latest().clone();
+        if !ok(&repo, &["merge-base", "--is-ancestor", &latest.sha, &sha]) {
+            return Err(OttoError::usage(format!("{} isn't on top of v{} ({}), which its pull request has: start from that", short_sha(&sha), latest.k, short_sha(&latest.sha))));
+        }
+        if sha == latest.sha {
+            return Err(OttoError::usage("that is the pull request's commit already: commit the fix on top of it"));
+        }
+        let snap = snapshot(&repo, &base_ref(&repo, &c.base), &sha)?;
+        let k = latest.k + 1;
+        let dir = c.dir();
+        std::fs::create_dir_all(path.join(&dir))?;
+        let patch = if snap.patch.len() > PATCH_MAX_BYTES {
+            None
+        } else {
+            let rel = format!("{dir}/v{k}.patch");
+            crate::state::write_atomic(&path.join(&rel), &String::from_utf8_lossy(&snap.patch))?;
+            Some(rel)
+        };
+        let summary_rel = format!("{dir}/v{k}.summary.md");
+        crate::state::write_atomic(&path.join(&summary_rel), &format!("{summary}\n"))?;
+        c.versions.push(ChangeVersion {
+            k,
+            sha: sha.clone(),
+            base_sha: snap.base_sha,
+            patch_id: snap.patch_id.clone(),
+            at: Timestamp::now(),
+            by: "babysitter".into(),
+            wake: None,
+            patch,
+            patch_bytes: snap.patch.len() as u64,
+            commits: snap.commits,
+            stat: snap.stat,
+            summary: summary_rel,
+            tests,
+            why: Some(why.clone()),
+        });
+        let d = c.decision.as_mut().expect("checked");
+        d.version = k;
+        d.sha = sha.clone();
+        d.patch_id = snap.patch_id;
+        let allowed = d.allow_changes.clone();
+        c.enter(ChangeState::Approved);
+        let what = format!("v{k}: changed it on its pull request without asking ({}): {why}", allowed.as_deref().map(|a| format!("allowed: {a}")).unwrap_or_else(|| "as you answered".to_string()));
+        c.moment("babysitter", &what);
+        let worktree = c.worktree.clone().unwrap_or_else(|| c.repo.clone());
+        let body = format!(
+            "The babysitter changed it on its pull request as v{k}, at {}, without the person — {why}. What it did:\n\n{}\n\nBefore \
+             you change it again, bring your branch to that commit: `git -C {worktree} merge --ff-only {sha}`. A version without it is refused.",
+            short_sha(&sha),
+            first_line(summary)
+        );
+        tell_author(path, state, c, &body)?;
+        moved(path, c, &babysitter, &what)?;
+        Ok(c.clone())
+    })
+}
+
 /// Hand what a reviewer, or CI, asked of its pull request to the change's author, in their words.
 /// The author changes the code and submits again; the lander pushes that to the pull request.
 pub fn relay(by: &str, r: &ChangeRef, who: &str, text: &str) -> Result<Change, OttoError> {
@@ -1712,7 +1861,7 @@ pub fn merge(r: &ChangeRef) -> Result<Decided, OttoError> {
         d.merge_asked = Some(Timestamp::now());
         c.moment("you", "said to merge its pull request");
         moved(path, c, "person", "said to merge its pull request")?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None, wake: None })
     })
 }
 
@@ -1730,7 +1879,7 @@ pub fn post(r: &ChangeRef, comment: Option<&str>) -> Result<Decided, OttoError> 
         let what = format!("said to post {n} repl{}", if n == 1 { "y" } else { "ies" });
         c.moment("you", &what);
         moved(path, c, "person", &what)?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None })
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None, wake: None })
     })
 }
 
@@ -1747,11 +1896,26 @@ pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
         ask.answer = Some(answer.clone());
         ask.answered_at = Some(Timestamp::now());
         let question = crate::gate::title(&ask.question, 120);
-        c.enter(ChangeState::Revising);
+        let babysitter = ask.by.clone();
+        let said = format!("You asked: {question}\n\nThe person answered:\n\n{answer}");
         c.moment("you", format!("answered: {}", first_line(&answer)));
-        let note = tell_author(path, state, c, &format!("You asked: {question}\n\nThe person answered:\n\n{answer}"))?;
         moved(path, c, "person", &format!("answered: {}", first_line(&answer)))?;
-        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None })
+        let Some(babysitter) = babysitter else {
+            c.enter(ChangeState::Revising);
+            let note = tell_author(path, state, c, &said)?;
+            return Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None });
+        };
+        // Back on its pull request, the babysitter's to act on.
+        c.enter(ChangeState::PrOpen);
+        Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: Some(note_text(c, &said)), how: None, wake: Some(babysitter) })
+    })
+    .and_then(|mut d| {
+        // Its note is left once the change is written, outside its run's lock.
+        if let Some(babysitter) = &d.wake {
+            let text = d.note.take().unwrap_or_default();
+            d.note = Some(crate::notes::add(babysitter, &format!("{text}\n\nThe change is {}.", d.reference), false)?.id);
+        }
+        Ok(d)
     })
 }
 
@@ -1781,8 +1945,10 @@ pub fn reply_draft(r: &ChangeRef, comment: &str, text: &str) -> Result<Change, O
 }
 
 /// Its author asks the person something about it, written like a gate's question — answerable
-/// cold, options under `## Options` — without stopping its run.
-pub fn ask(r: &ChangeRef, question: &str) -> Result<Change, OttoError> {
+/// cold, options under `## Options` — without stopping its run. Or (`by`) the babysitter asks, for a
+/// pull request whose author has finished, and the answer goes to it instead.
+pub fn ask_as(by: Option<&str>, r: &ChangeRef, question: &str) -> Result<Change, OttoError> {
+    let by = by.map(require_babysitter).transpose()?;
     let question = question.trim();
     if question.is_empty() || question.len() > crate::notes::NOTE_MAX_BYTES {
         return Err(OttoError::usage(format!("a question about a change is 1 to {} bytes", crate::notes::NOTE_MAX_BYTES)));
@@ -1793,11 +1959,12 @@ pub fn ask(r: &ChangeRef, question: &str) -> Result<Change, OttoError> {
         if c.state.is_over() || c.state == ChangeState::Landing {
             return Err(OttoError::conflict(format!("change {} is {}: there is nothing to decide about it", r.display(), c.state.as_str())));
         }
-        c.ask = Some(Ask { question: question.to_string(), options: options.clone(), default: default.clone(), at: Timestamp::now(), answer: None, answered_at: None });
+        c.ask = Some(Ask { by: by.clone(), question: question.to_string(), options: options.clone(), default: default.clone(), at: Timestamp::now(), answer: None, answered_at: None });
         c.enter(ChangeState::NeedsYou);
         let what = format!("asked: {}", crate::gate::title(question, 120));
-        c.moment("author", &what);
-        moved(path, c, "author", &what)?;
+        let who = if by.is_some() { "babysitter" } else { "author" };
+        c.moment(who, &what);
+        moved(path, c, by.as_deref().unwrap_or(who), &what)?;
         Ok(c.clone())
     })
 }
@@ -2280,6 +2447,7 @@ mod tests {
             merge_when_ready: true,
             start: None,
             land: Some("squash-merge it".into()),
+            allow_changes: Some("typos and test fixes".into()),
         })
         .unwrap();
         // Any checkout of it names the repository: here, its worktree.
@@ -2525,6 +2693,71 @@ mod tests {
         assert!(note_texts("c-pr").last().unwrap().contains("merged"));
     }
 
+    #[test]
+    fn the_babysitter_changes_a_pull_request_only_as_the_person_allows() {
+        let _h = TempHome::new();
+        test_init("c-fx", "a goal").unwrap();
+        test_init("c-fxl", "land changes").unwrap();
+        test_init("c-fxb", "look after pull requests").unwrap();
+        set_lander("c-fxl");
+        set_babysitter("c-fxb");
+        let repo = repo();
+        submit("c-fx", &submit_fix(&repo, "Shout")).unwrap();
+        approve(&[r("c-fx", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        assert_eq!(change("c-fx", 1).decision.unwrap().allow_changes, None, "standard allows nothing");
+        let v1 = claim("c-fxl", &r("c-fx", 1)).unwrap().sha.unwrap();
+        pr_pushed("c-fxl", &r("c-fx", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
+
+        // The babysitter's fix, in a worktree of its own on top of what the pull request has.
+        let own = repo.main.parent().unwrap().join("babysitter");
+        sh(&repo.main, &["worktree", "add", "--quiet", "--detach", own.to_str().unwrap(), &v1]);
+        std::fs::write(own.join("b.txt"), "alpha!\n").unwrap();
+        sh(&own, &["commit", "--quiet", "-am", "bang"]);
+        let fixed = sh(&own, &["rev-parse", "HEAD"]);
+        let f = Fix { head: &fixed, summary: "Adds the bang sam asked for.", tests: Some("1 passed"), why: "a one-character fix is a typo" };
+        assert!(fix("c-fxl", &r("c-fx", 1), &f).unwrap_err().message.contains("isn't the babysitter"));
+        assert!(fix("c-fxb", &r("c-fx", 1), &f).unwrap_err().message.contains("allows no change"), "nothing allowed, nothing fixed");
+        assert!(allow(&r("c-fx", 1), Some("typos")).is_ok());
+        let c = fix("c-fxb", &r("c-fx", 1), &f).unwrap();
+        assert_eq!((c.state, c.latest().k, c.latest().by.as_str()), (ChangeState::Approved, 2, "babysitter"));
+        assert_eq!(c.decision.as_ref().unwrap().sha, fixed, "what goes to the pull request is the fix");
+        assert_eq!(due().unwrap()[0].todo, "update its pull request");
+        assert!(note_texts("c-fx").last().unwrap().contains(&format!("merge --ff-only {fixed}")), "its author is told how to keep it");
+        claim("c-fxl", &r("c-fx", 1)).unwrap();
+        pr_pushed("c-fxl", &r("c-fx", 1), &fixed, None, false).unwrap();
+
+        // Its author's next version keeps the fix, or is refused.
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        assert!(submit("c-fx", &submit_fix(&repo, "Shout")).unwrap_err().message.contains("would"), "a version without the fix undoes it");
+        sh(&repo.wt, &["reset", "--quiet", "--hard", &fixed]);
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        assert_eq!(submit("c-fx", &submit_fix(&repo, "Shout")).unwrap().version, 3);
+        let v3 = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        claim("c-fxl", &r("c-fx", 1)).unwrap();
+        pr_pushed("c-fxl", &r("c-fx", 1), &v3, None, false).unwrap();
+
+        // Its author finished, and nothing is allowed: the babysitter asks the person, and hears back.
+        allow(&r("c-fx", 1), Some("none")).unwrap();
+        crate::state::transaction("c-fx", |_p, s| {
+            s.status = crate::state::Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        let c = ask_as(Some("c-fxb"), &r("c-fx", 1), "Sam wants the greeting in French.\n\n## Options\n- **Do it**\n- **Leave it**\n").unwrap();
+        assert_eq!((c.state, c.ask.as_ref().unwrap().by.as_deref()), (ChangeState::NeedsYou, Some("c-fxb")));
+        let d = answer(&r("c-fx", 1), "do it").unwrap();
+        assert_eq!((d.state, d.wake.as_deref()), (ChangeState::PrOpen, Some("c-fxb")));
+        assert!(note_texts("c-fxb").last().unwrap().contains("Do it"), "the answer goes to the babysitter");
+        sh(&own, &["checkout", "--quiet", "--detach", &v3]);
+        std::fs::write(own.join("b.txt"), "alpha, en français!\n").unwrap();
+        sh(&own, &["commit", "--quiet", "-am", "french"]);
+        let french = sh(&own, &["rev-parse", "HEAD"]);
+        let f = Fix { head: &french, summary: "In French, as Sam asked.", tests: None, why: "the person said do it" };
+        assert_eq!(fix("c-fxb", &r("c-fx", 1), &f).unwrap().latest().k, 4, "the person's answer allows it");
+    }
+
     /// A commit that isn't on the change's branch: main's own.
     fn repo_head(repo: &Repo) -> String {
         sh(&repo.main, &["rev-parse", "main"])
@@ -2536,7 +2769,7 @@ mod tests {
         test_init("c-ask", "a goal").unwrap();
         let repo = repo();
         submit("c-ask", &submit_fix(&repo, "Shout")).unwrap();
-        let c = ask(&r("c-ask", 1), "Sam wants the flag renamed, which breaks two callers.\n\n## Options\n- **Rename** *(default)* — and fix both callers\n- **Keep** — reply why\n").unwrap();
+        let c = ask_as(None, &r("c-ask", 1), "Sam wants the flag renamed, which breaks two callers.\n\n## Options\n- **Rename** *(default)* — and fix both callers\n- **Keep** — reply why\n").unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::NeedsYou, Move::You));
         assert_eq!(c.ask.as_ref().unwrap().options, vec!["Rename", "Keep"]);
         assert!(submit("c-ask", &submit_fix(&repo, "Shout")).unwrap_err().message.contains("answer"));

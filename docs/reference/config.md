@@ -75,18 +75,23 @@ none, the built-in `standard` is the only one. A process named `standard` replac
 | Field | Required | Meaning |
 |---|---|---|
 | `name` | yes | What `otto config project --process` takes, ignoring case |
-| `mode` | yes | What approving a change does: `push` (lands it on its base) or `pr` (opens a pull request the lander keeps moving) |
+| `mode` | yes | What approving a change does: `push` (lands it on its base) or `pr` (opens a pull request the babysitter watches) |
 | `mergeWhenReady` | no | With `pr`: GitHub merges it once it is approved and passing, without asking again |
 | `start` | no | How a change begins, in words, for the run that makes it: a worktree or a branch, a ticket first |
 | `land` | no | How an approved change lands, in words, for the lander: a ship script, a merge method |
+| `allowChanges` | no | With `pr`: what the babysitter may change on the pull request without you, in words it judges by — `trivial`, `small`, `anything but security`. Absent, or `none`: nothing |
 
-`mode` and `mergeWhenReady` are otto's to act on; `start` and `land` are read by the agents. The
+`mode` and `mergeWhenReady` are otto's to act on; `start`, `land` and `allowChanges` are read by the
+agents. How the babysitter reads `allowChanges` is its judgement, and the risk of it is yours: a
+bigger change than you meant can reach the pull request without you. Approving a change copies it
+onto the change, where `otto changes allow` (or the change's page) changes it for that one. The
 built-in `standard` pushes to the base, starting each change in a worktree of its own.
 
 ```bash
 otto config process                                       # every process, and who follows it
 otto config process reviewed --mode pr --merge-when-ready # make one, or change one
 otto config process reviewed --land "Squash-merged"       # change only what it says about landing
+otto config process reviewed --allow-changes "trivial"    # what the babysitter fixes without you
 otto config process reviewed --delete                     # one a repository follows is refused
 ```
 

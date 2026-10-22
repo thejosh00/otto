@@ -262,6 +262,7 @@ Commands:
   merge    Merge a change's pull request, now it is approved and passing — the lander does it
   post     Post the replies to reviewers a change's author drafted — the lander does it
   answer   Answer what a change's author asked you about it
+  allow    What the babysitter may change on a change's pull request without you, in words it judges by — "trivial", "small", "anything but security" — or "none"
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -428,6 +429,25 @@ Options:
       --text <TEXT>
           Your answer: one of its options, or what you'd tell it in your own words
 
+  -h, --help
+          Print help
+```
+
+### `otto changes allow`
+
+```text
+What the babysitter may change on a change's pull request without you, in words it judges by — "trivial", "small", "anything but security" — or "none"
+
+Usage: otto changes allow <CHANGE> <WORDS>
+
+Arguments:
+  <CHANGE>
+          The change: <run>/<number>
+
+  <WORDS>
+          What may change without you; "none" for nothing
+
+Options:
   -h, --help
           Print help
 ```
@@ -1104,6 +1124,9 @@ Options:
       --land <LAND>
           How an approved change lands, in words, for the lander: a ship script, a merge method
 
+      --allow-changes <WORDS>
+          With --mode pr: what the babysitter may change on a pull request without you, in words it judges by — "trivial", "small", "anything but security" — or "none"
+
       --delete
           Remove it. One a repository follows is refused
 
@@ -1657,6 +1680,7 @@ Commands:
   ask        Ask the person something about a change — a judgement that is theirs — without stopping the run
   due        The lander: what waits on it, across every run — approved changes to land, then cleaning up
   watch      The babysitter: every open pull request that has moved since it last looked
+  fix        The babysitter: it changed the code on a pull request itself, as the person allowed — the lander pushes it
   claim      The lander: take an approved change in hand, and print what lands
   check      The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
   landed     The lander: it is on its base branch now. otto looks, and tells its author
@@ -1765,11 +1789,11 @@ Options:
 ```text
 Ask the person something about a change — a judgement that is theirs — without stopping the run
 
-Usage: otto state change ask --question-file <PATH> <ID> <CHANGE>
+Usage: otto state change ask [OPTIONS] --question-file <PATH> <ID> <CHANGE>
 
 Arguments:
   <ID>
-          The run: its number or name (a unique prefix of the name will do)
+          The run that wrote it: its number or name (a unique prefix of the name will do)
 
   <CHANGE>
           The change's number
@@ -1777,6 +1801,9 @@ Arguments:
 Options:
       --question-file <PATH>
           The question, written to be answered cold: where it stands, the decision, options under `## Options`
+
+      --by <BABYSITTER>
+          The babysitter asking, rather than its author: the answer comes to it
 
   -h, --help
           Print help
@@ -1815,6 +1842,37 @@ Arguments:
 Options:
       --json
           Print it as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto state change fix`
+
+```text
+The babysitter: it changed the code on a pull request itself, as the person allowed — the lander pushes it
+
+Usage: otto state change fix [OPTIONS] --head <HEAD> --summary-file <PATH> --why <WHY> <BABYSITTER> <CHANGE>
+
+Arguments:
+  <BABYSITTER>
+          The babysitter run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --head <HEAD>
+          The commit with the fix, on top of what its pull request has
+
+      --summary-file <PATH>
+          What it changed and why, for the person reading the change
+
+      --tests <TESTS>
+          What the tests said, in a line
+
+      --why <WHY>
+          Why this is within what the person allowed: the words you went by, or their answer
 
   -h, --help
           Print help
