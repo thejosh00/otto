@@ -2567,13 +2567,13 @@ function processesView() {
     const pick = h("select", options("standard"));
     projects.replaceChildren(
       h("datalist", { id: "known-repos" }, data.known.map((r) => h("option", { value: r }))),
-      data.projects.length ? h("table.table",
+      ...(data.projects.length ? [h("table.table",
         h("thead", h("tr", ["Repository", "Follows"].map((c) => h("th", c)))),
         h("tbody", data.projects.map((pr) => {
           const select = h("select", options(pr.process));
           select.addEventListener("change", () => assign(pr.repo, select.value, select));
           return h("tr", h("td.mono", pr.repo), h("td", select));
-        }))) : null,
+        })))] : []),
       h("div.assign", repo, pick,
         h("button", {
           onclick: (e) => {
