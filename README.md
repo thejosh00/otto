@@ -1,6 +1,8 @@
 <p align="left"><img src="assets/logo.svg" alt="otto" width="280" height="100"></p>
 
-**Turn any Claude command into an agent that works for days.**
+**Sessions end. The work doesn't.**
+
+Turn anything Claude can do into an agent that works for days, and checks in with you.
 
 otto takes a thing Claude knows how to do — an existing Claude Code skill, a runbook, a prose
 instruction, or just a goal — and makes it an agent that keeps working for days, without a session
@@ -16,8 +18,6 @@ otto contributes none of the doing. It contributes **durability**: state on disk
 wait for your answer, an inbox, every version of the work kept, timers that survive a reboot, a
 second look before anything is called done, and a mechanically enforced guarantee that every
 stopping point can be resumed cold.
-
-> Sessions end. The work doesn't.
 
 <p align="center"><img src="assets/demo.png" alt="An agent's page in otto's web UI: what it is doing, a report waiting in the inbox, and its work — a week of daily reports with today's open" width="800"></p>
 <p align="center"><sub>The web UI from <code>otto serve</code>: an agent that explains one failing eval a day — what it's doing, today's report waiting in your inbox, and every report it has made.</sub></p>
