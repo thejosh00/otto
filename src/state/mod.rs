@@ -450,6 +450,11 @@ fn default_max_incomplete_wakes() -> u32 {
 fn default_period_minutes() -> u64 {
     60
 }
+/// Whether a period is a whole number of days — the only kind a time of day (`periodAt`) fits.
+pub fn whole_days(period_minutes: u64) -> bool {
+    period_minutes > 0 && period_minutes % (24 * 60) == 0
+}
+
 fn default_verify_done() -> bool {
     true
 }
@@ -480,6 +485,12 @@ pub struct Policy {
     /// once it is answered, the period resumes.
     #[serde(rename = "periodMinutes", default = "default_period_minutes")]
     pub period_minutes: u64,
+    /// With a period of whole days, the time on the local clock the period's wakes are due —
+    /// `otto period 7 1d --at 3:00` — so heavy work runs while nobody is using the machine.
+    /// `None`: whenever the period comes round. Only the period's own sleeps land on it; a timer a
+    /// wake arms, a check's own retry gap and an answered gate still wake when they say.
+    #[serde(rename = "periodAt", default, skip_serializing_if = "Option::is_none")]
+    pub period_at: Option<crate::clock::TimeOfDay>,
     /// A wake's `set-status done` is a claim that a fresh wake checks before the run is done
     /// (`DoneClaim`). `false`: done is done, on the word of the wake that said it.
     #[serde(rename = "verifyDone", default = "default_verify_done")]
@@ -503,6 +514,7 @@ impl Default for Policy {
             max_incomplete_wakes: default_max_incomplete_wakes(),
             perpetual: false,
             period_minutes: default_period_minutes(),
+            period_at: None,
             verify_done: default_verify_done(),
             max_done_reopens: default_max_done_reopens(),
             extra: Map::new(),
@@ -561,6 +573,12 @@ impl Policy {
                     self.extra.insert(key, value);
                 }
             },
+            "periodAt" => match value.as_str().and_then(crate::clock::TimeOfDay::parse) {
+                Some(at) => self.period_at = Some(at),
+                None => {
+                    self.extra.insert(key, value);
+                }
+            },
             "verifyDone" => match value.as_bool() {
                 Some(b) => self.verify_done = b,
                 None => {
@@ -576,6 +594,17 @@ impl Policy {
             _ => {
                 self.extra.insert(key, value);
             }
+        }
+    }
+
+    /// When a period's sleep anchored on `anchor` ends: one period on, then onto `periodAt` when
+    /// the run has one (`TimeOfDay::snap`), so a wake poke started a few minutes late, or a
+    /// catch-up hours off, doesn't move every wake after it.
+    pub fn period_due(&self, anchor: time::OffsetDateTime) -> time::OffsetDateTime {
+        let due = anchor + time::Duration::minutes(self.period_minutes as i64);
+        match self.period_at {
+            Some(at) if whole_days(self.period_minutes) => at.snap(due, crate::clock::local_offset()),
+            _ => due,
         }
     }
 
@@ -973,15 +1002,13 @@ impl RunState {
     }
 
     pub fn period_wake_at(&self) -> crate::clock::Timestamp {
-        let period = time::Duration::minutes(self.policy.period_minutes as i64);
         let now = crate::clock::Timestamp::now();
-        match &self.wake {
-            Some(wake) if wake.outcome.is_none() => {
-                let due = crate::clock::Timestamp::at(wake.started_at.dt() + period);
-                if due.dt() > now.dt() { due } else { now }
-            }
-            _ => crate::clock::Timestamp::at(now.dt() + period),
-        }
+        let anchor = match &self.wake {
+            Some(wake) if wake.outcome.is_none() => wake.started_at,
+            _ => now,
+        };
+        let due = crate::clock::Timestamp::at(self.policy.period_due(anchor.dt()));
+        if due.dt() > now.dt() { due } else { now }
     }
 
     /// Enter `blocked`, saying why. The only way in, so a blocked run always carries its reason;

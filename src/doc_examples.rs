@@ -244,7 +244,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         WaitOverdue { what: s(), since: at, give_up_at: at },
         NoteDropped { note: s(), standing: false },
         CheckSet { script: s(), wake_after: 24, by: s() },
-        PeriodSet { period_minutes: 60, previous_minutes: 60 },
+        PeriodSet { period_minutes: 60, previous_minutes: 60, at: None, previous_at: None },
         Renamed { from: s(), to: s() },
         Renumbered { from: s() },
         CheckCleared { script: s(), by: s() },

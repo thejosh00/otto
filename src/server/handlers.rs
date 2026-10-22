@@ -156,6 +156,9 @@ pub async fn set_workdir(Json(body): Json<WorkdirBody>) -> Response {
 pub struct PeriodBody {
     /// A duration, as `otto period` takes it: `30m`, `4h`, `1d`.
     period: String,
+    /// The time of day its wakes are due, as `otto period --at` takes it: `3:00`, `22:30`. Empty:
+    /// whenever the period comes round. Left out: unchanged.
+    at: Option<String>,
 }
 
 pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Response {
@@ -164,7 +167,15 @@ pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Res
             .map(|d| d.whole_minutes())
             .filter(|m| *m >= 1)
             .ok_or_else(|| OttoError::usage(format!("a period is a duration like 30m, 4h or 1d, not \"{}\"", body.period)))?;
-        crate::core::set_period(&id, minutes as u64)
+        let at = match body.at.as_deref().map(str::trim) {
+            None => crate::core::PeriodAt::Keep,
+            Some("") => crate::core::PeriodAt::Clear,
+            Some(text) => crate::core::PeriodAt::Set(
+                crate::clock::TimeOfDay::parse(text)
+                    .ok_or_else(|| OttoError::usage(format!("a time of day is like 3:00 or 22:30, not \"{text}\"")))?,
+            ),
+        };
+        crate::core::set_period(&id, Some(minutes as u64), at)
     })
     .await
 }

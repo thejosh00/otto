@@ -475,8 +475,12 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "period-set" => happening(
                 "you",
                 format!(
-                    "You set it to run every {}",
-                    crate::clock::format_minutes(v.get("periodMinutes").and_then(Value::as_u64).unwrap_or(0))
+                    "You set it to run every {}{}",
+                    crate::clock::format_minutes(v.get("periodMinutes").and_then(Value::as_u64).unwrap_or(0)),
+                    str_of(v, "at")
+                        .and_then(crate::clock::TimeOfDay::parse)
+                        .map(|at| format!(" at {}", at.plain()))
+                        .unwrap_or_default()
                 ),
             ),
             "check-set" => happening("status", "Now looks for news for free before each run".to_string()),

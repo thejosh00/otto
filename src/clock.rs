@@ -122,6 +122,94 @@ pub fn parse_age(text: &str) -> Option<time::Duration> {
     }
 }
 
+/// A time on the local clock a run's period wakes are due at (`otto period 7 1d --at 3:00`), so a
+/// heavy daily run can be put where nobody is using the machine. Stored as the wall-clock time
+/// rather than an instant, so it means "3 AM here" whatever the offset is that day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeOfDay(time::Time);
+
+impl TimeOfDay {
+    /// `3:00`, `03:00`, `22:30`, `3am`, `10:30pm`. `None` for anything else, so each caller can
+    /// say in its own words what it expected.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.trim().to_ascii_lowercase();
+        let (clock, half) = match text.strip_suffix("am").or_else(|| text.strip_suffix("a.m.")) {
+            Some(rest) => (rest.trim_end(), Some(false)),
+            None => match text.strip_suffix("pm").or_else(|| text.strip_suffix("p.m.")) {
+                Some(rest) => (rest.trim_end(), Some(true)),
+                None => (text.as_str(), None),
+            },
+        };
+        let (h, m) = match clock.split_once(':') {
+            Some((h, m)) if m.len() == 2 => (h, m),
+            Some(_) => return None,
+            None if half.is_some() => (clock, "00"),
+            None => return None,
+        };
+        if h.is_empty() || h.len() > 2 || !h.bytes().all(|b| b.is_ascii_digit()) || !m.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let (mut hour, minute): (u8, u8) = (h.parse().ok()?, m.parse().ok()?);
+        if let Some(pm) = half {
+            if !(1..=12).contains(&hour) {
+                return None;
+            }
+            hour = match (hour, pm) {
+                (12, false) => 0,
+                (12, true) => 12,
+                (h, true) => h + 12,
+                (h, false) => h,
+            };
+        }
+        time::Time::from_hms(hour, minute, 0).ok().map(TimeOfDay)
+    }
+
+    /// Where a period wake due at `due` lands: on the first occurrence of this time on the local
+    /// clock no more than eighteen hours before `due`. For a daily run that's the next one at least
+    /// six hours after the wake it is anchored on — so a wake poke started a few minutes late, or a
+    /// catch-up in the afternoon, is followed by that night's, while one run by hand late in the
+    /// evening isn't followed by another a few hours later. A period of days keeps its days.
+    pub fn snap(self, due: OffsetDateTime, offset: UtcOffset) -> OffsetDateTime {
+        let earliest = due - time::Duration::hours(18);
+        let mut at = earliest.to_offset(offset).date().with_time(self.0).assume_offset(offset);
+        while at < earliest {
+            at += time::Duration::days(1);
+        }
+        at.to_offset(UtcOffset::UTC)
+    }
+
+    /// `3:00 AM`, as the plain-words lines and the web page write a time.
+    pub fn plain(self) -> String {
+        let (hour, minute) = (self.0.hour(), self.0.minute());
+        let (h12, half) = match hour {
+            0 => (12, "AM"),
+            1..=11 => (hour, "AM"),
+            12 => (12, "PM"),
+            _ => (hour - 12, "PM"),
+        };
+        format!("{h12}:{minute:02} {half}")
+    }
+}
+
+impl fmt::Display for TimeOfDay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:02}:{:02}", self.0.hour(), self.0.minute())
+    }
+}
+
+impl Serialize for TimeOfDay {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for TimeOfDay {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        TimeOfDay::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("not a time of day: {text:?}")))
+    }
+}
+
 /// The inverse of `parse_age` for whole minutes: the largest unit that divides evenly.
 pub fn format_minutes(minutes: u64) -> String {
     if minutes > 0 && minutes % (24 * 60) == 0 {
@@ -246,6 +334,41 @@ pub fn slugify(text: &str, fallback: &str) -> String {
 mod tests {
     use super::*;
     use time::macros::datetime;
+
+    #[test]
+    fn a_time_of_day_parses_the_ways_a_person_writes_one() {
+        let t = |s: &str| TimeOfDay::parse(s).map(|t| t.to_string());
+        assert_eq!(t("3:00").as_deref(), Some("03:00"));
+        assert_eq!(t("03:00").as_deref(), Some("03:00"));
+        assert_eq!(t("22:30").as_deref(), Some("22:30"));
+        assert_eq!(t("3am").as_deref(), Some("03:00"));
+        assert_eq!(t("10:30 PM").as_deref(), Some("22:30"));
+        assert_eq!(t("12am").as_deref(), Some("00:00"));
+        assert_eq!(t("12pm").as_deref(), Some("12:00"));
+        for bad in ["", "3", "25:00", "3:7", "13pm", "0am", "noon", "3:00:00", "-1:00"] {
+            assert_eq!(t(bad), None, "{bad:?}");
+        }
+        assert_eq!(TimeOfDay::parse("15:05").unwrap().plain(), "3:05 PM");
+    }
+
+    #[test]
+    fn a_time_of_day_lands_on_the_next_occurrence_at_least_six_hours_after_the_last_wake() {
+        let three = TimeOfDay::parse("3:00").unwrap();
+        let utc = UtcOffset::UTC;
+        let day = time::Duration::days(1);
+        // A daily wake poke started a few minutes late lands back on 3:00, not 3:05.
+        assert_eq!(three.snap(datetime!(2026-10-22 03:05 UTC) + day, utc), datetime!(2026-10-23 03:00 UTC));
+        // A catch-up wake in the afternoon is followed by that night's.
+        assert_eq!(three.snap(datetime!(2026-10-22 15:00 UTC) + day, utc), datetime!(2026-10-23 03:00 UTC));
+        assert_eq!(three.snap(datetime!(2026-10-22 21:00 UTC) + day, utc), datetime!(2026-10-23 03:00 UTC));
+        // One run by hand late in the evening isn't followed by another five hours on.
+        assert_eq!(three.snap(datetime!(2026-10-22 22:00 UTC) + day, utc), datetime!(2026-10-24 03:00 UTC));
+        // Every two days stays every two days.
+        assert_eq!(three.snap(datetime!(2026-10-22 03:05 UTC) + day * 2, utc), datetime!(2026-10-24 03:00 UTC));
+        // Local, not UTC: 3 AM at UTC-05:00 is 08:00Z.
+        let cdt = UtcOffset::from_hms(-5, 0, 0).unwrap();
+        assert_eq!(three.snap(datetime!(2026-10-22 20:57 UTC) + day, cdt), datetime!(2026-10-23 08:00 UTC));
+    }
 
     #[test]
     fn ages_parse_and_minutes_format_in_the_largest_even_unit() {

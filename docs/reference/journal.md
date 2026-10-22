@@ -52,7 +52,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `waiting` | `for`, `giveUpAt` | A wake started waiting on something, with a limit (`arm-timer --waiting-for --give-up-after`) |
 | `wait-overdue` | `for`, `since`, `giveUpAt` | A wake tried to sleep again for a wait whose limit had passed; otto refused, and armed nothing |
 | `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A wake said it moved the run where otto can't see (`--progress`) / said what a look found. otto counts wakes that change nothing itself, so a plain tick adds nothing to the count |
-| `period-set` | `periodMinutes`, `previousMinutes` | A person changed the period |
+| `period-set` | `periodMinutes`, `previousMinutes`, `at`, `previousAt` | A person changed the period, or the time of day it wakes |
 | `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |
 | `check-cleared` | `script`, `by` | The standing check was removed, by a `person` or a `wake` |
 | `check-ran` | `result`, `consecutiveNoChange`, `note` | A check script reported a change or an error. "Nothing new" is never journaled — see `check` in `run.json` |

@@ -121,10 +121,13 @@ else said in a chat reaches the run. It's fine to chat while a wake is working.
 ```bash
 otto period my-run        # show it
 otto period my-run 4h     # change it
+otto period my-run 1d --at 3:00   # once a day, at 3 AM — out of your way if the work is heavy
+otto period my-run --any-time     # drop the time of day
 ```
 
 If the run is sleeping on its period, that sleep moves to the new period (sooner or later). A
-timer a wake armed for its own reason is kept, and the new period applies after it. To spend
+timer a wake armed for its own reason is kept, and the new period applies after it. A time of day
+needs a period of whole days; switching such a run to hours drops it, and says so. To spend
 tokens only when something changed, add a [check script](check-scripts.md).
 
 ## Looking at what happened

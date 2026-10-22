@@ -186,6 +186,14 @@ unless the run was started with `--period`, and `otto period <id> 4h` changes it
 When a wake finishes cleanly with nothing pending, otto sleeps the run until **one period after
 that wake started** (so an hourly run stays hourly rather than drifting by each wake's length).
 
+A run whose period is whole days can also say **when in the day**: `otto period <id> 1d --at 3:00`
+(or `--at` on `otto run`) puts its period wakes at 3 AM on this machine's clock, for heavy work
+you'd rather it did while you aren't using the machine. Each period wake lands on the next 3 AM
+at least six hours after the last wake started (for `2d`, the one two days on), so a wake poke
+started a few minutes late, or a catch-up in the afternoon, doesn't move the ones after it — and
+one you ran by hand at 10 PM isn't followed by another at 3. `--any-time` drops it again. The first wake of a new run still starts
+straight away; timers a wake arms, and wakes for a gate or a note, come when they come.
+
 A wake can say something different for one sleep: `otto state arm-timer --in 600` because CI
 takes ten minutes, or `--at` for tomorrow morning. That lasts one sleep; after it the run is back
 on its period. An open gate takes precedence over both.

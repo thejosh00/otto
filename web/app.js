@@ -148,12 +148,21 @@ function formatMinutes(m) {
   return `${m}m`;
 }
 
-// How often, in words: `every hour`, `every 2 days`, `every 30 minutes`.
-function everyText(m) {
-  if (m % 1440 === 0) return m === 1440 ? "every day" : `every ${m / 1440} days`;
+// How often, in words: `every hour`, `every 2 days`, `every day at 3:00 AM`, `every 30 minutes`.
+function everyText(m, at) {
+  if (m % 1440 === 0) return (m === 1440 ? "every day" : `every ${m / 1440} days`) + (at ? ` at ${clockText(at)}` : "");
   if (m % 60 === 0) return m === 60 ? "every hour" : `every ${m / 60} hours`;
   return `every ${m} minutes`;
 }
+
+// `03:00` → `3:00 AM`, as clock::TimeOfDay::plain says it.
+function clockText(at) {
+  const [hh, mm] = at.split(":").map(Number);
+  return `${hh % 12 || 12}:${String(mm).padStart(2, "0")} ${hh < 12 ? "AM" : "PM"}`;
+}
+
+// Whether `1d`, `2d`… — the only periods a time of day fits (state::whole_days).
+const wholeDays = (text) => /^\s*[1-9]\d*d\s*$/.test(text || "");
 
 // Mirrors paths::label: a run is `#7 legenda`; one from before numbering is its old id.
 function runLabel(id, name) {
@@ -1726,7 +1735,7 @@ function runView(id, opened) {
     if (head.querySelector(".menu:not([hidden])")) return; // nor a menu someone has open
     const s = d.state;
     const key = JSON.stringify([d.name, d.glance, d.running, s.status, s.paused, s.gate && s.gate.id, s.nextWakeAt,
-      d.lastRun && d.lastRun.at, s.goal, s.policy.periodMinutes, Math.floor(Date.now() / 60000)]);
+      d.lastRun && d.lastRun.at, s.goal, s.policy.periodMinutes, s.policy.periodAt, Math.floor(Date.now() / 60000)]);
     if (key === shownHead) return;
     shownHead = key;
     const over = ["done", "stopped", "failed"].includes(s.status);
@@ -1768,7 +1777,7 @@ function runView(id, opened) {
     else if (!["done", "stopped", "failed"].includes(s.status) && !s.gate && !paused && s.nextWakeAt) {
       bits.push(`next run ${nextAt(s.nextWakeAt)}`);
     }
-    if (!["done", "stopped", "failed"].includes(s.status)) bits.push(s.policy.perpetual ? `${everyText(s.policy.periodMinutes || 60)}, until you stop it` : everyText(s.policy.periodMinutes || 60));
+    if (!["done", "stopped", "failed"].includes(s.status)) bits.push(s.policy.perpetual ? `${everyText(s.policy.periodMinutes || 60, s.policy.periodAt)}, until you stop it` : everyText(s.policy.periodMinutes || 60, s.policy.periodAt));
     if (d.lastRun) bits.push(`last ran ${relative(d.lastRun.at)}`);
     return bits.join(" · ");
   }
@@ -2024,7 +2033,7 @@ function runView(id, opened) {
         h("dt", "Runs"), h("dd", `${s.budget.spentWakes}${s.budget.wakes ? " of " + s.budget.wakes : ""}${s.budget.hours ? `, ${s.budget.hours}h budget` : ""}`),
         d.usage.wakes ? [h("dt", "Tokens"), h("dd", tokenSummary(d.usage))] : null,
         d.wakeCost ? [h("dt", "A run costs"), h("dd", `~${d.wakeCost.avgTurns} turns, ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-write tokens (last ${d.wakeCost.wakes})`)] : null,
-        over ? null : [h("dt", "How often"), h("dd", everyText(s.policy.periodMinutes || 60))]),
+        over ? null : [h("dt", "How often"), h("dd", everyText(s.policy.periodMinutes || 60, s.policy.periodAt))]),
       over ? "" : renderCheck(d));
     factsEl.replaceChildren(h("dl.facts", settingRows(d).map(([k, v]) => [h("dt", k), h("dd", v)])));
     if (!settingsForm.dataset.open) {
@@ -2056,17 +2065,23 @@ function runView(id, opened) {
     settingsForm.dataset.open = "1";
     const current = formatMinutes(d.state.policy.periodMinutes || 60);
     const input = h("input", { value: current, placeholder: "30m, 4h, 1d" });
+    const at = h("input", { type: "time", value: d.state.policy.periodAt || "" });
+    const atField = h("label.field", h("span", "At (optional)"), at,
+      h("small", "Your clock. Leave it empty to run whenever the day comes round."));
+    const syncAt = () => { atField.hidden = !wholeDays(input.value); };
+    input.addEventListener("input", syncAt);
+    syncAt();
     const close = () => { delete settingsForm.dataset.open; refresh(); };
     let saveButton;
     settingsForm.replaceChildren(h("div.card", { style: "margin-top:10px" },
-      h("p", `How often it runs when nothing else says otherwise — now ${everyText(d.state.policy.periodMinutes || 60)}.`),
-      h("div.field", h("span", "Every"), input),
+      h("p", `How often it runs when nothing else says otherwise — now ${everyText(d.state.policy.periodMinutes || 60, d.state.policy.periodAt)}.`),
+      h("div.grid2", h("div.field", h("span", "Every"), input), atField),
       h("div.row.end", { style: "margin-top:10px" },
         h("button.ghost.small", { onclick: close }, "Cancel"),
         (saveButton = h("button.primary.small", {
           onclick: (e) => busy(e.currentTarget, async () => {
-            const r = await api(path + "/period", { period: input.value });
-            toast(`Runs ${everyText(r.periodMinutes)}` + (r.rescheduled && r.nextWakeAt ? ` — next ${nextAt(r.nextWakeAt)}` : ""));
+            const r = await api(path + "/period", { period: input.value, at: wholeDays(input.value) ? at.value : "" });
+            toast(`Runs ${everyText(r.periodMinutes, r.periodAt)}` + (r.rescheduled && r.nextWakeAt ? ` — next ${nextAt(r.nextWakeAt)}` : ""));
             close();
           }),
         }, "Save")))));
@@ -2295,12 +2310,20 @@ function newRunView() {
   keepsGoing.addEventListener("change", () => { untilField.hidden = keepsGoing.checked; });
   const period = h("input", { placeholder: "1h" });
   f.period = period;
+  const at = h("input", { type: "time" });
+  f.at = at;
+  const atField = h("label.field", h("span", "At (optional)"), at,
+    h("small", "Your clock — put heavy work where you aren't using the machine. The first run still starts now."));
+  const syncAt = () => { atField.hidden = !wholeDays(period.value); };
+  period.addEventListener("input", syncAt);
+  syncAt();
 
   const templates = h("div.templates", TEMPLATES.map(([label, text, every, perpetual]) => h("button.small", {
     type: "button",
     onclick: () => {
       goal.value = text;
       period.value = every;
+      syncAt();
       keepsGoing.checked = perpetual;
       untilField.hidden = perpetual;
       goal.focus();
@@ -2328,7 +2351,9 @@ function newRunView() {
       templates,
       goal,
       h("div.grid2",
-        h("label.field", h("span", "How often it looks"), period, h("small", "30m, 1h, 1d. It only spends a full run when there's something to do, if it can check for free.")),
+        h("div",
+          h("label.field", h("span", "How often it looks"), period, h("small", "30m, 1h, 1d. It only spends a full run when there's something to do, if it can check for free.")),
+          atField),
         h("div.field", h("span", "When it's finished"),
           h("label.check", keepsGoing, "It keeps going until I stop it"), untilField))),
     h("details.more",
@@ -2400,6 +2425,7 @@ function newRunView() {
       until: f.perpetual.checked ? null : text("until"),
       perpetual: f.perpetual.checked,
       period: text("period"),
+      at: wholeDays(f.period.value) ? text("at") : null,
       budgetWakes: Number(f.budgetWakes.value) || 0,
       budgetHours: Number(f.budgetHours.value) || 0,
       launcher: f.launcher.value,

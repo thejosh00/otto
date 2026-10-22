@@ -103,6 +103,10 @@ pub struct InitArgs {
     /// Measured from the start of one wake to the start of the next [default: 1h]
     #[arg(long, value_name = "AGE", help_heading = "When it is done")]
     pub period: Option<String>,
+    /// With a period of whole days, the local time its wakes are due: `3:00`, `22:30`, `3am` — for
+    /// heavy work you want done while you aren't using the machine. The first wake still starts now
+    #[arg(long, value_name = "TIME", requires = "period", help_heading = "When it is done")]
+    pub at: Option<String>,
     /// Block with a gate after this many wakes (0: unlimited)
     #[arg(long = "budget-wakes", value_name = "N", default_value_t = 0, help_heading = "When it is done")]
     pub budget_wakes: u32,
@@ -179,6 +183,7 @@ impl Default for InitArgs {
             until: None,
             perpetual: false,
             period: None,
+            at: None,
             target: None,
             id: None,
             name: None,
@@ -317,6 +322,17 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
                 )))
             }
         };
+    }
+    if let Some(at) = &args.at {
+        policy.period_at = Some(crate::clock::TimeOfDay::parse(at).ok_or_else(|| {
+            OttoError::usage(format!("--at takes a time of day (3:00, 22:30, 3am), not {at:?}"))
+        })?);
+    }
+    if policy.period_at.is_some() && !super::whole_days(policy.period_minutes) {
+        return Err(OttoError::usage(format!(
+            "--at needs a period of whole days (1d, 2d), not {}",
+            crate::clock::format_minutes(policy.period_minutes)
+        )));
     }
 
     let mut facts = Map::new();
@@ -1152,7 +1168,7 @@ pub fn set_check(args: SetCheckArgs) -> Result<(), OttoError> {
 /// run anyway, so the due time stays due.
 pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: bool) -> Result<(), OttoError> {
     transaction(id, |path, state| {
-        let period_seconds = state.policy.period_minutes as i64 * 60;
+        let period_due = Timestamp::at(state.policy.period_due(crate::clock::now()));
         let armed = state.wake_armed_timer();
         let mut rearm_to = None;
         let Some(check) = state.check.as_mut() else { return Ok(()) };
@@ -1163,7 +1179,10 @@ pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: 
                 check.consecutive_no_change += 1;
                 check.no_change_total += 1;
                 if rearm {
-                    rearm_to = Some(Timestamp::in_seconds(check.retry_seconds.unwrap_or(period_seconds)));
+                    rearm_to = Some(match check.retry_seconds {
+                        Some(seconds) => Timestamp::in_seconds(seconds),
+                        None => period_due,
+                    });
                 }
             }
             CheckResult::Changed | CheckResult::Error => {

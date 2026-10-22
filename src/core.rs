@@ -380,7 +380,7 @@ pub struct LsRow {
     /// The newest line of its activity feed (`activity`).
     pub last_activity: Option<ActivityLine>,
     pub wakes: String,
-    /// `1h`, `30m`; `—` for a finished run, which will never wake again.
+    /// `1h`, `30m`, `1d 03:00`; `—` for a finished run, which will never wake again.
     pub period: String,
     /// For the web page, which renders it relative to the viewer's clock on each refresh.
     pub next_wake_at: Option<crate::clock::Timestamp>,
@@ -515,7 +515,10 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             period: if state.status.is_terminal() {
                 "—".to_string()
             } else {
-                crate::clock::format_minutes(state.policy.period_minutes)
+                match state.policy.period_at {
+                    Some(at) => format!("{} {at}", crate::clock::format_minutes(state.policy.period_minutes)),
+                    None => crate::clock::format_minutes(state.policy.period_minutes),
+                }
             },
             next_wake_at: state.next_wake_at,
             next_wake: next_wake(&state, running),
@@ -1100,23 +1103,38 @@ pub struct PeriodSetOutcome {
     pub short: String,
     pub period_minutes: u64,
     pub previous_minutes: u64,
+    /// The time of day its period wakes are due now, if any.
+    pub period_at: Option<crate::clock::TimeOfDay>,
+    pub previous_at: Option<crate::clock::TimeOfDay>,
     pub next_wake_at: Option<crate::clock::Timestamp>,
     /// Whether the sleep already scheduled was moved onto the new period. False when the run is
     /// not sleeping, or is sleeping on a timer a wake armed for its own reasons.
     pub rescheduled: bool,
 }
 
-/// Change how often a run wakes (`otto period`). The new period applies to every sleep from here
-/// on, and to the one already scheduled too when that sleep is the period's own — re-anchored on
-/// when that sleep began, sooner or later. A timer a wake armed itself (`arm-timer --in 600`
-/// because CI takes ten minutes) is left alone: that wake knew something the period does not.
-/// A re-anchored wake whose time has already passed is due now, and the next poke starts it.
-pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError> {
+/// What `otto period` does to the time of day a run's period wakes are due (`periodAt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodAt {
+    /// Leave it — unless the new period isn't whole days, which a time of day doesn't fit.
+    Keep,
+    Set(crate::clock::TimeOfDay),
+    /// Whenever the period comes round.
+    Clear,
+}
+
+/// Change how often a run wakes (`otto period`), and at what time of day. `minutes: None` keeps
+/// the period. The new period applies to every sleep from here on, and to the one already
+/// scheduled too when that sleep is the period's own — re-anchored on when that sleep began,
+/// sooner or later. A timer a wake armed itself (`arm-timer --in 600` because CI takes ten
+/// minutes) is left alone: that wake knew something the period does not. A re-anchored wake
+/// whose time has already passed is due now, and the next poke starts it.
+pub fn set_period(id: &str, minutes: Option<u64>, at: PeriodAt) -> Result<PeriodSetOutcome, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
-    if minutes == 0 {
+    if minutes == Some(0) {
         return Err(OttoError::usage("the period must be positive"));
     }
     let mut previous = 0;
+    let mut previous_at = None;
     let mut rescheduled = false;
     crate::state::transaction(&id, |path, state| {
         if state.status.is_terminal() {
@@ -1126,28 +1144,57 @@ pub fn set_period(id: &str, minutes: u64) -> Result<PeriodSetOutcome, OttoError>
             )));
         }
         previous = state.policy.period_minutes;
+        previous_at = state.policy.period_at;
+        let minutes = minutes.unwrap_or(previous);
+        let whole_days = crate::state::whole_days(minutes);
         state.policy.period_minutes = minutes;
+        state.policy.period_at = match at {
+            PeriodAt::Keep if whole_days => previous_at,
+            PeriodAt::Keep | PeriodAt::Clear => None,
+            PeriodAt::Set(at) if whole_days => Some(at),
+            PeriodAt::Set(_) => {
+                return Err(OttoError::usage(format!(
+                    "a time of day needs a period of whole days (1d, 2d), not {}",
+                    crate::clock::format_minutes(minutes)
+                )))
+            }
+        };
         if state.status == Status::Sleeping && !state.wake_armed_timer() {
             if let Some(next) = state.next_wake_at {
                 // The period's sleep began one old period before it ends — at the last wake's
-                // start, or at the check that last put it off.
-                let began = next.dt() - time::Duration::minutes(previous as i64);
+                // start, or at the check that last put it off. Not with a time of day, which moved
+                // the end: then it began at whichever of those was last.
+                let began = match previous_at {
+                    None => next.dt() - time::Duration::minutes(previous as i64),
+                    Some(_) => [state.wake.as_ref().map(|w| w.started_at), state.check.as_ref().and_then(|c| c.last_at)]
+                        .into_iter()
+                        .flatten()
+                        .max()
+                        .map_or(next.dt() - time::Duration::minutes(previous as i64), |t| t.dt()),
+                };
                 let now = crate::clock::Timestamp::now();
-                let anchored = crate::clock::Timestamp::at(began + time::Duration::minutes(minutes as i64));
+                let anchored = crate::clock::Timestamp::at(state.policy.period_due(began));
                 state.next_wake_at = Some(if anchored.dt() > now.dt() { anchored } else { now });
                 rescheduled = true;
             }
         }
         crate::event::record(
             path,
-            &crate::event::Event::PeriodSet { period_minutes: minutes, previous_minutes: previous },
+            &crate::event::Event::PeriodSet {
+                period_minutes: minutes,
+                previous_minutes: previous,
+                at: state.policy.period_at,
+                previous_at,
+            },
         )
     })?;
     let state = read_run(&id)?;
     Ok(PeriodSetOutcome {
         short: short_id(&id),
-        period_minutes: minutes,
+        period_minutes: state.policy.period_minutes,
         previous_minutes: previous,
+        period_at: state.policy.period_at,
+        previous_at,
         next_wake_at: state.next_wake_at,
         rescheduled,
         id,
@@ -2642,7 +2689,7 @@ mod tests {
         let _h = TempHome::new();
         test_init("2026-09-25-long", "a goal").unwrap();
         sleeping_after_a_wake("2026-09-25-long", 10, 50);
-        let out = set_period("long", 24 * 60).unwrap();
+        let out = set_period("long", Some(24 * 60), PeriodAt::Keep).unwrap();
         assert!(out.rescheduled);
         assert_eq!(out.previous_minutes, 60);
         let state = read_run("2026-09-25-long").unwrap();
@@ -2658,13 +2705,13 @@ mod tests {
         let _h = TempHome::new();
         test_init("2026-09-25-short", "a goal").unwrap();
         sleeping_after_a_wake("2026-09-25-short", 10, 50);
-        set_period("short", 30).unwrap();
+        set_period("short", Some(30), PeriodAt::Keep).unwrap();
         let next = read_run("2026-09-25-short").unwrap().next_wake_at.unwrap();
         assert!(next.dt() > crate::clock::now() + time::Duration::minutes(19), "{next}");
         assert!(next.dt() < crate::clock::now() + time::Duration::minutes(21), "{next}");
 
         // Shorter than the time since the last wake: due now, not retroactively.
-        set_period("short", 5).unwrap();
+        set_period("short", Some(5), PeriodAt::Keep).unwrap();
         assert!(read_run("2026-09-25-short").unwrap().next_wake_at.unwrap().is_past());
     }
 
@@ -2681,7 +2728,7 @@ mod tests {
         })
         .unwrap();
         let before = read_run("2026-09-25-ci").unwrap().next_wake_at;
-        let out = set_period("ci", 24 * 60).unwrap();
+        let out = set_period("ci", Some(24 * 60), PeriodAt::Keep).unwrap();
         assert!(!out.rescheduled);
         let state = read_run("2026-09-25-ci").unwrap();
         assert_eq!(state.next_wake_at, before);
@@ -2689,16 +2736,69 @@ mod tests {
     }
 
     #[test]
+    fn a_time_of_day_moves_the_period_sleep_onto_it_but_not_within_six_hours_of_the_last_wake() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-nightly", "a goal").unwrap();
+        // Woke ten minutes ago; daily from here.
+        sleeping_after_a_wake("2026-09-25-nightly", 10, 50);
+        let local = |hours: i64| {
+            let t = (crate::clock::now() + time::Duration::hours(hours)).to_offset(crate::clock::local_offset());
+            crate::clock::TimeOfDay::parse(&format!("{:02}:{:02}", t.hour(), t.minute())).unwrap()
+        };
+        let near = |next: crate::clock::Timestamp, hours: i64| {
+            let want = crate::clock::now() + time::Duration::hours(hours);
+            (next.dt() - want).abs() < time::Duration::minutes(2)
+        };
+
+        let out = set_period("nightly", Some(24 * 60), PeriodAt::Set(local(18))).unwrap();
+        assert!(out.rescheduled);
+        assert_eq!(out.period_at, Some(local(18)));
+        assert!(near(out.next_wake_at.unwrap(), 18), "{:?}", out.next_wake_at);
+
+        // Four hours from now is too soon after the wake that just ran: tomorrow's, not today's.
+        let out = set_period("nightly", None, PeriodAt::Set(local(4))).unwrap();
+        assert_eq!(out.period_minutes, 24 * 60, "no period given keeps it");
+        assert!(near(out.next_wake_at.unwrap(), 28), "{:?}", out.next_wake_at);
+        // Eight hours is not.
+        let out = set_period("nightly", None, PeriodAt::Set(local(8))).unwrap();
+        assert!(near(out.next_wake_at.unwrap(), 8), "{:?}", out.next_wake_at);
+
+        // The wakes after it land on it too.
+        let state = read_run("2026-09-25-nightly").unwrap();
+        assert!(near(crate::clock::Timestamp::at(state.policy.period_due(crate::clock::now())), 8));
+    }
+
+    #[test]
+    fn a_time_of_day_needs_whole_days_and_goes_when_the_period_stops_being_them() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-at", "a goal").unwrap();
+        let three = crate::clock::TimeOfDay::parse("3:00").unwrap();
+        let err = set_period("at", None, PeriodAt::Set(three)).unwrap_err();
+        assert!(err.to_string().contains("whole days"), "an hourly run: {err}");
+        assert!(set_period("at", Some(36 * 60), PeriodAt::Set(three)).is_err());
+
+        assert_eq!(set_period("at", Some(2 * 24 * 60), PeriodAt::Set(three)).unwrap().period_at, Some(three));
+        assert_eq!(set_period("at", Some(24 * 60), PeriodAt::Keep).unwrap().period_at, Some(three), "still days: kept");
+        let out = set_period("at", Some(4 * 60), PeriodAt::Keep).unwrap();
+        assert_eq!((out.period_at, out.previous_at), (None, Some(three)), "hours: dropped, and said so");
+
+        set_period("at", Some(24 * 60), PeriodAt::Set(three)).unwrap();
+        assert_eq!(set_period("at", None, PeriodAt::Clear).unwrap().period_at, None);
+        let journal = std::fs::read_to_string(crate::paths::run_dir("2026-09-25-at").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""at":"03:00""#), "{journal}");
+    }
+
+    #[test]
     fn a_zero_period_or_a_finished_run_is_refused() {
         let _h = TempHome::new();
         test_init("2026-09-25-zero", "a goal").unwrap();
-        assert!(set_period("zero", 0).is_err());
+        assert!(set_period("zero", Some(0), PeriodAt::Keep).is_err());
         crate::state::transaction("2026-09-25-zero", |_, s| {
             s.status = Status::Done;
             Ok(())
         })
         .unwrap();
-        assert!(set_period("zero", 60).unwrap_err().to_string().contains("no period"));
+        assert!(set_period("zero", Some(60), PeriodAt::Keep).unwrap_err().to_string().contains("no period"));
     }
 
     #[test]

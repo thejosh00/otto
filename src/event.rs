@@ -313,6 +313,11 @@ pub enum Event {
         period_minutes: u64,
         #[serde(rename = "previousMinutes")]
         previous_minutes: u64,
+        /// The time of day its period wakes are due, when it has one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<crate::clock::TimeOfDay>,
+        #[serde(rename = "previousAt", default, skip_serializing_if = "Option::is_none")]
+        previous_at: Option<crate::clock::TimeOfDay>,
     },
     /// The run's standing check script was removed; every wake is a full one again.
     CheckCleared {

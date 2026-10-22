@@ -40,6 +40,9 @@ use clap::Parser;
 use error::OttoError;
 
 fn main() {
+    // Before any thread starts: `time` will only read the local offset in a single-threaded
+    // process, and a run's time of day (`periodAt`) is on the local clock wherever it's computed.
+    clock::local_offset();
     let cli = Cli::parse();
     if let Err(err) = run(cli.command) {
         eprintln!("otto: {err}");
