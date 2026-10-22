@@ -373,7 +373,7 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   how one lands. otto acts on the first; the run making the change and the lander read the words.
   Every repository follows the built-in `standard` (a pull request) until it is given another, such
   as the built-in `direct`, which pushes to its base (`otto config process`, `otto config project`, or
-  Processes on the Changes page). Approving records
+  Processes in the web UI's Settings). Approving records
   the process with the approval, so changing it later doesn't change what is already approved; and
   `--pr` or `--push` lands one change another way.
 - **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
@@ -385,7 +385,7 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   landed or been dropped and cleaned up after. The Changes page lists them that way — what waits on
   you first — and flags a change over a few hundred lines, or two open changes that touch the same
   file. The inbox doesn't list them; it says how many wait, with a link.
-- **Only the lander lands.** It is one of otto's [standard agents](#standard-agents), named in
+- **Only the lander lands.** It is one of otto's [system agents](#system-agents), named in
   `config.json` (`otto config lander <run>`), and otto refuses the landing commands from any other run. So only the lander needs to be able to push; the runs that
   write code can run under a launcher that can't. otto checks what it says, too: a change is landed
   only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
@@ -410,15 +410,15 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 A change's files live with the run that wrote it: `changes/index.json`, and each version's patch and
 summary beside it.
 
-### Standard agents
+### System agents
 
 Some runs are otto's own: it needs them to do its job, and nothing about them is yours to decide. The
 **lander** is one, and the **babysitter**, which watches the pull requests it opens, is the other.
 otto makes each the first time it finds it missing — on its next pass, or `otto install`, or starting
-the web UI — and makes it **not started**: paused until you start it (Standard in the web UI, or
+the web UI — and makes it **not started**: paused until you start it (System agents, on the web UI's Agents page, or
 `otto resume <name>`), since an agent that pushes code shouldn't begin by itself.
 
-- They are listed apart: the web UI's Standard page, and a line under `otto ls`, not among your runs.
+- They are listed apart: under System agents on the web UI's Agents page, and a line under `otto ls`.
 - Their instructions come with otto and are rewritten from it into `$OTTO_HOME/agents/` on every pass,
   so a new otto brings new instructions with it.
 - There is one of each. Stopping one retires it, and nothing makes another; resume it to bring it back.

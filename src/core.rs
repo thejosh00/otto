@@ -395,9 +395,9 @@ pub struct LsRow {
     pub messages: usize,
     /// When it last ran or checked (`last_run`).
     pub last_run_at: Option<crate::clock::Timestamp>,
-    /// The part it plays when it is a standard agent (`crate::agents`), listed apart.
+    /// The part it plays when it is a system agent (`crate::agents`), listed apart.
     pub role: Option<String>,
-    /// A standard agent nobody has started yet.
+    /// A system agent nobody has started yet.
     pub not_started: bool,
 }
 

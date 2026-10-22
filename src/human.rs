@@ -353,7 +353,7 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             .iter()
             .map(|r| format!("{} ({})", r.name, if r.not_started { "not started — `otto resume ".to_string() + &r.short + "`" } else { r.status.clone() }))
             .collect();
-        format!("standard agents: {}", each.join(", "))
+        format!("system agents: {}", each.join(", "))
     });
     if rows.is_empty() {
         println!("no runs{}", if args.all { "" } else { " (--all includes finished ones)" });

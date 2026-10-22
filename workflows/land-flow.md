@@ -8,7 +8,7 @@ change on its base branch, tells the run that wrote it, and removes the worktree
 leaves behind. It is the only run that pushes, so it is the only one that needs to be able to.
 
 What happens on a pull request once it is open — reviews, CI, someone merging or closing it — is
-watched by another standard agent, the **babysitter**, which tells this run when there is something
+watched by another system agent, the **babysitter**, which tells this run when there is something
 to push or clean up.
 
 It never decides *whether* something lands — the person did, for one version, and otto holds the

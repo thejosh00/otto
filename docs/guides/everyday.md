@@ -72,7 +72,7 @@ otto changes answer 3/2 --text "Keep" # what its author asked you about it
 
 The web UI's Changes does the same, with the patch file by file, and lands several at once. A
 [change](../concepts.md#changes-code-handed-back) needs the lander to land it — one of the
-[standard agents](../concepts.md#standard-agents) otto makes, which you start once.
+[system agents](../concepts.md#system-agents) otto makes, which you start once.
 
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run
@@ -193,8 +193,8 @@ deleted with it. `otto delete` asks which; `--data keep` or `--data delete` says
 `otto cleanup` lists everything in `~/.otto` that no agent uses — kept data, what a delete couldn't
 finish removing, and any directory in `runs/` that isn't a run — with its size and when it was last
 used, and asks which to delete (numbers, or `all`). It only ever offers those: an agent's own
-directory, `config.json` and the logs are never on the list. The web UI has the same list on the
-**otto itself** page.
+directory, `config.json` and the logs are never on the list. The web UI has the same list in
+Settings, under **otto itself**.
 
 `otto attach` (and the web UI's **Live** tab) follows the wake's session transcript as it's
 written: what the model says (●), each tool call it makes (▸ — the command, the file, the query),
@@ -222,7 +222,8 @@ Everything above, in a browser, in plain words — a run is an *agent* there, a 
 it, and a gate is a *question*:
 
 - **Agents**: one line each — what it's doing, a glyph for whether it is waiting on you, working,
-  watching, paused or needs a look, and when it runs next.
+  watching, paused or needs a look, and when it runs next. Under them, **System agents**: the lander
+  and the babysitter otto makes for you, with a button to start each.
 - **The inbox**, with a count in the top bar: questions to answer and messages to read, from every
   agent. Answer with a click, copy a draft, reply, mark done.
 - **An agent's page**: its question if it has one, what it would like from you, **its work** —
@@ -233,8 +234,10 @@ it, and a gate is a *question*:
   command to copy, for asking it something in a terminal. Pause, run now and stop are at the top, rename and delete beside its name; the handoff, the log, a live view, cost and
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
-- **otto itself**: a health line in the top bar — the reviver, and agents that couldn't start —
-  with the reviver's controls, the data no agent uses (to delete), and **usage** a click away.
+- **Settings**, in three tabs. **otto itself**: what the health line in the top bar is about — the
+  reviver, and agents that couldn't start — with the reviver's controls and the data no agent uses
+  (to delete). **Usage**: what your agents have used, in tokens. **Processes**: how each
+  repository's changes land.
 
 The server is a view over the run directory, not an owner of it — every button calls the same
 code as the matching command, and runs carry on waking under poke whether it is running or not.

@@ -1108,13 +1108,13 @@ pub fn require_lander(lander: &str) -> Result<String, OttoError> {
     }
 }
 
-/// The babysitter, checked: the standard agent that looks after pull requests (`crate::agents`).
+/// The babysitter, checked: the system agent that looks after pull requests (`crate::agents`).
 pub fn require_babysitter(babysitter: &str) -> Result<String, OttoError> {
     let id = crate::paths::resolve_run_id(babysitter)?;
     let state = crate::state::read_run(&id)?;
     if state.role.as_deref() != Some(crate::agents::BABYSITTER.role) {
         return Err(OttoError::conflict(format!(
-            "{} isn't the babysitter — only the babysitter, one of otto's standard agents, looks after pull requests",
+            "{} isn't the babysitter — only the babysitter, one of otto's system agents, looks after pull requests",
             crate::paths::short_id(&id)
         )));
     }
@@ -2219,7 +2219,7 @@ pub fn yours() -> usize {
     n
 }
 
-/// Every repository with a change not yet cleaned up after: where the standard agents work.
+/// Every repository with a change not yet cleaned up after: where the system agents work.
 pub fn repos_in_play() -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let Ok(runs) = crate::state::read_all_runs() else { return out };

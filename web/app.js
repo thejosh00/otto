@@ -359,7 +359,7 @@ function healthBanner() {
   const box = h("div");
   const draw = (health) => {
     if (!health || health.ok) { box.replaceChildren(); return; }
-    box.replaceChildren(h("div.banner.warn", health.problems.map((p) => h("div", p)), h("a", { href: "#/system" }, "Details")));
+    box.replaceChildren(h("div.banner.warn", health.problems.map((p) => h("div", p)), h("a", { href: "#/settings/system" }, "Details")));
   };
   draw(lastHealth);
   api("/health").then(draw).catch(() => {});
@@ -589,13 +589,36 @@ function agentsView() {
     checked: showAll,
     onchange: (e) => { showAll = e.target.checked; store("otto.all", showAll ? "1" : "0"); refresh(); },
   });
+  const system = h("div");
   view.replaceChildren(
     h("div.view-title", h("h1", "Agents"),
       h("div.row", h("label.check", toggle, "Show finished"), h("a.btn", { href: "#/new" }, "New agent"))),
     healthBanner(),
-    list);
+    list,
+    h("h2", { id: "system-agents" }, "System agents"),
+    h("p.muted", "The agents otto needs to do its own job, made for you. Each starts only when you start it, and runs until you stop it."),
+    system);
+
+  async function refreshSystem() {
+    let agents;
+    try { agents = await api("/agents"); } catch (err) { system.replaceChildren(h("div.banner.bad", err.message)); return; }
+    system.replaceChildren(h("div.list", agents.map((a) => {
+      const r = a.run;
+      if (!r) return h("div.list-row.idle", glyph("idle"), h("span.name", a.role), h("span.line", "otto makes it within a few minutes"), h("span.meta"));
+      const mood = r.notStarted ? "paused" : r.mood;
+      const action = r.notStarted ? h("button.small.primary", { onclick: (e) => { e.preventDefault(); startAgent(r.id, e.currentTarget, refreshSystem); } }, "Start")
+        : r.terminal ? h("button.small", { onclick: (e) => { e.preventDefault(); startAgent(r.id, e.currentTarget, refreshSystem); } }, "Resume")
+        : null;
+      return h(`a.list-row.${mood}`, { href: `#/run/${enc(r.id)}`, title: a.about },
+        glyph(mood),
+        h("span.name", r.name),
+        h("span.line", r.notStarted ? `Not started — ${a.about}` : r.line),
+        h("span.meta", action || rowWhen(r)));
+    })));
+  }
 
   async function refresh() {
+    refreshSystem();
     let data;
     try {
       data = await api("/runs" + (showAll ? "?all=true" : ""));
@@ -603,16 +626,12 @@ function agentsView() {
       list.replaceChildren(h("div.banner.bad", err.message));
       return;
     }
-    // otto's own agents have a page of their own; here only a word when one waits to be started.
-    const idle = data.rows.filter((r) => r.role && r.notStarted);
-    const standardLine = idle.length
-      ? h("a.inbox-line", { href: "#/standard" }, `${idle.map((r) => r.name).join(" and ")} ${idle.length === 1 ? "isn't" : "aren't"} started yet →`)
-      : null;
+    // otto's own agents are listed below, apart from the person's.
     const own = data.rows.filter((r) => !r.role);
     if (!own.length) {
       list.replaceChildren(h("div.card.empty",
         h("p", showAll ? "No agents yet." : "No agents running."),
-        h("a.btn.primary", { href: "#/new" }, "Start one")), ...(standardLine ? [standardLine] : []));
+        h("a.btn.primary", { href: "#/new" }, "Start one")));
       return;
     }
     // What needs a person first, then what's working, then the rest; finished last.
@@ -624,7 +643,7 @@ function agentsView() {
       h("span.line", { title: r.line }, r.line),
       h("span.meta",
         r.messages ? h("span.msgs", { title: `${count(r.messages, "message")} waiting in your inbox` }, `✉ ${r.messages}`) : null,
-        rowWhen(r))))), ...(standardLine ? [standardLine] : []));
+        rowWhen(r))))));
   }
 
   refresh();
@@ -632,47 +651,16 @@ function agentsView() {
 }
 
 // ---------------------------------------------------------------------------
-// #/standard — the agents otto makes for you
+// System agents — the ones otto makes for you, listed under the person's on #/
 // ---------------------------------------------------------------------------
 
-// Start a standard agent: it was made paused, and starting it is lifting that.
+// Start a system agent: it was made paused, and starting it is lifting that.
 async function startAgent(id, button, after) {
   await busy(button, async () => {
     const r = await api(`/runs/${enc(id)}/resume`, {});
     toast(r.note || "Started");
     after();
   });
-}
-
-function standardView() {
-  const list = h("div");
-  view.replaceChildren(
-    h("div.view-title", h("h1", "Standard agents")),
-    h("p.muted", "The agents otto needs to do its own job, made for you. Each starts only when you start it, and runs until you stop it."),
-    list);
-
-  async function refresh() {
-    let agents;
-    try { agents = await api("/agents"); } catch (err) { list.replaceChildren(h("div.banner.bad", err.message)); return; }
-    list.replaceChildren(...agents.map((a) => {
-      const r = a.run;
-      const state = !r ? h("span.pill", "not made yet")
-        : r.notStarted ? h("span.pill", "not started")
-        : r.terminal ? h("span.pill.failed", r.status)
-        : r.running ? h("span.pill.done", "working") : h("span.pill.done", "on");
-      const actions = !r ? [h("span.faint", "otto makes it within a few minutes")]
-        : r.notStarted ? [h("button.primary", { onclick: (e) => startAgent(r.id, e.currentTarget, refresh) }, "Start")]
-        : r.terminal ? [h("button", { onclick: (e) => startAgent(r.id, e.currentTarget, refresh) }, "Resume")]
-        : [];
-      return h("div.card", { style: "margin-bottom:14px" },
-        h("div.row.spread", h("h3", r ? h("a", { href: `#/run/${enc(r.id)}` }, r.name) : a.role), state),
-        h("p.muted", a.about),
-        r && !r.notStarted ? h("p", { title: r.line }, r.line) : null,
-        h("div.row", { style: "margin-top:10px" }, ...actions, r ? h("a.btn", { href: `#/run/${enc(r.id)}` }, "Open") : null));
-    }));
-  }
-  refresh();
-  every(5000, refresh);
 }
 
 // ---------------------------------------------------------------------------
@@ -937,7 +925,7 @@ function changesView(selected) {
   const keyOf = (l) => `${l.run}/${l.n}`;
   view.replaceChildren(
     h("div.view-title", h("h1", "Changes"), h("span.faint", { id: "changes-summary" }),
-      h("a.view-link", { href: "#/processes", title: "How each repository's changes land" }, "Processes")),
+      h("a.view-link", { href: "#/settings/processes", title: "How each repository's changes land" }, "Processes")),
     h("div", { id: "lander-banner" }),
     h("div.mail", listBox, pane));
 
@@ -1003,7 +991,7 @@ function changesView(selected) {
     document.getElementById("changes-summary").textContent = yours ? `${yours} waiting on you` : "Nothing waiting on you";
     const banner = document.getElementById("lander-banner");
     const warning = !data.lander
-      ? h("div.banner.warn", h("div", "There's no lander yet, so nothing lands an approved change. otto makes one within a few minutes — then start it on ", h("a", { href: "#/standard" }, "Standard agents"), "."))
+      ? h("div.banner.warn", h("div", "There's no lander yet, so nothing lands an approved change. otto makes one within a few minutes — then start it on ", h("a", { href: "#/" }, "System agents"), ", on the Agents page."))
       : data.lander.notStarted ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, isn't started yet, so nothing you approve lands.`),
         h("button.small.primary", { onclick: (e) => startAgent(data.lander.id, e.currentTarget, refresh) }, "Start it"))
       : !data.lander.alive ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, has stopped, so nothing lands. Resume it, or name another with `, h("code", "otto config lander"), "."))
@@ -1168,7 +1156,7 @@ function changeDetail(d, actions) {
     const asPr = p.mode === "pr";
     const key = `${l.run}/${l.n}`;
     parts.push(h("div.decide",
-      h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/processes" }, p.name), ": ",
+      h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/settings/processes" }, p.name), ": ",
         asPr ? `approving opens a pull request${p.mergeWhenReady ? " that merges itself once approved and passing" : ""}` : `approving lands it on ${c.base}`,
         p.land ? ` — ${p.land}` : "",
         asPr ? `. The babysitter changes ${p.allowChanges ? `what is ${p.allowChanges}` : "nothing"} on it without you.` : ""),
@@ -2245,8 +2233,6 @@ function usageView() {
     h("label", h("input", { type: "radio", name, value, checked: value === current,
       onchange: () => { pick(value); load(); } }), label)));
   view.replaceChildren(
-    h("a.back", { href: "#/system" }, "← otto itself"),
-    h("h1", "Usage"),
     h("p.muted", "What your agents' runs have used, in tokens — finished agents included. Read from each run's session transcript."),
     h("div.row", { style: "margin:14px 0;flex-wrap:wrap;gap:10px" },
       picker("since", windows, since, (v) => { since = v; }),
@@ -2471,7 +2457,6 @@ function systemView() {
   const card = h("div.card");
   const output = h("div");
   view.replaceChildren(
-    h("h1", "otto itself"),
     h("p.muted", "The machinery that keeps your agents going. When it's working there's nothing to do here."),
     healthBox,
     h("h2", "The reviver"),
@@ -2479,8 +2464,7 @@ function systemView() {
     card, output,
     h("h2", "Data no agent uses"),
     h("p.muted", "What otto still keeps for agents you deleted, and anything else left over. No agent reads any of it."),
-    unusedBox,
-    h("p", { style: "margin-top:24px" }, h("a", { href: "#/usage" }, "What your agents have used →")));
+    unusedBox);
 
   async function refreshUnused() {
     let list;
@@ -2573,10 +2557,9 @@ function processesView() {
   const editor = h("div");
   const projects = h("div");
   view.replaceChildren(
-    h("a.back", { href: "#/changes" }, "← Changes"),
-    h("div.view-title", h("h1", "Processes"),
+    h("div.row.spread", { style: "align-items:flex-start;gap:14px;flex-wrap:nowrap" },
+      h("p.muted", { style: "flex:1;margin-top:0" }, "How a change goes from started to landed. A repository follows one, so approving a change does what that repository needs — pushed straight to its base, or opened as a pull request. What it says in words is for the agents: how to start a change, and how to land one."),
       h("button.small", { onclick: () => edit(null) }, "New process")),
-    h("p.muted", "How a change goes from started to landed. A repository follows one, so approving a change does what that repository needs — pushed straight to its base, or opened as a pull request. What it says in words is for the agents: how to start a change, and how to land one."),
     editor, list,
     h("h2", "Repositories"),
     h("p.muted", "Every repository follows standard — a pull request — until you give it another; direct pushes straight to its base. Changes already approved land as they were approved."),
@@ -2683,6 +2666,20 @@ function processesView() {
 }
 
 // ---------------------------------------------------------------------------
+// #/settings — otto itself, usage, processes
+// ---------------------------------------------------------------------------
+
+const settingsTabs = [["system", "otto itself", systemView], ["usage", "Usage", usageView], ["processes", "Processes", processesView]];
+
+function settingsView(tab) {
+  const [key, , draw] = settingsTabs.find(([k]) => k === tab) || settingsTabs[0];
+  draw();
+  view.prepend(
+    h("h1", "Settings"),
+    h("nav.subnav", settingsTabs.map(([k, label]) => h("a", { href: `#/settings/${k}`, class: k === key ? "active" : "" }, label))));
+}
+
+// ---------------------------------------------------------------------------
 // router
 // ---------------------------------------------------------------------------
 
@@ -2693,16 +2690,16 @@ function route() {
   const run = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
   const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
   const changes = hash.match(/^#\/changes(?:\/([^/]+\/\d+))?$/);
-  const section = run ? "agents" : inbox ? "inbox" : changes || hash === "#/processes" ? "changes" : hash === "#/new" ? "new" : hash === "#/standard" ? "standard" : hash === "#/" ? "agents" : "";
+  // The addresses settings had before it was one page still lead to its tabs.
+  const older = { "#/system": "system", "#/agent": "system", "#/usage": "usage", "#/processes": "processes" };
+  const settings = hash.match(/^#\/settings(?:\/([a-z]+))?$/) || (older[hash] && [hash, older[hash]]);
+  const section = run ? "agents" : inbox ? "inbox" : changes ? "changes" : settings ? "settings" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
   else if (changes) changesView(changes[1] ? decodeURIComponent(changes[1]) : null);
   else if (hash === "#/new") newRunView();
-  else if (hash === "#/system" || hash === "#/agent") systemView();
-  else if (hash === "#/usage") usageView();
-  else if (hash === "#/processes") processesView();
-  else if (hash === "#/standard") standardView();
+  else if (settings) settingsView(settings[1] || "system");
   else agentsView();
   window.scrollTo(0, 0);
 }

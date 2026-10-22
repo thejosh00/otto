@@ -1,14 +1,14 @@
-//! Standard agents: the runs otto itself needs, made for the person rather than by them.
+//! System agents: the runs otto itself needs, made for the person rather than by them.
 //!
 //! Landing changes takes a run of its own — the lander — and looking after the pull requests it
 //! opens takes another, the babysitter. Setting up the lander used to be a page of the README: an
 //! `otto run` with the right workflow, a check script, `otto config lander`. Nothing in that was the
-//! person's to decide, so otto does it. Each standard agent is made once, the first
+//! person's to decide, so otto does it. Each system agent is made once, the first
 //! time otto finds it missing, and made **not started**: paused until the person starts it on the
-//! Standard agents page (`otto resume`), because a run that pushes code shouldn't begin by itself.
+//! Agents page, under System agents (`otto resume`), because a run that pushes code shouldn't begin by itself.
 //!
-//! - **Listed apart.** A standard agent is marked with its `role`, and the person's own runs list
-//!   without it; the Standard agents page is where they are.
+//! - **Listed apart.** A system agent is marked with its `role`, and the person's own runs list
+//!   without it; they are listed under them, as System agents.
 //! - **otto's workflow, kept current.** What it wraps is written from the binary into
 //!   `$OTTO_HOME/agents/` every time otto checks on them, so a new otto brings its agents' new
 //!   instructions with it.
@@ -22,8 +22,10 @@ use crate::error::OttoError;
 use crate::state::{RunEntry, RunState};
 use std::path::PathBuf;
 
-/// Why a standard agent is paused before anyone has started it.
-pub const NOT_STARTED: &str = "not started yet — start it on the Standard agents page, or `otto resume`";
+/// Why a system agent is paused before anyone has started it. Known by how it begins
+/// (`NOT_STARTED_MARK`), so rewording the rest never strands agents made before.
+pub const NOT_STARTED_MARK: &str = "not started yet";
+pub const NOT_STARTED: &str = "not started yet — start it under System agents on the Agents page, or `otto resume`";
 
 pub struct Agent {
     /// What its runs are marked with (`RunState::role`), and the name it is given.
@@ -80,7 +82,7 @@ fn dir() -> PathBuf {
 /// What `ensure` did, a line each; nothing when everything was already there.
 pub type Made = Vec<String>;
 
-/// Make whatever standard agent is missing, not started, and bring every one's instructions up to
+/// Make whatever system agent is missing, not started, and bring every one's instructions up to
 /// date. Cheap when there is nothing to do, so poke calls it on every pass.
 pub fn ensure() -> Result<Made, OttoError> {
     let mut made = Vec::new();
@@ -120,7 +122,7 @@ pub fn ensure() -> Result<Made, OttoError> {
     Ok(made)
 }
 
-/// A run already doing this agent's job, named by hand before standard agents existed.
+/// A run already doing this agent's job, named by hand before system agents existed.
 fn adoptable(agent: &Agent, runs: &[RunState]) -> Result<Option<String>, OttoError> {
     let named = match agent.role {
         "lander" => crate::config::lander()?,
@@ -159,7 +161,7 @@ fn make(agent: &Agent) -> Result<String, OttoError> {
     Ok(id)
 }
 
-/// One standard agent, for the page that lists them.
+/// One system agent, for the page that lists them.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentView {
@@ -183,12 +185,13 @@ pub fn view() -> Result<Vec<AgentView>, OttoError> {
         .collect())
 }
 
-/// Whether a run is a standard agent nobody has started yet.
+/// Whether a run is a system agent nobody has started yet.
 pub fn not_started(state: &RunState) -> bool {
-    state.role.is_some() && state.paused.as_ref().is_some_and(|p| p.until.is_none() && p.reason.as_deref() == Some(NOT_STARTED))
+    state.role.is_some()
+        && state.paused.as_ref().is_some_and(|p| p.until.is_none() && p.reason.as_deref().is_some_and(|r| r.starts_with(NOT_STARTED_MARK)))
 }
 
-/// The repositories a standard agent's wake may work in, beyond its own: every one with a change
+/// The repositories a system agent's wake may work in, beyond its own: every one with a change
 /// not yet cleaned up after.
 pub fn grants(state: &RunState) -> Vec<String> {
     if state.role.is_none() {

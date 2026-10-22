@@ -64,7 +64,7 @@ otto config lander             # print which run is
 otto config lander --off       # none
 ```
 
-otto makes one and names it here (a [standard agent](../concepts.md#standard-agents)); this is for
+otto makes one and names it here (a [system agent](../concepts.md#system-agents)); this is for
 naming another.
 
 ## `processes`

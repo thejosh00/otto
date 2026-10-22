@@ -59,7 +59,7 @@ pub fn serve(args: ServeArgs) -> Result<(), OttoError> {
         println!("otto: serving {} on {url}", crate::paths::otto_home().display());
         println!("  Ctrl-C to stop; runs carry on without it");
         if let Err(e) = crate::agents::ensure() {
-            eprintln!("otto: couldn't check on the standard agents: {e}");
+            eprintln!("otto: couldn't check on the system agents: {e}");
         }
         if args.open {
             let _ = std::process::Command::new("open").arg(&url).spawn();

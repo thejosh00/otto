@@ -134,8 +134,8 @@ it merges itself, if you said so. The Changes page shows every change by whose m
 an agent's, reviewers' or CI's — and says when one is stuck.
 
 One run, the **lander**, does the landing, and only it may. You don't set it up: it is one of
-otto's **standard agents**, with the babysitter, made for you the first time otto runs, and listed on their own page
-(Standard in the web UI) rather than among your runs. Each is made **not started** — a run that pushes
+otto's **system agents**, with the babysitter, made for you the first time otto runs, and listed apart
+(System agents, under your agents in the web UI). Each is made **not started** — a run that pushes
 code shouldn't begin by itself — so start them there once, or:
 
 ```bash
@@ -146,7 +146,7 @@ otto resume babysitter    # if your repositories land changes as pull requests
 Approving a change wakes it straight away. Between approvals it sleeps on a check script otto gave
 it, which asks whether anything is due or any pull request has moved — no model, no tokens. Its
 instructions come with otto (`workflows/land-flow.md`), so upgrading otto upgrades them. A lander
-you named with `otto config lander` before standard agents existed is adopted as the standard one.
+you named with `otto config lander` before system agents existed is adopted as the system one.
 
 Each wake, for each approved change: it rebases onto the base branch if that moved (in a worktree
 of its own), runs the tests, checks the commit is what you approved, and lands it — the way its
