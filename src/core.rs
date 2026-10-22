@@ -167,6 +167,9 @@ pub fn blocking(state: &RunState, wake_running: bool) -> String {
         let n = state.wake.as_ref().map(|w| w.n).unwrap_or(0);
         return format!("working (wake {n})");
     }
+    if crate::agents::not_started(state) {
+        return "you: not started yet".to_string();
+    }
     if state.is_paused() && !state.status.is_terminal() {
         return match state.paused.as_ref().and_then(|p| p.until) {
             Some(until) => format!("paused until {}", crate::clock::local_clock(until)),
@@ -392,6 +395,10 @@ pub struct LsRow {
     pub messages: usize,
     /// When it last ran or checked (`last_run`).
     pub last_run_at: Option<crate::clock::Timestamp>,
+    /// The part it plays when it is a standard agent (`crate::agents`), listed apart.
+    pub role: Option<String>,
+    /// A standard agent nobody has started yet.
+    pub not_started: bool,
 }
 
 /// A gate a person can act on right now.
@@ -449,6 +456,8 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
                         line: "Its run.json can't be read — a person needs to look".to_string(),
                         messages: 0,
                         last_run_at: None,
+                        role: None,
+                        not_started: false,
                     });
                 }
                 continue;
@@ -512,6 +521,8 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
             next_wake: next_wake(&state, running),
             running,
             terminal: state.status.is_terminal(),
+            role: state.role.clone(),
+            not_started: crate::agents::not_started(&state),
         });
     }
     let stranded_sleepers = if sleeping_count > 0 && crate::launchd::is_loaded() == Some(false) {
@@ -1735,6 +1746,7 @@ pub fn pause_run(id: &str, until: Option<crate::clock::Timestamp>, reason: Optio
 /// next poke — one, never a backlog.
 pub fn unpause_run(id: &str) -> Result<ResumeOutcome, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
+    let starting = crate::agents::not_started(&read_run(&id)?);
     let status = crate::state::transaction(&id, |path, state| {
         if state.paused.take().is_none() {
             return Err(OttoError::conflict(format!("{} is not paused", state.label())));
@@ -1743,6 +1755,10 @@ pub fn unpause_run(id: &str) -> Result<ResumeOutcome, OttoError> {
         Ok(state.status)
     })?;
     let state = read_run(&id)?;
+    if starting {
+        let note = "started — it looks for work within a few minutes".to_string();
+        return Ok(ResumeOutcome { id, status, reason: "started".to_string(), wake: None, note: Some(note) });
+    }
     let note = match (&state.gate, state.next_wake_at) {
         (Some(gate), _) => format!("back on its schedule, and still waiting on question {}", gate.id),
         (None, Some(at)) if at.is_past() => "back on its schedule — the run it missed comes within a few minutes".to_string(),

@@ -107,6 +107,9 @@ pub fn install(args: InstallArgs) -> Result<(), OttoError> {
             LinkOutcome::Replaced => println!("relinked {} -> {}", link.display(), source.display()),
         }
     }
+    for line in crate::agents::ensure()? {
+        println!("{line}");
+    }
     Ok(())
 }
 

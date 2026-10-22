@@ -58,6 +58,9 @@ pub fn serve(args: ServeArgs) -> Result<(), OttoError> {
         let url = format!("http://127.0.0.1:{port}/");
         println!("otto: serving {} on {url}", crate::paths::otto_home().display());
         println!("  Ctrl-C to stop; runs carry on without it");
+        if let Err(e) = crate::agents::ensure() {
+            eprintln!("otto: couldn't check on the standard agents: {e}");
+        }
         if args.open {
             let _ = std::process::Command::new("open").arg(&url).spawn();
         }
@@ -78,6 +81,7 @@ pub fn router(state: AppState) -> Router {
         .route("/projects", post(handlers::set_project))
         .route("/cleanup", get(handlers::unused).post(handlers::cleanup))
         .route("/runs", get(handlers::list_runs).post(handlers::start_run))
+        .route("/agents", get(handlers::standard_agents))
         .route("/runs/{id}", get(handlers::run_detail))
         .route("/runs/{id}/answer", post(handlers::answer))
         .route("/runs/{id}/notes", post(handlers::add_note))

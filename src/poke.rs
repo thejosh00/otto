@@ -567,6 +567,14 @@ impl Default for PokeArgs {
 /// `otto poke` (launchd, or by hand) and the web page's "poke now".
 pub fn poke_pass(args: &PokeArgs) -> PokeReport {
     let mut report = PokeReport::default();
+    // The standard agents are made here because poke is the one thing sure to run: whoever installed
+    // otto has a lander waiting for them to start, without a command of their own.
+    if !args.dry_run {
+        match crate::agents::ensure() {
+            Ok(made) => report.lines.extend(made.into_iter().map(|line| format!("otto poke: {line}"))),
+            Err(e) => report.errors.push(format!("otto poke: couldn't check on the standard agents: {e}")),
+        }
+    }
     let runs_dir = crate::paths::runs_dir();
     if !runs_dir.is_dir() {
         report.lines.push("otto poke: no runs directory — nothing to do".to_string());

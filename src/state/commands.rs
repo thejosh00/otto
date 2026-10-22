@@ -408,6 +408,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         messages: Vec::new(),
         paused: None,
         wait: None,
+        role: None,
     };
     Ok(PlannedRun { state, path })
 }

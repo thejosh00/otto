@@ -210,6 +210,7 @@ fn launch(state: &RunState, launcher: &LauncherDef, env: &[String], prompt: &str
         dirs.push(workdir.display().to_string());
     }
     dirs.extend(state.launcher.repos.iter().cloned());
+    dirs.extend(crate::agents::grants(state));
     let mut seen = std::collections::HashSet::new();
     dirs.retain(|d| seen.insert(d.clone()));
 

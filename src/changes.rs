@@ -967,8 +967,8 @@ pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Resu
     let config = crate::config::load()?;
     if config.lander.is_none() {
         return Err(OttoError::usage(
-            "no lander is set up, so nothing would land an approved change — start one and name it with `otto config lander \
-             <run>` (the README's \"Landing changes\" says how), or land it yourself: `otto changes show <change>` has the commands",
+            "no lander is set up, so nothing would land an approved change — otto makes one on its next pass (`otto poke`), and \
+             you start it with `otto resume lander`; or land it yourself: `otto changes show <change>` has the commands",
         ));
     }
     let note = check_say(note, "--note")?;
@@ -1882,6 +1882,8 @@ pub struct LanderRef {
     pub name: String,
     /// It exists, and isn't stopped or done.
     pub alive: bool,
+    /// otto made it, and nobody has started it yet (`crate::agents`).
+    pub not_started: bool,
 }
 
 pub fn lander_ref() -> Option<LanderRef> {
@@ -1890,6 +1892,7 @@ pub fn lander_ref() -> Option<LanderRef> {
     Some(LanderRef {
         short: crate::paths::short_id(&id),
         name: state.as_ref().map(|s| s.display_name()).unwrap_or_else(|| id.clone()),
+        not_started: state.as_ref().is_some_and(crate::agents::not_started),
         alive: state.is_some_and(|s| !s.status.is_terminal()),
         id,
     })
@@ -1990,6 +1993,23 @@ pub fn yours() -> usize {
         n += index_or_empty(&dir).changes.iter().filter(|c| c.whose_move() == Move::You).count();
     }
     n
+}
+
+/// Every repository with a change not yet cleaned up after: where the standard agents work.
+pub fn repos_in_play() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let Ok(runs) = crate::state::read_all_runs() else { return out };
+    for entry in runs {
+        let crate::state::RunEntry::Readable(state) = entry else { continue };
+        let Ok(dir) = crate::paths::run_dir(&state.id) else { continue };
+        for c in index_or_empty(&dir).changes {
+            if !(c.state.is_over() && c.cleaned.is_some()) && !out.contains(&c.repo) {
+                out.push(c.repo);
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 /// A run's own changes, newest first, for its page.

@@ -384,8 +384,8 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   landed or been dropped and cleaned up after. The Changes page lists them that way — what waits on
   you first — and flags a change over a few hundred lines, or two open changes that touch the same
   file. The inbox doesn't list them; it says how many wait, with a link.
-- **Only the lander lands.** It is named in `config.json` (`otto config lander <run>`), and otto refuses
-  the landing commands from any other run. So only the lander needs to be able to push; the runs that
+- **Only the lander lands.** It is one of otto's [standard agents](#standard-agents), named in
+  `config.json` (`otto config lander <run>`), and otto refuses the landing commands from any other run. So only the lander needs to be able to push; the runs that
   write code can run under a launcher that can't. otto checks what it says, too: a change is landed
   only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
@@ -403,7 +403,20 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
   or been sent back 3 times is listed as stuck, and you're told once.
 
-The [README](../README.md#landing-changes) sets up a lander. A change's files live with the run that
+### Standard agents
+
+Some runs are otto's own: it needs them to do its job, and nothing about them is yours to decide. The
+**lander** is one. otto makes each the first time it finds it missing — on its next pass, or `otto
+install`, or starting the web UI — and makes it **not started**: paused until you start it (Standard
+in the web UI, or `otto resume <name>`), since an agent that pushes code shouldn't begin by itself.
+
+- They are listed apart: the web UI's Standard page, and a line under `otto ls`, not among your runs.
+- Their instructions come with otto and are rewritten from it into `$OTTO_HOME/agents/` on every pass,
+  so a new otto brings new instructions with it.
+- There is one of each. Stopping one retires it, and nothing makes another; resume it to bring it back.
+- Each wake of one may work in every repository with a change in play.
+
+The [README](../README.md#landing-changes) has more on the lander. A change's files live with the run that
 wrote it: `changes/index.json`, and each version's patch and summary beside it.
 
 ## Pausing

@@ -121,6 +121,9 @@ fn times(n: u32) -> String {
 
 /// "Paused until Mon 9:00 AM", or "Paused" for a pause with no end.
 pub fn paused_line(state: &RunState) -> String {
+    if crate::agents::not_started(state) {
+        return "Not started yet".to_string();
+    }
     match state.paused.as_ref().and_then(|p| p.until) {
         Some(until) => format!("Paused until {}", crate::clock::plain_time(until)),
         None => "Paused".to_string(),

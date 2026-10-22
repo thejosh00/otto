@@ -1,3 +1,4 @@
+mod agents;
 mod changes;
 mod chat;
 mod cleanup;

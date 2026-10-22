@@ -64,7 +64,8 @@ otto config lander             # print which run is
 otto config lander --off       # none
 ```
 
-The [README](../../README.md#landing-changes) sets one up.
+otto makes one and names it here (a [standard agent](../concepts.md#standard-agents)); this is for
+naming another.
 
 ## `processes`
 

@@ -130,29 +130,19 @@ is drafted for you to post with a click, and once it's approved and passing it's
 it merges itself, if you said so. The Changes page shows every change by whose move it is — yours,
 an agent's, reviewers' or CI's — and says when one is stuck.
 
-One run, the **lander**, does the landing, and only it may. Set it up once, from your otto
-checkout:
+One run, the **lander**, does the landing, and only it may. You don't set it up: it is one of
+otto's **standard agents**, made for you the first time otto runs, and listed on their own page
+(Standard in the web UI) rather than among your runs. It is made **not started** — a run that pushes
+code shouldn't begin by itself — so start it there once, or:
 
 ```bash
-otto run --perpetual --period 10m --name lander --instructions workflows/land-flow.md \
-         --repo ~/workspace --goal "Land the changes I approve, and clean up after them"
-otto config lander lander    # straight away: its first wake asks what is due to it
+otto resume lander
 ```
 
-Approving a change wakes it straight away. So that waiting costs nothing, give it a check script
-that asks otto whether anything is due, or any pull request has moved — no model, no tokens:
-
-```bash
-cat > changes-due.sh <<'EOF'
-#!/bin/sh
-# Nothing to land or clean up is nothing new; anything else, or otto failing, is a wake.
-if [ "$("$HOME/.local/bin/otto" changes --due --json)" = "[]" ]; then
-  echo "nothing to land"; exit 0
-fi
-echo "something to land"; exit 1
-EOF
-otto check lander --script changes-due.sh --wake-after 0
-```
+Approving a change wakes it straight away. Between approvals it sleeps on a check script otto gave
+it, which asks whether anything is due or any pull request has moved — no model, no tokens. Its
+instructions come with otto (`workflows/land-flow.md`), so upgrading otto upgrades them. A lander
+you named with `otto config lander` before standard agents existed is adopted as the standard one.
 
 Each wake, for each approved change: it rebases onto the base branch if that moved (in a worktree
 of its own), runs the tests, checks the commit is what you approved, and lands it — the way its
@@ -164,8 +154,8 @@ and never lands anything you didn't approve.
 - **Give push to the lander alone.** It is the one run that needs your git credentials. The runs that
   write code can run under a launcher without them, or with `--deny-tool 'Bash(git push:*)'`
   ([sandboxing](docs/guides/sandboxing.md)).
-- **`--repo`** is what it may work in: the repositories your runs hand back changes to, or a folder
-  above them all.
+- **It works where the changes are.** Each of its wakes may work in every repository with a change
+  in play, and no other.
 - **Pull requests need `gh`**, signed in for each host (`gh auth status`), where the lander and its
   check script run.
 

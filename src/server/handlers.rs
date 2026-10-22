@@ -47,6 +47,10 @@ pub async fn list_runs(Query(q): Query<ListQuery>) -> Response {
     blocking(move || crate::core::list_runs(q.all)).await
 }
 
+pub async fn standard_agents() -> Response {
+    blocking(crate::agents::view).await
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct StartQuery {

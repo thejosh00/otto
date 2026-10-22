@@ -714,6 +714,10 @@ pub struct RunState {
     /// What a wake said the run is waiting on, with a limit (`Wait`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<Wait>,
+    /// The part it plays when it is one of otto's standard agents (`crate::agents`): `lander`,
+    /// `babysitter`. otto made it, and it is listed apart from the person's own runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1149,6 +1153,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         messages: Vec::new(),
         paused: None,
         wait: None,
+        role: None,
     }
 }
 

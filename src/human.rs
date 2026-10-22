@@ -346,9 +346,20 @@ pub struct LsArgs {
 
 pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     let view = crate::core::list_runs(args.all)?;
-    let rows = &view.rows;
+    // otto's own agents are listed apart, under the person's runs.
+    let (agents, rows): (Vec<&crate::core::LsRow>, Vec<&crate::core::LsRow>) = view.rows.iter().partition(|r| r.role.is_some());
+    let agents_line = (!agents.is_empty()).then(|| {
+        let each: Vec<String> = agents
+            .iter()
+            .map(|r| format!("{} ({})", r.name, if r.not_started { "not started — `otto resume ".to_string() + &r.short + "`" } else { r.status.clone() }))
+            .collect();
+        format!("standard agents: {}", each.join(", "))
+    });
     if rows.is_empty() {
         println!("no runs{}", if args.all { "" } else { " (--all includes finished ones)" });
+        if let Some(line) = &agents_line {
+            println!("\n{line}");
+        }
         return Ok(());
     }
     // ID is what to type back: every command otto prints uses it, and every `<id>` accepts it —
@@ -364,7 +375,7 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
     );
     // The run's own line under its row, cut to the terminal's width — what it is doing, in words.
     let line_width = terminal_width().saturating_sub(width + 4).max(40);
-    for row in rows {
+    for row in &rows {
         // `—` is one column wide but three bytes, and `{:<n}` pads by chars, so this lines up.
         println!(
             "{:<width$}  {:<name_width$}  {:<status_width$}  {:<waiting$}  {:<next_width$}  {}",
@@ -374,7 +385,10 @@ pub fn ls(args: LsArgs) -> Result<(), OttoError> {
             println!("{:<width$}  {}", "", clip(&row.line, line_width));
         }
     }
-    let waiting_messages: usize = rows.iter().map(|r| r.messages).sum();
+    if let Some(line) = &agents_line {
+        println!("\n{line}");
+    }
+    let waiting_messages: usize = view.rows.iter().map(|r| r.messages).sum();
     if waiting_messages > 0 {
         let noun = if waiting_messages == 1 { "message" } else { "messages" };
         println!("\n{waiting_messages} {noun} waiting for you — `otto inbox`");
@@ -816,7 +830,7 @@ pub fn config_lander(run: Option<String>, off: bool) -> Result<(), OttoError> {
         None => match crate::changes::lander_ref() {
             Some(l) if l.alive => println!("{}", crate::paths::label(&l.short, &l.name)),
             Some(l) => println!("{} — it is stopped or done, so nothing lands; resume it or name another", crate::paths::label(&l.short, &l.name)),
-            None => println!("not set — `otto config lander <run>` names the run that lands approved changes (the README's \"Landing changes\")"),
+            None => println!("not set — otto makes a lander on its next pass (`otto poke`); `otto config lander <run>` names another"),
         },
     }
     Ok(())

@@ -603,24 +603,74 @@ function agentsView() {
       list.replaceChildren(h("div.banner.bad", err.message));
       return;
     }
-    if (!data.rows.length) {
+    // otto's own agents have a page of their own; here only a word when one waits to be started.
+    const idle = data.rows.filter((r) => r.role && r.notStarted);
+    const standardLine = idle.length
+      ? h("a.inbox-line", { href: "#/standard" }, `${idle.map((r) => r.name).join(" and ")} ${idle.length === 1 ? "isn't" : "aren't"} started yet →`)
+      : null;
+    const own = data.rows.filter((r) => !r.role);
+    if (!own.length) {
       list.replaceChildren(h("div.card.empty",
         h("p", showAll ? "No agents yet." : "No agents running."),
-        h("a.btn.primary", { href: "#/new" }, "Start one")));
+        h("a.btn.primary", { href: "#/new" }, "Start one")), ...(standardLine ? [standardLine] : []));
       return;
     }
     // What needs a person first, then what's working, then the rest; finished last.
     const order = { waiting: 0, trouble: 1, working: 2, watching: 3, idle: 3, paused: 4, finished: 5 };
-    const rows = [...data.rows].sort((a, b) => (order[a.mood] ?? 3) - (order[b.mood] ?? 3));
+    const rows = [...own].sort((a, b) => (order[a.mood] ?? 3) - (order[b.mood] ?? 3));
     list.replaceChildren(h("div.list", rows.map((r) => h(`a.list-row.${r.mood}`, { href: `#/run/${enc(r.id)}` },
       glyph(r.mood),
       h("span.name", r.name || r.id),
       h("span.line", { title: r.line }, r.line),
       h("span.meta",
         r.messages ? h("span.msgs", { title: `${count(r.messages, "message")} waiting in your inbox` }, `✉ ${r.messages}`) : null,
-        rowWhen(r))))));
+        rowWhen(r))))), ...(standardLine ? [standardLine] : []));
   }
 
+  refresh();
+  every(5000, refresh);
+}
+
+// ---------------------------------------------------------------------------
+// #/standard — the agents otto makes for you
+// ---------------------------------------------------------------------------
+
+// Start a standard agent: it was made paused, and starting it is lifting that.
+async function startAgent(id, button, after) {
+  await busy(button, async () => {
+    const r = await api(`/runs/${enc(id)}/resume`, {});
+    toast(r.note || "Started");
+    after();
+  });
+}
+
+function standardView() {
+  const list = h("div");
+  view.replaceChildren(
+    h("div.view-title", h("h1", "Standard agents")),
+    h("p.muted", "The agents otto needs to do its own job, made for you. Each starts only when you start it, and runs until you stop it."),
+    list);
+
+  async function refresh() {
+    let agents;
+    try { agents = await api("/agents"); } catch (err) { list.replaceChildren(h("div.banner.bad", err.message)); return; }
+    list.replaceChildren(...agents.map((a) => {
+      const r = a.run;
+      const state = !r ? h("span.pill", "not made yet")
+        : r.notStarted ? h("span.pill", "not started")
+        : r.terminal ? h("span.pill.failed", r.status)
+        : r.running ? h("span.pill.done", "working") : h("span.pill.done", "on");
+      const actions = !r ? [h("span.faint", "otto makes it within a few minutes")]
+        : r.notStarted ? [h("button.primary", { onclick: (e) => startAgent(r.id, e.currentTarget, refresh) }, "Start")]
+        : r.terminal ? [h("button", { onclick: (e) => startAgent(r.id, e.currentTarget, refresh) }, "Resume")]
+        : [];
+      return h("div.card", { style: "margin-bottom:14px" },
+        h("div.row.spread", h("h3", r ? h("a", { href: `#/run/${enc(r.id)}` }, r.name) : a.role), state),
+        h("p.muted", a.about),
+        r && !r.notStarted ? h("p", { title: r.line }, r.line) : null,
+        h("div.row", { style: "margin-top:10px" }, ...actions, r ? h("a.btn", { href: `#/run/${enc(r.id)}` }, "Open") : null));
+    }));
+  }
   refresh();
   every(5000, refresh);
 }
@@ -953,7 +1003,9 @@ function changesView(selected) {
     document.getElementById("changes-summary").textContent = yours ? `${yours} waiting on you` : "Nothing waiting on you";
     const banner = document.getElementById("lander-banner");
     const warning = !data.lander
-      ? h("div.banner.warn", h("div", "No lander is set up, so nothing lands an approved change. Start one and name it with ", h("code", "otto config lander <agent>"), " — the README's \"Landing changes\" says how."))
+      ? h("div.banner.warn", h("div", "There's no lander yet, so nothing lands an approved change. otto makes one within a few minutes — then start it on ", h("a", { href: "#/standard" }, "Standard agents"), "."))
+      : data.lander.notStarted ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, isn't started yet, so nothing you approve lands.`),
+        h("button.small.primary", { onclick: (e) => startAgent(data.lander.id, e.currentTarget, refresh) }, "Start it"))
       : !data.lander.alive ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, has stopped, so nothing lands. Resume it, or name another with `, h("code", "otto config lander"), "."))
       : null;
     banner.replaceChildren(...(warning ? [warning] : []));
@@ -2602,7 +2654,7 @@ function route() {
   const run = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
   const inbox = hash.match(/^#\/inbox(?:\/([^/]+\/[qm][^/]+))?$/);
   const changes = hash.match(/^#\/changes(?:\/([^/]+\/\d+))?$/);
-  const section = run ? "agents" : inbox ? "inbox" : changes || hash === "#/processes" ? "changes" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
+  const section = run ? "agents" : inbox ? "inbox" : changes || hash === "#/processes" ? "changes" : hash === "#/new" ? "new" : hash === "#/standard" ? "standard" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
@@ -2611,6 +2663,7 @@ function route() {
   else if (hash === "#/system" || hash === "#/agent") systemView();
   else if (hash === "#/usage") usageView();
   else if (hash === "#/processes") processesView();
+  else if (hash === "#/standard") standardView();
   else agentsView();
   window.scrollTo(0, 0);
 }
