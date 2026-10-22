@@ -881,7 +881,7 @@ const prName = (l) => (l.pr && l.pr.number ? `PR #${l.pr.number}` : "Its pull re
 function changeGroup(l) {
   if (l.move === "you") return "you";
   if (l.stuck) return "stuck";
-  if (l.move === "author" || l.move === "lander") return "agents";
+  if (l.move === "author" || l.move === "lander" || l.move === "babysitter") return "agents";
   if (l.move === "reviewers" || l.move === "ci") return "others";
   return "nobody";
 }
@@ -899,7 +899,7 @@ function changeStateText(l) {
     case "ready-to-merge": return `${prName(l)} is approved and passing — yours to merge`;
     case "pr-open":
       if (l.replies) return `${prName(l)}: ${l.replies === 1 ? "a reply" : `${l.replies} replies`} drafted for you to post`;
-      return l.move === "ci" ? `${prName(l)}: waiting on CI` : l.move === "lander" ? `${prName(l)}: the lander is on it` : `${prName(l)}: waiting on review`;
+      return l.move === "ci" ? `${prName(l)}: waiting on CI` : l.move === "lander" ? `${prName(l)}: the lander is on it` : l.move === "babysitter" ? `${prName(l)}: CI failing — the babysitter is on it` : `${prName(l)}: waiting on review`;
     case "merged": return l.move === "lander" ? `${prName(l)} merged at ${shortSha(l.landedSha)} — cleaning up` : `${prName(l)} merged at ${shortSha(l.landedSha)}`;
     case "closed": return `${prName(l)} was closed without merging`;
     default: return l.move === "lander" ? "Dropped — cleaning up" : "Dropped";
@@ -913,7 +913,7 @@ function changeChip(l) {
     : l.state === "merged" ? ["done", "Merged"]
     : l.state === "dropped" || l.state === "closed" ? ["update", l.state === "closed" ? "Closed" : "Dropped"]
     : l.state === "revising" ? ["draft", "Being revised"]
-    : l.state === "pr-open" ? ["report", l.move === "ci" ? "Waiting on CI" : l.move === "lander" ? "Lander on it" : "In review"]
+    : l.state === "pr-open" ? ["report", l.move === "ci" ? "Waiting on CI" : l.move === "lander" ? "Lander on it" : l.move === "babysitter" ? "Babysitter on it" : "In review"]
     : ["report", l.state === "landing" ? "Landing" : "Approved"];
   return h(`span.kind.${cls}`, text);
 }
@@ -1007,6 +1007,10 @@ function changesView(selected) {
       : data.lander.notStarted ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, isn't started yet, so nothing you approve lands.`),
         h("button.small.primary", { onclick: (e) => startAgent(data.lander.id, e.currentTarget, refresh) }, "Start it"))
       : !data.lander.alive ? h("div.banner.warn", h("div", `The lander, ${data.lander.name}, has stopped, so nothing lands. Resume it, or name another with `, h("code", "otto config lander"), "."))
+      // Pull requests nobody watches: reviews and CI would go unseen.
+      : data.babysitter && data.babysitter.notStarted && data.changes.some((l) => l.pr && !["merged", "closed", "dropped"].includes(l.state))
+        ? h("div.banner.warn", h("div", `The babysitter, ${data.babysitter.name}, isn't started, so nobody watches your open pull requests.`),
+          h("button.small.primary", { onclick: (e) => startAgent(data.babysitter.id, e.currentTarget, refresh) }, "Start it"))
       : null;
     banner.replaceChildren(...(warning ? [warning] : []));
     for (const k of [...picked]) if (!data.changes.some((l) => keyOf(l) === k && l.move === "you")) picked.delete(k);
@@ -1176,7 +1180,7 @@ function changeDetail(d, actions) {
     h("li", f.add == null ? h("span.pm.faint", "binary") : lineCount(f), " ", h("code", f.path)))));
   parts.push(d.patch != null ? patchView(d.patch) : h("p.faint", "Its patch was too big to keep here. To read it: ", h("code", d.commands[0])));
   parts.push(h("p.label", "What happened"), h("ul.lately.timeline", [...c.timeline].reverse().map((m) =>
-    h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : m.by === "reviewer" ? "On its PR" : "otto"), " ", m.what)))));
+    h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : m.by === "babysitter" ? "The babysitter" : m.by === "reviewer" ? "On its PR" : "otto"), " ", m.what)))));
   return parts;
 }
 

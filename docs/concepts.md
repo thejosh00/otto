@@ -391,24 +391,28 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
   the author is told it landed, and woken to do it.
 - **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2 --pr` for one
-  change, has the lander open one and keep it moving. What a reviewer asks, and CI failing, goes to the change's author as a note:
+  change, has the lander open one, and the **babysitter** watch it until it merges or closes. What a reviewer asks, and CI failing, goes to the change's author as a note:
   it changes the code and submits again, and the lander pushes that to the pull request without asking
   you again — the pull request is where it is reviewed. A question gets a reply the author drafts and
   you post with a click (`otto changes post`). Approved and passing, it is yours to merge (`otto
   changes merge`), or GitHub merges it itself when its process, or `--merge-when-ready`, says so. There is no run per pull
-  request: the lander's check script asks `gh` about every open one in one look, free when none moved.
+  request: the babysitter's check script asks `gh` about every open one in one look, free when none moved.
 - **Asking without stopping.** A change's author can ask you something about it — a reviewer wants it
   done another way, the scope grew — with `otto state change ask`. The change waits on your answer
   (`otto changes answer`); the run doesn't.
 - **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
   or been sent back 3 times is listed as stuck, and you're told once.
 
+A change's files live with the run that wrote it: `changes/index.json`, and each version's patch and
+summary beside it.
+
 ### Standard agents
 
 Some runs are otto's own: it needs them to do its job, and nothing about them is yours to decide. The
-**lander** is one. otto makes each the first time it finds it missing — on its next pass, or `otto
-install`, or starting the web UI — and makes it **not started**: paused until you start it (Standard
-in the web UI, or `otto resume <name>`), since an agent that pushes code shouldn't begin by itself.
+**lander** is one, and the **babysitter**, which watches the pull requests it opens, is the other.
+otto makes each the first time it finds it missing — on its next pass, or `otto install`, or starting
+the web UI — and makes it **not started**: paused until you start it (Standard in the web UI, or
+`otto resume <name>`), since an agent that pushes code shouldn't begin by itself.
 
 - They are listed apart: the web UI's Standard page, and a line under `otto ls`, not among your runs.
 - Their instructions come with otto and are rewritten from it into `$OTTO_HOME/agents/` on every pass,
@@ -416,8 +420,7 @@ in the web UI, or `otto resume <name>`), since an agent that pushes code shouldn
 - There is one of each. Stopping one retires it, and nothing makes another; resume it to bring it back.
 - Each wake of one may work in every repository with a change in play.
 
-The [README](../README.md#landing-changes) has more on the lander. A change's files live with the run that
-wrote it: `changes/index.json`, and each version's patch and summary beside it.
+The [README](../README.md#landing-changes) has more on the lander.
 
 ## Pausing
 

@@ -1,8 +1,9 @@
 //! Standard agents: the runs otto itself needs, made for the person rather than by them.
 //!
-//! Landing changes takes a run of its own — the lander — and setting one up used to be a page of
-//! the README: an `otto run` with the right workflow, a check script, `otto config lander`. Nothing
-//! in that was the person's to decide, so otto does it. Each standard agent is made once, the first
+//! Landing changes takes a run of its own — the lander — and looking after the pull requests it
+//! opens takes another, the babysitter. Setting up the lander used to be a page of the README: an
+//! `otto run` with the right workflow, a check script, `otto config lander`. Nothing in that was the
+//! person's to decide, so otto does it. Each standard agent is made once, the first
 //! time otto finds it missing, and made **not started**: paused until the person starts it on the
 //! Standard agents page (`otto resume`), because a run that pushes code shouldn't begin by itself.
 //!
@@ -34,7 +35,7 @@ pub struct Agent {
     /// The file its instructions are written to, under `$OTTO_HOME/agents/`.
     pub file: &'static str,
     pub instructions: &'static str,
-    /// Its check script: free when there is nothing for it.
+    /// Its check script: free when there is nothing for it. `{otto}` is the otto that made it.
     pub check: &'static str,
 }
 
@@ -48,13 +49,29 @@ pub const LANDER: Agent = Agent {
     instructions: include_str!("../workflows/land-flow.md"),
     check: "#!/bin/sh\n\
             # Nothing to land or clean up is nothing new; anything else, or otto failing, is a wake.\n\
-            if [ \"$(\"$HOME/.local/bin/otto\" changes --due --json)\" = \"[]\" ]; then\n\
+            if [ \"$('{otto}' changes --due --json)\" = \"[]\" ]; then\n\
             \x20 echo \"nothing to land\"; exit 0\n\
             fi\n\
             echo \"something to land\"; exit 1\n",
 };
 
-pub const AGENTS: &[&Agent] = &[&LANDER];
+pub const BABYSITTER: Agent = Agent {
+    role: "babysitter",
+    about: "Looks after every pull request otto opened until it merges or closes: records CI and reviews, tells a change's \
+            author what reviewers ask, and notices when one is merged or closed on GitHub.",
+    goal: "Look after every pull request otto opened, until it is merged or closed",
+    period: "15m",
+    file: "babysit-flow.md",
+    instructions: include_str!("../workflows/babysit-flow.md"),
+    check: "#!/bin/sh\n\
+            # No pull request moved is nothing new; anything else, or otto failing, is a wake.\n\
+            if [ \"$('{otto}' changes --watch --json)\" = \"[]\" ]; then\n\
+            \x20 echo \"no pull request moved\"; exit 0\n\
+            fi\n\
+            echo \"a pull request moved\"; exit 1\n",
+};
+
+pub const AGENTS: &[&Agent] = &[&LANDER, &BABYSITTER];
 
 fn dir() -> PathBuf {
     crate::paths::otto_home().join("agents")
@@ -132,7 +149,10 @@ fn make(agent: &Agent) -> Result<String, OttoError> {
         state.paused = Some(crate::state::Pause { at: crate::clock::Timestamp::now(), until: None, reason: reason.clone() });
         crate::event::record(path, &crate::event::Event::Paused { until: None, reason })
     })?;
-    crate::core::set_check(&id, agent.check, 0)?;
+    // The otto making it, by its path: the reviver's PATH needn't have one, and a build that isn't
+    // the installed one asks itself.
+    let otto = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "otto".to_string());
+    crate::core::set_check(&id, &agent.check.replace("{otto}", &otto), 0)?;
     if agent.role == LANDER.role && crate::config::lander()?.is_none() {
         crate::config::save_lander(Some(&id))?;
     }

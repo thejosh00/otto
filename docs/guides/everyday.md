@@ -71,8 +71,8 @@ otto changes answer 3/2 --text "Keep" # what its author asked you about it
 ```
 
 The web UI's Changes does the same, with the patch file by file, and lands several at once. A
-[change](../concepts.md#changes-code-handed-back) needs a lander to land it — the
-[README](../../README.md#landing-changes) sets one up.
+[change](../concepts.md#changes-code-handed-back) needs the lander to land it — one of the
+[standard agents](../concepts.md#standard-agents) otto makes, which you start once.
 
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run

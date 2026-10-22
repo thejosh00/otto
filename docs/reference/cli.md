@@ -271,6 +271,9 @@ Options:
       --due
           What waits on the lander, as JSON — `[]` when nothing does. For a check script
 
+      --watch
+          Every open pull request with news for the babysitter, as JSON — `[]` when none has. For a check script
+
       --json
           Print it as JSON
 
@@ -1653,6 +1656,7 @@ Commands:
   reply      Draft a reply to a reviewer's comment on its pull request, for the person to post
   ask        Ask the person something about a change — a judgement that is theirs — without stopping the run
   due        The lander: what waits on it, across every run — approved changes to land, then cleaning up
+  watch      The babysitter: every open pull request that has moved since it last looked
   claim      The lander: take an approved change in hand, and print what lands
   check      The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
   landed     The lander: it is on its base branch now. otto looks, and tells its author
@@ -1660,10 +1664,10 @@ Commands:
   bounce     The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
   cleaned    The lander: its worktree and branch are gone (otto looks), or say what was left and why
   pr-pushed  The lander: it opened the change's pull request (--url), or pushed its next version to it
-  pr-seen    The lander: what its pull request says now — CI, review, whether it merges — and when it said it
-  relay      The lander: hand what a reviewer or CI asked of its pull request to the change's author
-  merged     The lander: its pull request was merged. otto looks, and tells its author
-  closed     The lander: its pull request was closed without merging
+  pr-seen    The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
+  relay      The babysitter (or the lander): hand what a reviewer or CI asked of its pull request to the change's author
+  merged     The lander or the babysitter: its pull request was merged. otto looks, and tells its author
+  closed     The lander or the babysitter: its pull request was closed without merging
   posted     The lander: it posted a reply the person said to post
   help       Print this message or the help of the given subcommand(s)
 
@@ -1788,6 +1792,25 @@ Usage: otto state change due [OPTIONS] <LANDER>
 Arguments:
   <LANDER>
           The lander run: its number or name
+
+Options:
+      --json
+          Print it as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto state change watch`
+
+```text
+The babysitter: every open pull request that has moved since it last looked
+
+Usage: otto state change watch [OPTIONS] <BABYSITTER>
+
+Arguments:
+  <BABYSITTER>
+          The babysitter run: its number or name
 
 Options:
       --json
@@ -1960,13 +1983,13 @@ Options:
 ### `otto state change pr-seen`
 
 ```text
-The lander: what its pull request says now — CI, review, whether it merges — and when it said it
+The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
 
-Usage: otto state change pr-seen [OPTIONS] --updated <UPDATED> <LANDER> <CHANGE>
+Usage: otto state change pr-seen [OPTIONS] --updated <UPDATED> <BABYSITTER> <CHANGE>
 
 Arguments:
-  <LANDER>
-          The lander run: its number or name
+  <BABYSITTER>
+          The babysitter run: its number or name
 
   <CHANGE>
           The change: <run>/<number>
@@ -1994,13 +2017,13 @@ Options:
 ### `otto state change relay`
 
 ```text
-The lander: hand what a reviewer or CI asked of its pull request to the change's author
+The babysitter (or the lander): hand what a reviewer or CI asked of its pull request to the change's author
 
-Usage: otto state change relay --who <WHO> --text <TEXT> <LANDER> <CHANGE>
+Usage: otto state change relay --who <WHO> --text <TEXT> <BABYSITTER> <CHANGE>
 
 Arguments:
-  <LANDER>
-          The lander run: its number or name
+  <BABYSITTER>
+          The babysitter run (or the lander's): its number or name
 
   <CHANGE>
           The change: <run>/<number>
@@ -2019,7 +2042,7 @@ Options:
 ### `otto state change merged`
 
 ```text
-The lander: its pull request was merged. otto looks, and tells its author
+The lander or the babysitter: its pull request was merged. otto looks, and tells its author
 
 Usage: otto state change merged [OPTIONS] --sha <SHA> <LANDER> <CHANGE>
 
@@ -2044,7 +2067,7 @@ Options:
 ### `otto state change closed`
 
 ```text
-The lander: its pull request was closed without merging
+The lander or the babysitter: its pull request was closed without merging
 
 Usage: otto state change closed --reason <REASON> <LANDER> <CHANGE>
 

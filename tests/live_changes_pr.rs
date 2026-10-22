@@ -2,10 +2,11 @@
 //! real model and a stand-in for GitHub.
 //!
 //! What `cargo test` cannot reach: whether the lander, wrapping `workflows/land-flow.md`, opens the
-//! pull request, reads a reviewer's ask off it and hands it to the change's author rather than
-//! fixing it itself; whether the author makes the change and hands it back, and the lander pushes
-//! that to the same pull request without asking the person; whether an approved, passing pull
-//! request comes back to the person to merge, and the lander merges it when they say.
+//! pull request; whether the babysitter otto makes, wrapping `workflows/babysit-flow.md`, reads a
+//! reviewer's ask off it and hands it to the change's author rather than fixing it itself; whether
+//! the author makes the change and hands it back, and the lander pushes that to the same pull
+//! request without asking the person; whether an approved, passing pull request comes back to the
+//! person to merge, and the lander merges it when they say.
 //!
 //! GitHub is `test/fixtures/gh-stub.py`, first on `PATH`: pull requests on the scratch repo's local
 //! bare remote, which the test edits to play the reviewer. Everything runs in an `OTTO_HOME` of its
@@ -132,7 +133,8 @@ fn live_changes_pr() {
     git_ok(&repo, &["remote", "set-head", "origin", "main"]);
     let workdir = scratch.path().to_str().unwrap().to_string();
 
-    checks.step("2 - a lander, with a check script that asks the stand-in about its pull requests");
+    checks.step("2 - a lander of its own, and otto's babysitter, started");
+    otto(&["config", "workdir", &workdir]);
     let land_flow = repo_path("workflows/land-flow.md");
     let out = otto(&[
         "state", "init", "--name", "lander", "--perpetual", "--period", "10m",
@@ -147,6 +149,12 @@ fn live_changes_pr() {
     std::process::Command::new("chmod").args(["+x", check.to_str().unwrap()]).status().unwrap();
     let out = otto(&["check", "lander", "--script", check.to_str().unwrap(), "--wake-after", "0"]);
     checks.check(out.status.success(), "its check script is set", format!("otto check failed: {}", String::from_utf8_lossy(&out.stderr)));
+    let made = stdout(&otto(&["poke"]));
+    checks.check(made.contains("made the babysitter"), "otto made its babysitter", format!("poke said: {made}"));
+    checks.check(made.contains("is the lander"), "and adopted the lander named by hand", format!("poke said: {made}"));
+    let out = otto(&["resume", "babysitter"]);
+    checks.check(out.status.success(), "the babysitter is started", format!("resume failed: {}", String::from_utf8_lossy(&out.stderr)));
+    let babysitter = Run::new(stdout(&otto(&["state", "get", "babysitter", "--field", "id"])).trim().trim_matches('"').to_string());
 
     checks.step(&format!("3 - an author hands its change back (up to {}min)", step_timeout.as_secs() / 60));
     let fixture = repo_path("test/fixtures/change-flow.md");
@@ -207,8 +215,9 @@ fn live_changes_pr() {
     });
     let c = change(&author);
     let relayed = c["timeline"].as_array().map(|t| t.iter().any(|m| m["by"] == "reviewer" && m["what"].as_str().is_some_and(|w| w.to_lowercase().contains("goodbye")))).unwrap_or(false);
-    checks.check(relayed, "the lander relayed sam's ask", "nothing on the change says sam's ask was relayed");
+    checks.check(relayed, "the babysitter relayed sam's ask", "nothing on the change says sam's ask was relayed");
     if !pushed_v2 {
+        babysitter.journal_dump();
         lander.journal_dump();
         say_where_runs_are();
         checks.bail(&author, &format!("v2 didn't reach the pull request; the change is {}", c["state"]));
@@ -228,7 +237,7 @@ fn live_changes_pr() {
         pr["reviews"].as_array_mut().unwrap().push(serde_json::json!({ "id": 502, "login": "sam", "state": "APPROVED", "body": "Thanks!", "at": time_now() }));
     });
     if !poke_until(step_timeout, || change(&author)["state"] == "ready-to-merge") {
-        lander.journal_dump();
+        babysitter.journal_dump();
         checks.bail(&author, &format!("it never came back to merge; the change is {}", change(&author)["state"]));
     }
     checks.ok("ready to merge, and waiting on the person");
@@ -257,9 +266,10 @@ fn live_changes_pr() {
     println!("gh calls: {}", hub.read()["log"]);
 
     let _ = otto(&["stop", "lander", "--reason", "live test finished"]);
+    let _ = otto(&["stop", "babysitter", "--reason", "live test finished"]);
     // Only once no wake is still writing into the scratch home: the author's last one may be
     // finishing its handoff, and removing the directory under it leaves half of it behind.
-    if checks.fail_count() == 0 && await_idle(&author, Duration::from_secs(180)) && await_idle(&lander, Duration::from_secs(180)) {
+    if checks.fail_count() == 0 && await_idle(&author, Duration::from_secs(180)) && await_idle(&lander, Duration::from_secs(180)) && await_idle(&babysitter, Duration::from_secs(180)) {
         let _ = std::fs::remove_dir_all(scratch.path());
     }
     let _ = Path::new(&workdir);

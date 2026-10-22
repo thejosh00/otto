@@ -17,6 +17,8 @@ pub enum ChangeCommand {
     Ask(AskArgs),
     /// The lander: what waits on it, across every run — approved changes to land, then cleaning up
     Due(DueArgs),
+    /// The babysitter: every open pull request that has moved since it last looked
+    Watch(WatchArgs),
     /// The lander: take an approved change in hand, and print what lands
     Claim(LanderArgs),
     /// The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
@@ -31,13 +33,13 @@ pub enum ChangeCommand {
     Cleaned(CleanedArgs),
     /// The lander: it opened the change's pull request (--url), or pushed its next version to it
     PrPushed(PrPushedArgs),
-    /// The lander: what its pull request says now — CI, review, whether it merges — and when it said it
+    /// The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
     PrSeen(PrSeenArgs),
-    /// The lander: hand what a reviewer or CI asked of its pull request to the change's author
+    /// The babysitter (or the lander): hand what a reviewer or CI asked of its pull request to the change's author
     Relay(RelayArgs),
-    /// The lander: its pull request was merged. otto looks, and tells its author
+    /// The lander or the babysitter: its pull request was merged. otto looks, and tells its author
     Merged(LandedArgs),
-    /// The lander: its pull request was closed without merging
+    /// The lander or the babysitter: its pull request was closed without merging
     Closed(BounceArgs),
     /// The lander: it posted a reply the person said to post
     Posted(PostedArgs),
@@ -87,8 +89,8 @@ pub struct PrPushedArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct PrSeenArgs {
-    /// The lander run: its number or name
-    pub lander: String,
+    /// The babysitter run: its number or name
+    pub babysitter: String,
     /// The change: <run>/<number>
     pub change: String,
     /// The pull request's `updatedAt`, as `gh pr view --json updatedAt` gave it
@@ -110,8 +112,8 @@ pub struct PrSeenArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct RelayArgs {
-    /// The lander run: its number or name
-    pub lander: String,
+    /// The babysitter run (or the lander's): its number or name
+    pub babysitter: String,
     /// The change: <run>/<number>
     pub change: String,
     /// Who: "a reviewer (sam)", "CI"
@@ -135,7 +137,7 @@ pub struct PostedArgs {
 
 impl ChangeCommand {
     pub fn writes(&self) -> bool {
-        !matches!(self, ChangeCommand::Due(_) | ChangeCommand::Check(_))
+        !matches!(self, ChangeCommand::Due(_) | ChangeCommand::Watch(_) | ChangeCommand::Check(_))
     }
 }
 
@@ -181,6 +183,15 @@ pub struct WithdrawArgs {
 pub struct DueArgs {
     /// The lander run: its number or name
     pub lander: String,
+    /// Print it as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct WatchArgs {
+    /// The babysitter run: its number or name
+    pub babysitter: String,
     /// Print it as JSON
     #[arg(long)]
     pub json: bool,
@@ -262,6 +273,7 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
             Ok(())
         }
         ChangeCommand::Due(a) => due(a),
+        ChangeCommand::Watch(a) => watch(a),
         ChangeCommand::Reply(a) => {
             let id = crate::paths::resolve_run_id(&a.id)?;
             changes::reply_draft(&ChangeRef { run: id, n: a.change }, &a.comment, &a.text)?;
@@ -290,7 +302,7 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
         ChangeCommand::PrSeen(a) => {
             let r = ChangeRef::parse(&a.change)?;
             let c = changes::pr_seen(
-                &a.lander,
+                &a.babysitter,
                 &r,
                 &changes::Seen { updated: &a.updated, ci: a.ci.as_deref(), review: a.review.as_deref(), mergeable: a.mergeable.as_deref(), what: a.what.as_deref() },
             )?;
@@ -299,7 +311,7 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
         }
         ChangeCommand::Relay(a) => {
             let r = ChangeRef::parse(&a.change)?;
-            changes::relay(&a.lander, &r, &a.who, &a.text)?;
+            changes::relay(&a.babysitter, &r, &a.who, &a.text)?;
             println!("{} is with its author, with what {} said", r.display(), a.who);
             Ok(())
         }
@@ -410,7 +422,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
 
 fn due(a: DueArgs) -> Result<(), OttoError> {
     changes::require_lander(&a.lander)?;
-    let due = changes::due_with_prs()?;
+    let due = changes::due()?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&due)?);
         return Ok(());
@@ -428,6 +440,30 @@ fn due(a: DueArgs) -> Result<(), OttoError> {
             d.branch,
             d.base,
             changes::home_relative(&d.repo)
+        );
+    }
+    Ok(())
+}
+
+fn watch(a: WatchArgs) -> Result<(), OttoError> {
+    changes::require_babysitter(&a.babysitter)?;
+    let watched = changes::watch()?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&watched)?);
+        return Ok(());
+    }
+    if watched.is_empty() {
+        println!("no pull request has moved since you last looked");
+        return Ok(());
+    }
+    for d in &watched {
+        println!(
+            "{:<10} {}  ({}; {}{})",
+            d.reference,
+            d.title,
+            d.pr.as_ref().map(|p| p.url.as_str()).unwrap_or(""),
+            d.news.as_deref().unwrap_or(""),
+            if d.author_alive { "" } else { "; its author has finished" }
         );
     }
     Ok(())

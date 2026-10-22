@@ -445,6 +445,9 @@ pub struct ChangesArgs {
     /// What waits on the lander, as JSON — `[]` when nothing does. For a check script
     #[arg(long)]
     pub due: bool,
+    /// Every open pull request with news for the babysitter, as JSON — `[]` when none has. For a check script
+    #[arg(long, conflicts_with = "due")]
+    pub watch: bool,
     /// Print it as JSON
     #[arg(long)]
     pub json: bool,
@@ -596,7 +599,11 @@ pub fn changes(args: ChangesArgs) -> Result<(), OttoError> {
         None => {}
     }
     if args.due {
-        println!("{}", serde_json::to_string_pretty(&crate::changes::due_with_prs()?)?);
+        println!("{}", serde_json::to_string_pretty(&crate::changes::due()?)?);
+        return Ok(());
+    }
+    if args.watch {
+        println!("{}", serde_json::to_string_pretty(&crate::changes::watch()?)?);
         return Ok(());
     }
     let view = crate::changes::list(args.all)?;

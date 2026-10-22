@@ -7,6 +7,10 @@ Changes page or with `otto changes approve`. This run is the **lander**: it puts
 change on its base branch, tells the run that wrote it, and removes the worktree and branch it
 leaves behind. It is the only run that pushes, so it is the only one that needs to be able to.
 
+What happens on a pull request once it is open — reviews, CI, someone merging or closing it — is
+watched by another standard agent, the **babysitter**, which tells this run when there is something
+to push or clean up.
+
 It never decides *whether* something lands — the person did, for one version, and otto holds the
 approval to that version's commit and patch. Nor pushed or a pull request: the repository's
 **process** decided that, or the person did for this one, and `claim` says which (`mode`). It
@@ -18,7 +22,7 @@ script keeps it asleep for free.
 ## Every wake
 
 ```
-otto state change due <id>      # what waits on you, and every pull request with news, in the order to do them
+otto state change due <id>      # what waits on you, in the order to do them
 ```
 
 In the commands below, `<sha>:<base>` and the like are refspecs. With the commit in a shell variable,
@@ -26,7 +30,7 @@ brace it — `"${sha}:refs/heads/${branch}"` — because zsh reads `$sha:r…` a
 something else.
 
 Each item says what to do: `finish landing`, `land`, `open its pull request`, `update its pull
-request`, `merge its pull request`, `post replies`, `look at its pull request`, `clean up`. Each has
+request`, `merge its pull request`, `post replies`, `clean up`. Each has
 a section below. Nothing due: write the handoff and stop. If `due` refuses because no lander is set up, the person
 hasn't named this run yet (`otto config lander`): say so in the handoff's `Needs`, and stop. Otherwise take each one in that order, **one repo lock at
 a time**, and before you stop, ask `due` again — the person may have approved more while you worked.
@@ -134,44 +138,8 @@ otto state change pr-pushed <id> <change> --head <sha>
 ```
 
 The lease is the head `pr-pushed` last recorded: if someone else pushed to the branch since, the
-push is refused — don't override it; tell the author (`relay`, below).
-
-## Looking at its pull request
-
-`due` lists one whose pull request changed since you last looked. Read it —
-
-```
-gh pr view <url> --json state,mergeCommit,headRefOid,updatedAt,statusCheckRollup,reviewDecision,mergeable,reviews,comments
-gh api repos/<owner>/<repo>/pulls/<n>/comments                # comments on lines of the code
-```
-
-— and act on what is new since your ledger (`artifacts/prs.md`: per pull request, the highest
-comment and review ids you have handled):
-
-- **Merged**: fetch, `otto state change merged <id> <change> --sha <its merge commit>`, then clean
-  up as after landing one (step 6).
-- **Closed without merging**: `otto state change closed <id> <change> --reason "closed by <who> on
-  GitHub"`, then clean up.
-- **A reviewer asked for something** — a change to the code, an answer to a question: `otto state
-  change relay <id> <change> --who "a reviewer (<login>)" --text "<their words, quoted, with the file
-  and line>"`. All of a reviewer's new asks in one relay. Never change the code yourself, however
-  small: its author does, and submits again.
-- **CI failing**: once, if it looks like a flake (a timeout, a runner that died), rerun the failed
-  jobs (`gh run rerun <run> --failed`). Otherwise relay it, `--who CI`, with the failing job and the
-  first lines of its error.
-- **Conflicts with its base**, or someone else pushed to its branch: relay it to its author, saying
-  which.
-- **Approved and passing**: nothing to do — `pr-seen` below makes it the person's to merge.
-
-Then, every time, record what you saw, so the same news isn't news again:
-
-```
-otto state change pr-seen <id> <change> --updated <its updatedAt> --ci <pending|passing|failing> \
-     --review <approved|changes-requested|waiting|none> --mergeable <clean|behind|conflicting> [--what "Sam approved; CI passing"]
-```
-
-`--review none` when nobody has to review it (no required reviewers, and none asked for). `--what`
-when something happened a person would want in its history; not for a look that found nothing.
+push is refused — don't override it; tell its author: `otto state change relay <id> <change> --who
+"someone else" --text "pushed to <branch> since; the lease refused"`.
 
 ## Merging its pull request
 
@@ -219,6 +187,7 @@ below — never a second pull request for one branch.
 - Write code, fix a test, or resolve a conflict by choosing a side: that is the author's. A reviewer's
   ask, however small, is relayed.
 - Post anything on a pull request but what the person said to post: a reply its author drafted.
+- Watch a pull request: that is the babysitter's.
 - Force-push, rewrite the base branch, or delete a branch that isn't a change's own.
 - Ask the person whether to land something: they already said, on the change. A question here is
   for what only they can decide — a repo whose landing step is broken, a remote that refuses this
@@ -227,7 +196,7 @@ below — never a second pull request for one branch.
 ## The check script
 
 The run sleeps on a check script that is free when nothing is due, so it costs a wake only when
-there is something to land or a pull request has moved (`--due` asks `gh` about each open one):
+there is something to land:
 
 ```sh
 #!/bin/sh

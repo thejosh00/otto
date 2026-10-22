@@ -123,20 +123,21 @@ otto config process reviewed --mode pr --merge-when-ready --land "squash-merged;
 otto config project ~/work/svc --process reviewed
 ```
 
-As a pull request, the lander opens it and keeps
-it moving. What reviewers ask, and CI failing, goes to the run that wrote the change, which changes
-the code and hands it back again; the lander pushes that to the pull request. A reply to a reviewer
+As a pull request, the lander opens it, and another of otto's agents, the **babysitter**, watches it
+until it merges or closes. What reviewers ask, and CI failing, goes to the run that wrote the change,
+which changes the code and hands it back again; the lander pushes that to the pull request. A reply to a reviewer
 is drafted for you to post with a click, and once it's approved and passing it's yours to merge — or
 it merges itself, if you said so. The Changes page shows every change by whose move it is — yours,
 an agent's, reviewers' or CI's — and says when one is stuck.
 
 One run, the **lander**, does the landing, and only it may. You don't set it up: it is one of
-otto's **standard agents**, made for you the first time otto runs, and listed on their own page
-(Standard in the web UI) rather than among your runs. It is made **not started** — a run that pushes
-code shouldn't begin by itself — so start it there once, or:
+otto's **standard agents**, with the babysitter, made for you the first time otto runs, and listed on their own page
+(Standard in the web UI) rather than among your runs. Each is made **not started** — a run that pushes
+code shouldn't begin by itself — so start them there once, or:
 
 ```bash
 otto resume lander
+otto resume babysitter    # if your repositories land changes as pull requests
 ```
 
 Approving a change wakes it straight away. Between approvals it sleeps on a check script otto gave
@@ -156,8 +157,8 @@ and never lands anything you didn't approve.
   ([sandboxing](docs/guides/sandboxing.md)).
 - **It works where the changes are.** Each of its wakes may work in every repository with a change
   in play, and no other.
-- **Pull requests need `gh`**, signed in for each host (`gh auth status`), where the lander and its
-  check script run.
+- **Pull requests need `gh`**, signed in for each host (`gh auth status`), where the lander and the
+  babysitter, and their check scripts, run.
 
 ## otto improving itself
 
