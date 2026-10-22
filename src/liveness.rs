@@ -78,13 +78,15 @@ fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// Try for the lock and immediately give it back. Acquiring it proves nobody held it at
-/// that instant, which is all the question asks.
+/// that instant, which is all the question asks. Shared, because only a wake holds it
+/// exclusively: two probes at once — the web UI asks for several lists together — must not
+/// each read the other as a wake, which showed idle runs as working for a moment.
 pub fn probe_path(path: &Path) -> WakeState {
     let file = match open_lock_file(path) {
         Ok(file) => file,
         Err(e) => return WakeState::Unknown(format!("cannot open {}: {e}", path.display())),
     };
-    match fs4::fs_std::FileExt::try_lock_exclusive(&file) {
+    match fs4::fs_std::FileExt::try_lock_shared(&file) {
         Ok(()) => {
             let _ = fs4::fs_std::FileExt::unlock(&file);
             WakeState::Idle
@@ -105,16 +107,26 @@ impl WakeLock {
     /// Exit 2 (a state conflict) when another wake already holds it. Two wakes on one run
     /// would duplicate work and race each other's writes, so this refuses rather than
     /// queues: whatever wanted to start can come back when the current wake has finished.
+    /// A probe holds it for an instant, so a few quick retries tell a probe from a wake.
     pub fn acquire(run_id: &str) -> Result<Self, OttoError> {
         let path = crate::paths::run_dir(run_id)?.join(WAKE_LOCK_FILE);
         let file = open_lock_file(&path)?;
-        match fs4::fs_std::FileExt::try_lock_exclusive(&file) {
-            Ok(()) => Ok(Self { file }),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Err(OttoError::conflict(format!(
-                "a wake is already running for {run_id} (holding {})",
-                path.display()
-            ))),
-            Err(e) => Err(e.into()),
+        let mut tries = 0;
+        loop {
+            match fs4::fs_std::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Self { file }),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && tries < 5 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    return Err(OttoError::conflict(format!(
+                        "a wake is already running for {run_id} (holding {})",
+                        path.display()
+                    )))
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     }
 }
@@ -205,6 +217,27 @@ mod tests {
             assert!(LockLiveness.probe("run-drop").is_busy());
         }
         assert_eq!(LockLiveness.probe("run-drop"), WakeState::Idle);
+    }
+
+    /// Several lists asked for at once probe the same run at the same instant; a probe that
+    /// read another probe as a wake showed an idle run as working.
+    #[test]
+    fn a_probe_mid_flight_is_not_a_wake() {
+        let _home = TempHome::new();
+        test_init("run-probes", "hello").unwrap();
+        let path = crate::paths::run_dir("run-probes").unwrap().join(WAKE_LOCK_FILE);
+        let other_probe = open_lock_file(&path).unwrap();
+        fs4::fs_std::FileExt::try_lock_shared(&other_probe).unwrap();
+        assert_eq!(LockLiveness.probe("run-probes"), WakeState::Idle);
+        // Nor does a wake starting in that instant give up.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            drop(other_probe);
+        });
+        let held = WakeLock::acquire("run-probes").expect("a probe is not a wake");
+        release.join().unwrap();
+        assert_eq!(LockLiveness.probe("run-probes"), WakeState::Running);
+        drop(held);
     }
 
     #[test]
