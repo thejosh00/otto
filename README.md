@@ -178,16 +178,11 @@ otto run --perpetual --period 1d --repo "$PWD" --name otto-feedback \
 And so it only spends a wake when a report is waiting:
 
 ```bash
-cat > feedback-waiting.sh <<'EOF'
-#!/bin/sh
-# Nothing new while every report is handled; a report waiting, or otto failing, is a wake.
-if [ "$("$HOME/.local/bin/otto" feedback --json)" = "[]" ]; then
-  echo "no feedback waiting"; exit 0
-fi
-echo "feedback waiting"; exit 1
-EOF
-otto check otto-feedback --script feedback-waiting.sh    # copied into the run
+otto check otto-feedback --script scripts/check.sh    # copied into the run
 ```
+
+[`scripts/check.sh`](scripts/check.sh) says nothing is new while every report is handled; a report
+waiting, or otto failing, is a wake.
 
 The loop closes on itself. The harness is compiled into the binary, so `./install.sh` is when a
 fix ships, and every wake after it — this run's next one included — is given the changed
