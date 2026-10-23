@@ -48,7 +48,8 @@ to this run outside any gate.
 
 **2. Load what the run wraps.** `run.json`'s `wraps` says what:
 
-- `skill` — invoke it by name, as a slash command.
+- `skill` — invoke it by name, as a slash command. If it keeps its own files, see "A skill with
+  its own files" below.
 - `instructions` — read that file. It is prose, and it is authoritative for *what* to do.
 - `goal-only` — the goal is the whole instruction.
 
@@ -289,6 +290,24 @@ every bullet in the question is taken as an option.
 Use `--expires-in` only where silence has a sane meaning. "No answer, so don't do it" is sane.
 "No answer, so push it" is not.
 
+## A skill with its own files
+
+Some skills keep their own record on disk — a state directory, a ledger, a day's checklist — and
+run the same with or without otto. Their files are the record, not a copy of it. Don't mirror
+them into `artifacts/` or the handoff; point at them. Your process has `OTTO_RUN_ID` and
+`OTTO_RUN_DIR`, so the skill can tell it is under otto and find the run.
+
+- **A live checklist is a link.** If the skill keeps a checklist in the todo's format, link
+  `artifacts/todo.md` to it (`ln -sfn <its path> "$OTTO_RUN_DIR/artifacts/todo.md"`) and re-point
+  it when the skill starts a new one. otto shows it, counts it as progress, and checks it at done.
+- **What a person is handed is a copy.** Publish the skill's result straight from where it is
+  (`--file <its path>`): publishing copies it, so each version stays as it was. An attachment is
+  read when the message is opened, so attach a copy in `artifacts/`, not a link to a file that
+  changes. A link that leads outside the run directory and the workdir is refused.
+- **Never link a whole directory.** otto reads everything under `artifacts/` after every wake.
+- **The handoff points.** `Don't re-derive` names the skill's files by path; `This wake did` says
+  what changed in them. Nothing the skill already records is restated.
+
 ## Outputs
 
 An **output** is something you made that the person would want to find again: the day's report,
@@ -508,7 +527,7 @@ and is gone once a wake happens.
 The script's environment is exactly this, whether poke or `otto check` runs it: `HOME`, `USER`,
 `LOGNAME`, `SHELL`, `TMPDIR` and `SSH_AUTH_SOCK` as the user has them; `PATH` set to
 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin`; `OTTO_HOME`;
-`OTTO_RUN_ID`; and `OTTO_REPO` if the run has one. Nothing else, so use absolute paths for
+`OTTO_RUN_ID`; `OTTO_WORKDIR`, where it runs; and `OTTO_REPO` if the run has one. Nothing else, so use absolute paths for
 anything off that `PATH`. It has **no `otto state` access and never will**. Its only channel out
 is its exit code and up to 200 characters of stdout, which poke journals on a real change or an
 error (a no-change result never reaches the journal — only `run.json`'s own `check` field, so it

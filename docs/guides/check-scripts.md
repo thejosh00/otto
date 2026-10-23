@@ -72,7 +72,10 @@ exit 1
 Its environment is the same whoever runs it, poke or `otto check`, and holds only: `HOME`,
 `USER`, `LOGNAME`, `SHELL`, `TMPDIR` and `SSH_AUTH_SOCK` as you have them; `PATH` set to
 `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin`; `OTTO_HOME`;
-`OTTO_RUN_ID`; and `OTTO_REPO` if the run has a `repo` fact.
+`OTTO_RUN_ID`; `OTTO_WORKDIR`, the run's working directory; and `OTTO_REPO` if the run has a
+`repo` fact. It runs in the working directory, as the wakes do — not beside the copy of it otto
+keeps in the run directory, so a script that finds files from its own path (`dirname "$0"`) finds
+the run directory instead. Use `$OTTO_WORKDIR`.
 The first 200 characters of what it prints are kept as the "last result" `otto show` displays.
 
 ## Setting, seeing and removing it

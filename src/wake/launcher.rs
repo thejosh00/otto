@@ -155,9 +155,16 @@ pub fn resolve(state: &RunState) -> Result<LauncherDef, OttoError> {
 /// afterwards, so it is chosen by the caller before the spawn and recorded in `wake.session`.
 pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str) -> Vec<String> {
     let mut argv = sleep_guard();
-    argv.extend(launch(state, launcher, &[], prompt));
+    argv.extend(launch(state, launcher, &wake_env(state), prompt));
     argv.extend(claude_tail(state, session_id));
     argv
+}
+
+/// What a wake's process is told about its run, for what it runs to read: a wrapped skill that
+/// behaves differently under otto, or keeps its own files and points `artifacts/` at them.
+fn wake_env(state: &RunState) -> Vec<String> {
+    let dir = crate::paths::runs_dir().join(&state.id);
+    vec![format!("OTTO_RUN_ID={}", state.id), format!("OTTO_RUN_DIR={}", dir.display())]
 }
 
 /// The command line for a chat about a run (`crate::chat`): the run's own launcher, sandbox and
@@ -278,7 +285,9 @@ mod tests {
     /// argv from the launcher's own command onward. The sleep guard is there on macOS and absent
     /// everywhere else, so every position-sensitive assertion counts from here rather than from 0.
     fn launched(argv: &[String]) -> Vec<String> {
-        argv[sleep_guard().len() + env_guard().len()..].to_vec()
+        let rest = &argv[sleep_guard().len() + env_guard().len()..];
+        let assignments = rest.iter().take_while(|w| w.starts_with("OTTO_") && w.contains('=')).count();
+        rest[assignments..].to_vec()
     }
 
     /// Where claude's own arguments start: straight after the launcher's command and grants.
@@ -464,6 +473,16 @@ mod tests {
                 assert!(cleared.contains(&var), "{}: {var} must be cleared", launcher.name);
             }
         }
+    }
+
+    #[test]
+    fn a_wake_is_told_its_run() {
+        let argv = argv(&state(), &claude(), "wake r1", SID);
+        assert!(argv.contains(&"OTTO_RUN_ID=r1".to_string()), "{argv:?}");
+        // The tail only: other tests move OTTO_HOME while this one runs.
+        assert!(argv.iter().any(|w| w.starts_with("OTTO_RUN_DIR=") && w.ends_with("/runs/r1")), "{argv:?}");
+        let chat = chat_argv(&state(), &claude(), "about r1", SID, true);
+        assert!(!chat.iter().any(|w| w.starts_with("OTTO_RUN_ID=")), "a chat is not a wake: {chat:?}");
     }
 
     /// Really cleared, by the `env` a wake runs under — not just named on the command line.

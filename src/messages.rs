@@ -147,8 +147,9 @@ fn next_number(dir: &Path) -> Result<u64, OttoError> {
 }
 
 /// An attachment must be a file inside the run directory, named relative to it — the page shows
-/// it, so it must not be a way to read anything else on the machine.
-fn check_attachment(run_dir: &Path, path: &str) -> Result<String, OttoError> {
+/// it, so it must not be a way to read anything else on the machine. A link there may point into
+/// the run's workdir, where a skill that keeps its own files keeps them, and nowhere else.
+fn check_attachment(run_dir: &Path, state: &crate::state::RunState, path: &str) -> Result<String, OttoError> {
     let rel = Path::new(path);
     if rel.is_absolute() || rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
         return Err(OttoError::usage(format!(
@@ -158,7 +159,20 @@ fn check_attachment(run_dir: &Path, path: &str) -> Result<String, OttoError> {
     if !run_dir.join(rel).is_file() {
         return Err(OttoError::usage(format!("--attach {path}: no such file in the run directory")));
     }
+    if !readable(run_dir, state, rel) {
+        return Err(OttoError::usage(format!(
+            "--attach {path}: it links outside the run directory and the run's workdir — copy the file in instead"
+        )));
+    }
     Ok(path.trim_start_matches("./").to_string())
+}
+
+/// Whether `rel`, followed through any links, is inside the run directory or the run's workdir.
+/// Asked again when a message is read, since a link can be re-pointed after it was sent.
+fn readable(run_dir: &Path, state: &crate::state::RunState, rel: &Path) -> bool {
+    let Ok(target) = run_dir.join(rel).canonicalize() else { return false };
+    let roots = [Some(run_dir.to_path_buf()), crate::config::workdir_for(state)];
+    roots.into_iter().flatten().filter_map(|root| root.canonicalize().ok()).any(|root| target.starts_with(root))
 }
 
 /// Send a message: write it, add it to the run's inbox index, and journal it. Poke notifies the
@@ -200,7 +214,7 @@ pub fn send(run_id: &str, out: &Outgoing) -> Result<OpenMessage, OttoError> {
 
     crate::state::transaction(run_id, |path, state| {
         let attachments =
-            out.attachments.iter().map(|a| check_attachment(path, a)).collect::<Result<Vec<_>, _>>()?;
+            out.attachments.iter().map(|a| check_attachment(path, state, a)).collect::<Result<Vec<_>, _>>()?;
         let output = out.output.map(|o| crate::outputs::resolve_about(path, o)).transpose()?;
         let dir = path.join(MESSAGES_DIR);
         std::fs::create_dir_all(&dir)?;
@@ -286,18 +300,19 @@ pub fn read(run_id: &str, which: Option<&str>) -> Result<MessageView, OttoError>
     };
     let file = meta_file(&dir, &id).ok_or_else(|| OttoError::not_found(format!("{} has no message {id}", state.label())))?;
     let meta = read_meta(&dir, &file)?;
-    Ok(view(&dir, meta, state.messages.iter().any(|m| m.id == id)))
+    Ok(view(&dir, &state, meta, state.messages.iter().any(|m| m.id == id)))
 }
 
-fn view(dir: &Path, meta: MessageMeta, open: bool) -> MessageView {
+fn view(dir: &Path, state: &crate::state::RunState, meta: MessageMeta, open: bool) -> MessageView {
     let text = std::fs::read_to_string(dir.join(&meta.body)).unwrap_or_else(|_| format!("(message body {} is missing)", meta.body));
     let attached = meta
         .attachments
         .iter()
         .map(|path| Attachment {
             path: path.clone(),
-            text: std::fs::read(dir.join(path))
-                .ok()
+            text: readable(dir, state, Path::new(path))
+                .then(|| std::fs::read(dir.join(path)).ok())
+                .flatten()
                 .filter(|bytes| bytes.len() <= ATTACHMENT_SHOW_MAX_BYTES)
                 .and_then(|bytes| String::from_utf8(bytes).ok()),
         })
@@ -448,6 +463,36 @@ mod tests {
         assert_eq!(view.meta.kind, MessageKind::Draft);
         assert_eq!(view.meta.draft.as_deref(), Some("Hi Sam! Your key is on the default tier."));
         assert_eq!(view.attached[0].text.as_deref(), Some("the whole report\n"));
+    }
+
+    #[test]
+    fn a_link_may_point_into_the_workdir_and_nowhere_else() {
+        let _h = TempHome::new();
+        test_init("m-link", "a goal").unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        crate::state::transaction("m-link", |_, state| {
+            state.launcher.workdir = Some(work.path().display().to_string());
+            Ok(())
+        })
+        .unwrap();
+        std::fs::write(work.path().join("summary.md"), "today's summary\n").unwrap();
+        std::fs::write(elsewhere.path().join("secret.md"), "not yours\n").unwrap();
+        let dir = crate::paths::run_dir("m-link").unwrap();
+        std::os::unix::fs::symlink(work.path().join("summary.md"), dir.join("artifacts/summary.md")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("secret.md"), dir.join("artifacts/secret.md")).unwrap();
+
+        let secret = vec!["artifacts/secret.md".to_string()];
+        let err = send("m-link", &Outgoing { attachments: &secret, ..report("t") }).unwrap_err();
+        assert!(err.to_string().contains("copy the file in"), "{err}");
+
+        let summary = vec!["artifacts/summary.md".to_string()];
+        send("m-link", &Outgoing { attachments: &summary, ..report("t") }).unwrap();
+        assert_eq!(read("m-link", Some("1")).unwrap().attached[0].text.as_deref(), Some("today's summary\n"));
+
+        std::fs::remove_file(dir.join("artifacts/summary.md")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("secret.md"), dir.join("artifacts/summary.md")).unwrap();
+        assert_eq!(read("m-link", Some("1")).unwrap().attached[0].text, None, "re-pointed after it was sent");
     }
 
     #[test]

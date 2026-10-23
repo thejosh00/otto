@@ -267,9 +267,9 @@ pub struct CheckRun {
 const CHECK_ENV_PASSED: &[&str] = &["HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "SSH_AUTH_SOCK"];
 
 /// Everything a check script's environment holds: the user's basics from `CHECK_ENV_PASSED`,
-/// launchd's `PATH`, `OTTO_HOME`, `OTTO_RUN_ID`, and `OTTO_REPO` when the run has a `repo` fact.
-/// Nothing else, so a script sees the same whether poke runs it under launchd or `otto check`
-/// runs it from a terminal.
+/// launchd's `PATH`, `OTTO_HOME`, `OTTO_RUN_ID`, `OTTO_WORKDIR` when the run has one, and
+/// `OTTO_REPO` when the run has a `repo` fact. Nothing else, so a script sees the same whether
+/// poke runs it under launchd or `otto check` runs it from a terminal.
 pub fn check_env(run_id: &str, state: &RunState) -> Vec<(&'static str, String)> {
     let mut env: Vec<(&'static str, String)> = CHECK_ENV_PASSED
         .iter()
@@ -278,6 +278,9 @@ pub fn check_env(run_id: &str, state: &RunState) -> Vec<(&'static str, String)> 
     env.push(("PATH", crate::launchd::path_env()));
     env.push(("OTTO_HOME", crate::paths::otto_home().display().to_string()));
     env.push(("OTTO_RUN_ID", run_id.to_string()));
+    if let Some(workdir) = crate::config::workdir_for(state) {
+        env.push(("OTTO_WORKDIR", workdir.display().to_string()));
+    }
     if let Some(repo) = state.facts.get("repo").and_then(serde_json::Value::as_str) {
         env.push(("OTTO_REPO", repo.to_string()));
     }
@@ -296,6 +299,12 @@ pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dy
     let assignments: Vec<String> =
         check_env(run_id, state).into_iter().map(|(key, value)| format!("{key}={value}")).collect();
     let mut argv = vec!["/usr/bin/env", "-i"];
+    // In the workdir, as the wakes are: the script is a copy in the run directory, so a script
+    // that finds its files from its own path finds the run directory instead.
+    let workdir = crate::config::workdir_for(state).filter(|dir| dir.is_dir());
+    if let Some(dir) = workdir.as_ref().and_then(|dir| dir.to_str()) {
+        argv.extend(["-C", dir]);
+    }
     argv.extend(assignments.iter().map(String::as_str));
     argv.push(script);
 
@@ -1304,10 +1313,13 @@ mod tests {
         let script = dir.path().join("check.sh");
         // Written to a file: what it prints is cut to 200 characters, and a PATH alone is near that.
         let seen_file = dir.path().join("env.txt");
-        std::fs::write(&script, format!("#!/bin/sh\n/usr/bin/env > '{}'\nexit 0\n", seen_file.display())).unwrap();
+        std::fs::write(&script, format!("#!/bin/sh\n/usr/bin/env > '{0}'\necho \"CWD=$(pwd -P)\" >> '{0}'\nexit 0\n", seen_file.display())).unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let mut state = base_state("7");
         state.facts.insert("repo".to_string(), serde_json::json!("/work/acme"));
+        let work = tempfile::tempdir().unwrap();
+        let workdir = work.path().canonicalize().unwrap().display().to_string();
+        state.launcher.workdir = Some(workdir.clone());
 
         let run = execute_check("7", &state, script.to_str().unwrap(), &mut RealExec);
 
@@ -1319,6 +1331,8 @@ mod tests {
         assert_eq!(seen.get("PATH").copied(), Some(crate::launchd::path_env().as_str()), "launchd's PATH, always");
         assert_eq!(seen.get("OTTO_RUN_ID").copied(), Some("7"));
         assert_eq!(seen.get("OTTO_REPO").copied(), Some("/work/acme"));
+        assert_eq!(seen.get("OTTO_WORKDIR").copied(), Some(workdir.as_str()));
+        assert_eq!(seen.get("CWD").copied(), Some(workdir.as_str()), "it runs in the workdir, as the wakes do");
         // Present, not compared: other tests point OTTO_HOME and HOME elsewhere while this one runs.
         assert!(seen.contains_key("OTTO_HOME") && seen.contains_key("HOME"), "{seen:?}");
     }
