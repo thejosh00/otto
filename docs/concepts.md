@@ -74,6 +74,7 @@ like from you without stopping to ask, like a key that would help.
 Those two are checked: `otto state handoff` refuses a handoff whose `Where this is` or `Needs`
 talks in otto's own words — wake, gate, poke, handoff, check.sh, `otto state`, `artifacts/` paths,
 timestamps — and says which, so the wake rewrites them in the work's own terms before it stops.
+Words inside double quotes don't count, so a wake can quote a change's title or a report's name.
 Each refusal is journaled as `handoff-refused`.
 
 ## The todo

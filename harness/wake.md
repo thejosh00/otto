@@ -178,7 +178,8 @@ answered before you go on is still asked at one.
 
 **Those two sections are checked.** `otto state handoff` refuses a handoff whose `Where this is`
 or `Needs` uses otto's own words for its machinery — wake, gate, poke, handoff, check.sh,
-`otto state`, `artifacts/` paths, timestamps — and says which it found. That is not an error to
+`otto state`, `artifacts/` paths, timestamps — and says which it found. Words inside double quotes
+are not counted: quoting a change's title or a report's name is mentioning it. That is not an error to
 work around: rewrite those sections in the work's own terms ("Watching the queue; nothing tagged
 since Monday", "The plan is waiting on your review") and write the handoff again. The sections
 below them may say whatever the next wake needs.

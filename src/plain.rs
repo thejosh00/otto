@@ -32,9 +32,10 @@ const ENGINE_WORDS: &[&str] = &[
 /// Phrases that only ever name otto's machinery, matched anywhere.
 const ENGINE_PHRASES: &[&str] = &["otto state", "check script", "safety net", "stall guard", "artifacts/"];
 
-/// The otto-speak in `text`, each distinct find once, in the order found.
+/// The otto-speak in `text`, each distinct find once, in the order found. Text in double quotes is
+/// left out: it is being mentioned, not used — a change's title, a report's name.
 pub fn jargon(text: &str) -> Vec<String> {
-    let lower = text.to_lowercase();
+    let lower = unquoted(text).to_lowercase();
     let mut found: Vec<String> = Vec::new();
     let mut add = |what: String| {
         if !found.contains(&what) {
@@ -57,6 +58,24 @@ pub fn jargon(text: &str) -> Vec<String> {
         add("a timestamp".to_string());
     }
     found
+}
+
+/// `text` with each double-quoted span ("…" or \u{201c}…\u{201d}) blanked out. A quote never closed
+/// blanks nothing, so a stray mark cannot hide the rest of the line.
+fn unquoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find(['"', '\u{201c}']) {
+        let mark = rest[open..].chars().next().unwrap_or('"');
+        let close = if mark == '"' { '"' } else { '\u{201d}' };
+        let after = &rest[open + mark.len_utf8()..];
+        let Some(end) = after.find(close) else { break };
+        out.push_str(&rest[..open]);
+        out.push(' ');
+        rest = &after[end + close.len_utf8()..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `2026-10-15T23:59` — an ISO timestamp, which a person reads as noise and the page shows better.
@@ -109,7 +128,8 @@ pub fn check_handoff(handoff: &str) -> Option<String> {
     Some(format!(
         "{} — those sections are what a person reads, in the list and on the run's page. Say where the work \
          stands in the work's own words (the queue, the PR, the report, what is next), with no wake numbers, \
-         timestamps, paths or otto commands; those belong in the sections below, for the next wake",
+         timestamps, paths or otto commands; those belong in the sections below, for the next wake. A title or \
+         name you are quoting is fine in double quotes",
         problems.join("; ")
     ))
 }
@@ -160,6 +180,31 @@ mod tests {
 
         let needs = handoff.replace("## Needs\nnothing", "## Needs\nAnswer gate 003, or see artifacts/plan.md");
         assert!(check_handoff(&needs).unwrap().contains("\"Needs\" says \"gate\", \"artifacts\""));
+    }
+
+    /// A title or a report quoted by name is the work's subject, not its narration: a lander quoting
+    /// the change it landed, or a run that fixes otto naming the report it fixes, was refused for words
+    /// that were only ever being mentioned.
+    #[test]
+    fn quoted_text_is_mentioned_not_used() {
+        for fine in [
+            "Landed \"Check scripts get the same environment whoever runs them\" on main.",
+            "Landed \u{201c}Check scripts get the same environment whoever runs them\u{201d} on main.",
+            "Next up is the \"gate answered too early\" report, then \"handoff\" wording.",
+        ] {
+            assert!(jargon(fine).is_empty(), "{fine:?} flagged as {:?}", jargon(fine));
+        }
+        // Quoting one thing does not excuse the rest of the line, and a quote never closed excuses nothing.
+        assert_eq!(jargon("Wake 3 landed \"the fix\"."), vec!["\"wake\"".to_string()]);
+        assert_eq!(jargon("Landed \"the fix; wake 4 is next"), vec!["\"wake\"".to_string()]);
+        // Backticks are code, not a quotation, and code belongs in the sections below.
+        assert_eq!(jargon("Ran `check.sh` again"), vec!["\"check.sh\"".to_string()]);
+    }
+
+    #[test]
+    fn the_refusal_says_quoted_text_is_fine() {
+        let why = check_handoff("## Where this is\nWake 3 is done.\n").expect("refused");
+        assert!(why.contains("in double quotes"), "got: {why}");
     }
 
     /// The harness shows the headings with their gloss after a dash; a wake that copies that shape
