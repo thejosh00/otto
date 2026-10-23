@@ -1939,6 +1939,41 @@ pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
     Ok(())
 }
 
+#[derive(clap::Args, Debug)]
+pub struct PolicyArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// What to set, as at `otto run --policy`: maxWakeMinutes=240, maxIncompleteWakes=5. Omit it to
+    /// see the run's policy. The period is `otto period`'s
+    #[arg(value_name = "KEY=VALUE")]
+    pub set: Vec<String>,
+}
+
+pub fn policy(args: PolicyArgs) -> Result<(), OttoError> {
+    if args.set.is_empty() {
+        let state = crate::state::read_run(&args.id)?;
+        println!("{}", state.label());
+        if let serde_json::Value::Object(map) = serde_json::to_value(&state.policy)? {
+            for (key, value) in map {
+                println!("  {key}={value}");
+            }
+        }
+        return Ok(());
+    }
+    let outcome = crate::core::set_policy(&args.id, &args.set)?;
+    let label = crate::paths::label_of(&outcome.id);
+    for (key, value) in &outcome.set {
+        match outcome.previous.get(key) {
+            Some(was) if !was.is_null() => println!("{label} {key}={value} (was {was})"),
+            _ => println!("{label} {key}={value}"),
+        }
+    }
+    if outcome.wake_running {
+        println!("the wake running now keeps the limits it started with; this applies from the next one");
+    }
+    Ok(())
+}
+
 fn parse_duration(flag: &str, text: &str) -> Result<time::Duration, OttoError> {
     crate::clock::parse_age(text)
         .ok_or_else(|| OttoError::usage(format!("{flag} takes a duration like 15m, 1h or 1d, not \"{text}\"")))

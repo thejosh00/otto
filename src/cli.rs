@@ -48,6 +48,8 @@ pub enum Command {
     Attach(crate::human::AttachArgs),
     /// See or change how often a run wakes.
     Period(crate::human::PeriodArgs),
+    /// See or change a run's policy: how long a wake may take, and the rest of what `--policy` sets.
+    Policy(crate::human::PolicyArgs),
     /// Give a run a new name.
     Rename(crate::human::RenameArgs),
     /// Give every run from before run numbers a number, keeping its old id as an alias.

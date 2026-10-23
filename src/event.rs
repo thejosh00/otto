@@ -30,7 +30,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
-    "check-set", "renamed", "renumbered", "period-set", "check-cleared", "notified", "message-sent",
+    "check-set", "renamed", "renumbered", "period-set", "policy-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
     "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "waiting",
     "wait-overdue", "chat-started", "chat-ended", "change-submitted", "change-moved",
@@ -319,6 +319,9 @@ pub enum Event {
         #[serde(rename = "previousAt", default, skip_serializing_if = "Option::is_none")]
         previous_at: Option<crate::clock::TimeOfDay>,
     },
+    /// A person changed the run's policy (`otto policy`): each key it set, with what it was before
+    /// (`null` when it had no value of its own).
+    PolicySet { set: serde_json::Map<String, serde_json::Value>, previous: serde_json::Map<String, serde_json::Value> },
     /// The run's standing check script was removed; every wake is a full one again.
     CheckCleared {
         script: String,

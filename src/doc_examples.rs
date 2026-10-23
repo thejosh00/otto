@@ -245,6 +245,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         NoteDropped { note: s(), standing: false },
         CheckSet { script: s(), wake_after: 24, by: s() },
         PeriodSet { period_minutes: 60, previous_minutes: 60, at: None, previous_at: None },
+        PolicySet { set: serde_json::Map::new(), previous: serde_json::Map::new() },
         Renamed { from: s(), to: s() },
         Renumbered { from: s() },
         CheckCleared { script: s(), by: s() },
@@ -282,7 +283,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
             | NoteAdded { .. } | NotesDelivered { .. } | NotesGivenLate { .. } | FeedbackSent { .. } | Waiting { .. } | WaitOverdue { .. } | NoteDropped { .. } | CheckSet { .. }
-            | PeriodSet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
+            | PeriodSet { .. } | PolicySet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }
             | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } | ChangeSubmitted { .. } | ChangeMoved { .. } => {}

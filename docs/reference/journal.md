@@ -11,7 +11,7 @@ per cycle for a run that repeats — so a journal may contain names not listed h
 the run's [activity](../concepts.md#activity).
 
 `otto logs --decisions` keeps the turning points: `run-created`, `phase-changed`,
-`status-changed`, the done-claim events, the gate events, the note events, `check-set`, `check-cleared`, `period-set`,
+`status-changed`, the done-claim events, the gate events, the note events, `check-set`, `check-cleared`, `period-set`, `policy-set`,
 the budget events, the wake failures, and `usage-limited`.
 
 ## The run
@@ -53,6 +53,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `wait-overdue` | `for`, `since`, `giveUpAt` | A wake tried to sleep again for a wait whose limit had passed; otto refused, and armed nothing |
 | `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A wake said it moved the run where otto can't see (`--progress`) / said what a look found. otto counts wakes that change nothing itself, so a plain tick adds nothing to the count |
 | `period-set` | `periodMinutes`, `previousMinutes`, `at`, `previousAt` | A person changed the period, or the time of day it wakes |
+| `policy-set` | `set`, `previous` | A person changed policy keys with `otto policy`: what each was set to, and what it was (`null` for none) |
 | `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |
 | `check-cleared` | `script`, `by` | The standing check was removed, by a `person` or a `wake` |
 | `check-ran` | `result`, `consecutiveNoChange`, `note` | A check script reported a change or an error. "Nothing new" is never journaled — see `check` in `run.json` |

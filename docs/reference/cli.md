@@ -689,6 +689,25 @@ Options:
           Print help
 ```
 
+## `otto policy`
+
+```text
+See or change a run's policy: how long a wake may take, and the rest of what `--policy` sets
+
+Usage: otto policy <ID> [KEY=VALUE]...
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [KEY=VALUE]...
+          What to set, as at `otto run --policy`: maxWakeMinutes=240, maxIncompleteWakes=5. Omit it to see the run's policy. The period is `otto period`'s
+
+Options:
+  -h, --help
+          Print help
+```
+
 ## `otto rename`
 
 ```text

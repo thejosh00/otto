@@ -1202,6 +1202,73 @@ pub fn set_period(id: &str, minutes: Option<u64>, at: PeriodAt) -> Result<Period
 }
 
 // ---------------------------------------------------------------------------
+// policy
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicySetOutcome {
+    pub id: String,
+    pub set: serde_json::Map<String, serde_json::Value>,
+    pub previous: serde_json::Map<String, serde_json::Value>,
+    /// A wake running now keeps the deadline it started with.
+    pub wake_running: bool,
+}
+
+/// Set policy keys on an existing run, as `--policy` does at `otto run`. A key otto knows must get
+/// a value of its type: at creation a bad one is kept as an extra key, and here that would report
+/// a change that never took. The period is `otto period`'s, which reschedules the next wake.
+pub fn set_policy(id: &str, pairs: &[String]) -> Result<PolicySetOutcome, OttoError> {
+    let id = crate::paths::resolve_run_id(id)?;
+    let wanted = crate::state::parse_kv(pairs, "a policy setting")?;
+    if wanted.is_empty() {
+        return Err(OttoError::usage("give at least one key=value"));
+    }
+    if let Some(key) = wanted.keys().find(|k| matches!(k.as_str(), "periodMinutes" | "periodAt")) {
+        return Err(OttoError::usage(format!("{key} is set with `otto period`, which also moves the next wake")));
+    }
+    let known = known_policy_keys();
+    let mut previous = serde_json::Map::new();
+    let mut wake_running = false;
+    crate::state::transaction(&id, |path, state| {
+        if state.status.is_terminal() {
+            return Err(OttoError::conflict(format!(
+                "{id} is {} — it never wakes again, so its policy no longer applies",
+                crate::state::commands::status_str(state.status)
+            )));
+        }
+        let before = serde_json::to_value(&state.policy)?;
+        let mut policy = state.policy.clone();
+        for (key, value) in &wanted {
+            policy.set(key.clone(), value.clone());
+            if known.contains(key) && policy.extra.remove(key).is_some() {
+                return Err(OttoError::usage(format!("{key}={value} — {key} takes {}", type_of(&before[key]))));
+            }
+            previous.insert(key.clone(), before.get(key).cloned().unwrap_or(serde_json::Value::Null));
+        }
+        state.policy = policy;
+        wake_running = state.wake.as_ref().is_some_and(|w| w.outcome.is_none());
+        crate::event::record(path, &crate::event::Event::PolicySet { set: wanted.clone(), previous: previous.clone() })
+    })?;
+    Ok(PolicySetOutcome { id, set: wanted, previous, wake_running })
+}
+
+fn known_policy_keys() -> Vec<String> {
+    match serde_json::to_value(crate::state::Policy::default()) {
+        Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn type_of(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Bool(_) => "true or false",
+        serde_json::Value::Number(_) => "a whole number",
+        _ => "a different kind of value",
+    }
+}
+
+// ---------------------------------------------------------------------------
 // rename / renumber
 // ---------------------------------------------------------------------------
 
@@ -2070,6 +2137,7 @@ pub const DECISION_EVENTS: &[&str] = &[
     "check-set",
     "check-cleared",
     "period-set",
+    "policy-set",
     "budget-warning",
     "budget-exhausted",
     "wake-incomplete",
@@ -2682,6 +2750,26 @@ mod tests {
         let state = read_run("2026-09-25-ci").unwrap();
         assert!(state.check.is_some(), "kept");
         assert!(!state.check_gates_wake());
+    }
+
+    #[test]
+    fn a_policy_key_is_set_on_a_live_run_and_a_bad_value_is_refused() {
+        let _h = TempHome::new();
+        test_init("2026-09-25-pol", "a goal").unwrap();
+        let out = set_policy("pol", &["maxWakeMinutes=240".into(), "budgetNote=nightly".into()]).unwrap();
+        assert_eq!(out.previous["maxWakeMinutes"], serde_json::json!(45));
+        assert_eq!(out.previous["budgetNote"], serde_json::Value::Null, "an extra key had no value before");
+        let state = read_run("2026-09-25-pol").unwrap();
+        assert_eq!(state.policy.max_wake_minutes, 240);
+        assert_eq!(state.policy.extra["budgetNote"], serde_json::json!("nightly"));
+
+        let err = set_policy("pol", &["maxWakeMinutes=4h".into()]).unwrap_err();
+        assert!(err.to_string().contains("a whole number"), "{err}");
+        let err = set_policy("pol", &["periodMinutes=1440".into()]).unwrap_err();
+        assert!(err.to_string().contains("otto period"), "{err}");
+        let state = read_run("2026-09-25-pol").unwrap();
+        assert_eq!(state.policy.max_wake_minutes, 240, "a refused setting changes nothing");
+        assert!(!state.policy.extra.contains_key("maxWakeMinutes"));
     }
 
     #[test]

@@ -71,6 +71,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Feedback(args) => human::feedback(args),
         Command::Attach(args) => human::attach(args),
         Command::Period(args) => human::period(args),
+        Command::Policy(args) => human::policy(args),
         Command::Rename(args) => human::rename(args),
         Command::Renumber => human::renumber(),
         Command::Stop(args) => human::stop(args),

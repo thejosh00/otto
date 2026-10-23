@@ -483,6 +483,16 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                         .unwrap_or_default()
                 ),
             ),
+            "policy-set" => happening(
+                "you",
+                format!(
+                    "You set {}",
+                    v.get("set")
+                        .and_then(Value::as_object)
+                        .map(|set| set.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "))
+                        .unwrap_or_default()
+                ),
+            ),
             "check-set" => happening("status", "Now looks for news for free before each run".to_string()),
             "check-cleared" => happening("status", "Stopped checking for news before each run".to_string()),
             "renamed" => happening("you", format!("You renamed it from {}", str_of(v, "from").unwrap_or("?"))),
