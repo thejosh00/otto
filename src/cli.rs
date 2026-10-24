@@ -142,6 +142,8 @@ pub enum ServiceCommand {
     },
     /// Stop it; it stays stopped until the next `otto service start`
     Stop,
+    /// Restart it on the port it was installed with — after `./install.sh`, to serve the new binary
+    Restart,
     /// Is it loaded, on which port, and where are its plist and log
     Status,
 }

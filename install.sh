@@ -10,6 +10,7 @@
 #   otto agent start   # (re-)register and start the launchd reviver — installs it if missing
 #   otto agent stop    # unregister the launchd reviver
 #   otto service start # (re-)register and start the web UI as a launchd service
+#   otto service restart # serve the newly installed binary, on the port it already uses
 #
 # Pass --service to also install the web UI as a launchd service.
 set -euo pipefail
@@ -47,6 +48,8 @@ echo "==> otto agent start (launchd reviver)"
 if [ "$with_service" = 1 ]; then
 	echo "==> otto service start (web UI)"
 	"$bin_dir/otto" service start
+elif [ -f "$HOME/Library/LaunchAgents/com.joshuahill.otto-serve.plist" ]; then
+	echo "note: the web UI service still runs the old binary — \`otto service restart\` to serve this one"
 fi
 
 echo "==> done"

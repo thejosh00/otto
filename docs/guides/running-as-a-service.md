@@ -38,6 +38,7 @@ otto service start               # install and start `otto serve` on 127.0.0.1:7
 otto service start --port 7979   # on another port
 otto service status              # loaded? which URL? where are the plist and log?
 otto service stop                # stop it; it stays stopped until the next start
+otto service restart             # after ./install.sh: serve the new binary, on the same port
 ```
 
 The plist is `~/Library/LaunchAgents/com.joshuahill.otto-serve.plist` and the log is

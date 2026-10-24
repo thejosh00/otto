@@ -94,6 +94,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Service { command } => match command {
             ServiceCommand::Start { port } => launchd::service_start(port),
             ServiceCommand::Stop => launchd::service_stop(),
+            ServiceCommand::Restart => launchd::service_restart(),
             ServiceCommand::Status => launchd::service_status(),
         },
     }

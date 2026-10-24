@@ -1002,10 +1002,11 @@ The web UI as a launchd service: running from login, restarted if it exits
 Usage: otto service <COMMAND>
 
 Commands:
-  start   Install (if missing) and start `otto serve` under launchd
-  stop    Stop it; it stays stopped until the next `otto service start`
-  status  Is it loaded, on which port, and where are its plist and log
-  help    Print this message or the help of the given subcommand(s)
+  start    Install (if missing) and start `otto serve` under launchd
+  stop     Stop it; it stays stopped until the next `otto service start`
+  restart  Restart it on the port it was installed with — after `./install.sh`, to serve the new binary
+  status   Is it loaded, on which port, and where are its plist and log
+  help     Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -1035,6 +1036,18 @@ Options:
 Stop it; it stays stopped until the next `otto service start`
 
 Usage: otto service stop
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto service restart`
+
+```text
+Restart it on the port it was installed with — after `./install.sh`, to serve the new binary
+
+Usage: otto service restart
 
 Options:
   -h, --help

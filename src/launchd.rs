@@ -323,6 +323,21 @@ pub fn service_stop() -> Result<(), OttoError> {
     Ok(())
 }
 
+/// `otto service restart` — start it again, from the binary now installed, on the port its plist
+/// already names: `start` with no `--port` would quietly move a service installed on another
+/// port back to the default. Not installed is an error rather than an install, so a typo on a
+/// machine that never wanted the web UI doesn't start one.
+pub fn service_restart() -> Result<(), OttoError> {
+    let plist = std::fs::read_to_string(plist_path_for(SERVICE_LABEL)).ok();
+    service_start(restart_port(plist.as_deref())?)
+}
+
+/// The port `restart` starts the service on, from its installed plist (`None`: not installed).
+fn restart_port(plist: Option<&str>) -> Result<u16, OttoError> {
+    let plist = plist.ok_or_else(|| OttoError::usage("the web service is not installed — `otto service start` to install it"))?;
+    Ok(service_port(plist).unwrap_or(crate::server::DEFAULT_PORT))
+}
+
 /// The port the installed service was told to listen on, read back from its own plist —
 /// `--port` is the only argument that follows a `<string>--port</string>`.
 fn service_port(plist: &str) -> Option<u16> {
@@ -410,5 +425,17 @@ mod tests {
     fn a_plist_without_a_port_has_none() {
         let plist = generate_plist(&reviver_job(), Path::new("/b/otto"), Path::new("/h"), Path::new("/h/l"));
         assert_eq!(service_port(&plist), None);
+    }
+
+    #[test]
+    fn restart_keeps_the_port_the_service_was_installed_with() {
+        let plist = generate_plist(&service_job(7979), Path::new("/b/otto"), Path::new("/h"), Path::new("/h/l"));
+        assert_eq!(restart_port(Some(&plist)).unwrap(), 7979);
+    }
+
+    #[test]
+    fn restarting_a_service_that_was_never_installed_says_how_to_install_it() {
+        let err = restart_port(None).unwrap_err().to_string();
+        assert!(err.contains("not installed") && err.contains("otto service start"), "{err}");
     }
 }
