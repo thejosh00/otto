@@ -917,7 +917,7 @@ pub fn open_gate(args: OpenGateArgs) -> Result<(), OttoError> {
         (None, None) => None,
     };
     crate::notes::refuse_if_late(&args.id, "gate")?;
-    let gate_file_path = super::ops::open_gate_about(&args.id, &args.slug, &question, expires, args.about.as_deref())?;
+    let gate_file_path = super::ops::open_gate_by_wake(&args.id, &args.slug, &question, expires, args.about.as_deref())?;
     println!("{gate_file_path}");
     Ok(())
 }

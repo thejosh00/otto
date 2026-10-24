@@ -268,9 +268,9 @@ otto state open-gate <id> --slug <slug> --question-file <that file> [--expires-i
 → then stop
 ```
 
-An answer can arrive while you are still finishing — the gate closed in `run.json`. Don't act on
-it; stop as you planned to. otto starts the next wake straight away with the answer in its prompt,
-and acting on it now risks it being done twice.
+An answer can arrive while you are still finishing — the gate closed in `run.json`, or `open-gate`
+refused because of it. Don't act on it or ask again; stop as you planned to. otto starts the next
+wake straight away with the answer in its prompt, and acting on it now risks it being done twice.
 
 When the question is "is this document right?", publish the document first and ask `--about` it
 (`otto state open-gate <id> --slug design-review --question-file <file> --about design`): the page

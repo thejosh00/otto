@@ -58,6 +58,48 @@ pub fn open_gate_about(
     expires_at: Option<Timestamp>,
     about: Option<&str>,
 ) -> Result<String, OttoError> {
+    open(id, slug, question, expires_at, about, false)
+}
+
+/// `open_gate_about` for a question a wake asks (`otto state open-gate`), refused while a person's
+/// answer is waiting that this wake was never given — one that landed while it ran. Asking then
+/// is asking the person again over an answer they have already given, and the new answer would
+/// stand in for the old one (`unheardAnswer` holds one), which no wake would then hear. The wake
+/// that was given it may ask as normal. otto's own questions — a stall, the budget — go through
+/// `open_gate`: they are about the run, not the work, and refusing them would strand it.
+pub fn open_gate_by_wake(
+    id: &str,
+    slug: &str,
+    question: &str,
+    expires_at: Option<Timestamp>,
+    about: Option<&str>,
+) -> Result<String, OttoError> {
+    open(id, slug, question, expires_at, about, true)
+}
+
+/// The refusal a wake reads when it asks with an answer waiting that it never heard. Its words
+/// are the instruction: stop, and leave the answer to the wake that is given it.
+fn refuse_over_unheard(state: &super::RunState) -> Result<(), OttoError> {
+    let Some(unheard) = &state.unheard_answer else { return Ok(()) };
+    let live = state.wake.as_ref().map(|w| w.n);
+    if unheard.given_to_wake.is_some() && unheard.given_to_wake == live {
+        return Ok(());
+    }
+    Err(OttoError::conflict(format!(
+        "a person answered gate {} ({}) while this wake was running — don't act on it or ask again: \
+         stop as you planned. The next wake starts straight away and is given the answer.",
+        unheard.gate, unheard.slug
+    )))
+}
+
+fn open(
+    id: &str,
+    slug: &str,
+    question: &str,
+    expires_at: Option<Timestamp>,
+    about: Option<&str>,
+    by_wake: bool,
+) -> Result<String, OttoError> {
     if question.trim().is_empty() {
         return Err(OttoError::usage("a gate question must not be empty — it has to be answerable cold"));
     }
@@ -65,6 +107,9 @@ pub fn open_gate_about(
     transaction(id, |path, state| {
         if let Some(existing) = &state.gate {
             return Err(OttoError::conflict(format!("gate {} is already open — close it first", existing.id)));
+        }
+        if by_wake {
+            refuse_over_unheard(state)?;
         }
         let about = about.map(|a| crate::outputs::resolve_about(path, a)).transpose()?;
         let gates_dir = path.join("gates");
@@ -237,6 +282,20 @@ mod tests {
         // `otto state close-gate`: the wake recording the answer it was handed has heard it.
         close_gate("ops-e", Some("approve"), Status::Running).unwrap();
         assert!(read_run("ops-e").unwrap().unheard_answer.is_none());
+    }
+
+    #[test]
+    fn asking_over_an_answer_no_wake_was_given_is_refused_but_otto_s_own_questions_are_not() {
+        let _home = TempHome::new();
+        test_init("ops-f", "a goal").unwrap();
+        open_gate("ops-f", "review", "well?", None).unwrap();
+        answer_gate("ops-f", "approve", Status::Running).unwrap();
+        // No wake has been given it, so none may ask over it — by hand either.
+        let err = open_gate_by_wake("ops-f", "more", "and?", None, None).expect_err("refused");
+        assert_eq!(err.code, 2);
+        assert!(read_run("ops-f").unwrap().gate.is_none());
+        // A stall or a spent budget still stops the run with its question.
+        open_gate("ops-f", "budget", "raise it?", None).unwrap();
     }
 
     #[test]

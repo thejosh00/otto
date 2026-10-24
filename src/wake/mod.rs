@@ -1643,6 +1643,68 @@ mod tests {
         assert!(read_run("w-retry").unwrap().unheard_answer.is_none());
     }
 
+    /// `otto state open-gate`, as a wake runs it.
+    fn ask(id: &str, slug: &str) -> Result<(), OttoError> {
+        crate::state::commands::open_gate(crate::state::commands::OpenGateArgs {
+            id: id.to_string(),
+            slug: slug.to_string(),
+            question: Some(format!("{slug}?")),
+            question_file: None,
+            stdin: false,
+            expires_at: None,
+            expires_in: None,
+            about: None,
+        })
+    }
+
+    #[test]
+    fn a_wake_asking_again_over_an_answer_it_never_heard_is_refused_and_told_to_stop() {
+        let _h = TempHome::new();
+        test_init("w-again", "a goal").unwrap();
+        let (mut exec, wakes) = script("w-again", |n| {
+            if n == 1 {
+                ask("w-again", "ship").unwrap();
+                answer_gate("w-again", "Ship it.");
+                // Not noticing, the wake asks something else before it stops.
+                let err = ask("w-again", "docs").expect_err("asking over an unheard answer is refused");
+                assert_eq!(err.code, 2);
+                assert!(err.message.contains("answered gate 001 (ship)"), "{}", err.message);
+                assert!(err.message.contains("don't act on it or ask again"));
+            } else {
+                behave_well("w-again");
+            }
+        });
+        run_wake(&args("w-again"), &mut exec).unwrap();
+        assert_eq!(wakes.get(), 2);
+        assert!(exec.last_call().join(" ").contains("Ship it."), "the next wake is the one given it");
+    }
+
+    #[test]
+    fn a_wake_given_the_answer_may_ask_again_and_a_newer_answer_outlives_it() {
+        let _h = TempHome::new();
+        test_init("w-next-q", "a goal").unwrap();
+        ask("w-next-q", "ship").unwrap();
+        answer_gate("w-next-q", "Ship it.");
+        let (mut exec, wakes) = script("w-next-q", |n| {
+            if n == 1 {
+                // Given the answer, it acts on it and has a new question — which is allowed.
+                ask("w-next-q", "announce").expect("the wake given the answer asks as normal");
+                // And that one is answered before it exits.
+                answer_gate("w-next-q", "Announce it on Monday.");
+            } else {
+                behave_well("w-next-q");
+            }
+        });
+        run_wake(&args("w-next-q"), &mut exec).unwrap();
+
+        assert_eq!(wakes.get(), 2, "wake 1 completing did not count as hearing the newer answer");
+        let calls = exec.calls.borrow();
+        assert!(calls[0].join(" ").contains("Ship it."));
+        let second = calls[1].join(" ");
+        assert!(second.contains("Announce it on Monday."));
+        assert!(!second.contains("Ship it."), "the first answer was heard by wake 1");
+    }
+
     #[test]
     fn an_answer_the_answerer_handed_over_is_not_given_again() {
         let _h = TempHome::new();
