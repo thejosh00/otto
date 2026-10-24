@@ -342,6 +342,8 @@ async function refreshChrome() {
     count.textContent = inbox.open > 99 ? "99+" : String(inbox.open);
     count.hidden = inbox.open === 0;
     document.getElementById("inbox-btn").title = inbox.open ? `${inbox.open} waiting for you` : "Nothing waiting for you";
+    // the tab says it too, for when otto is one tab among many
+    document.title = inbox.open ? `(${count.textContent}) otto` : "otto";
     const changes = document.getElementById("changes-count");
     changes.textContent = inbox.changes > 99 ? "99+" : String(inbox.changes);
     changes.hidden = !inbox.changes;
