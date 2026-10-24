@@ -88,8 +88,9 @@ otto answer my-run --file notes.md
 otto answer                           # on a terminal: a numbered menu; Enter takes the default
 ```
 
-The answer is recorded verbatim and the next wake starts right away (`--no-wake` records it and
-leaves the run for poke). `--choice` is checked against the gate's own options.
+The answer is recorded verbatim and the next wake starts right away, given it (`--no-wake` records
+it and leaves the run for poke; the next wake is given it all the same). `--choice` is checked
+against the gate's own options.
 
 ## Steering without being asked
 

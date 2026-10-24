@@ -320,6 +320,38 @@ pub struct Note {
     pub given_to_wake: Option<u32>,
 }
 
+/// A person's answer to a gate that no wake has yet been given — and completed with.
+///
+/// The answer is in the gate file and the journal the moment it is given, but a wake only acts on
+/// what its prompt says, and only a wake started with the answer had it there. One that lands while
+/// the asking wake is still finishing, or with `--no-wake`, used to reach no prompt at all: the run
+/// slept its period and the next wake never heard it. So it is kept here, given to every wake that
+/// starts until one that carried it completes, the way a one-off note is (`notes`).
+///
+/// Only the person's answer (`core::record_answer`). A wake closing a gate with an answer it was
+/// handed, by `otto state close-gate`, has heard it already.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnheardAnswer {
+    /// The gate it answers, by id.
+    pub gate: String,
+    pub slug: String,
+    /// Verbatim, as recorded in the gate file.
+    pub answer: String,
+    #[serde(rename = "answeredAt")]
+    pub answered_at: crate::clock::Timestamp,
+    /// The wake whose prompt last carried it. Only that wake completing means it was heard — one
+    /// that was already running when the answer landed never saw it.
+    #[serde(rename = "givenToWake", default, skip_serializing_if = "Option::is_none")]
+    pub given_to_wake: Option<u32>,
+}
+
+impl UnheardAnswer {
+    /// The same answer, whatever wake it has been given to since.
+    pub fn is(&self, other: &UnheardAnswer) -> bool {
+        self.gate == other.gate && self.answered_at == other.answered_at
+    }
+}
+
 /// A message the run has sent a person and that is still waiting for them (see `messages`). The
 /// message itself — its body, any draft, what it attached — lives in `messages/NNN-<slug>.*`; this
 /// is the index the inbox reads, so listing what needs a person never scans a run's history. A
@@ -734,6 +766,9 @@ pub struct RunState {
     /// Notes a person has left for the run that are still to be delivered, and standing ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+    /// A person's answer no wake has been given and completed with yet (`UnheardAnswer`).
+    #[serde(rename = "unheardAnswer", default, skip_serializing_if = "Option::is_none")]
+    pub unheard_answer: Option<UnheardAnswer>,
     /// Messages the run has sent that the person has not yet marked done.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<OpenMessage>,
@@ -1177,6 +1212,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         authorizations: Map::new(),
         notified: BTreeMap::new(),
         notes: Vec::new(),
+        unheard_answer: None,
         messages: Vec::new(),
         paused: None,
         wait: None,

@@ -883,12 +883,14 @@ pub fn resolve_choice(choice: &str, options: &[String]) -> Result<String, OttoEr
     }
 }
 
-/// Record `answer` against the gate. `ops::close_gate` records it verbatim and returns
-/// `running`, so the wake that follows sees an answered gate. It takes the run lock inside its
-/// own transaction and releases it on return, so a wake started afterwards is sequential rather
-/// than nested — `RunLock` is not reentrant.
+/// Record `answer` against the gate. `ops::answer_gate` records it verbatim and returns
+/// `running`, so the wake that follows sees an answered gate, and keeps it as unheard so every wake
+/// that starts is given it until one that was completes — whoever starts that wake, and whether or
+/// not the wake that asked was still running. It takes the run lock inside its own transaction and
+/// releases it on return, so a wake started afterwards is sequential rather than nested —
+/// `RunLock` is not reentrant.
 pub fn record_answer(pending: &PendingGate, answer: &str) -> Result<(), OttoError> {
-    crate::state::ops::close_gate(&pending.id, Some(answer), Status::Running)
+    crate::state::ops::answer_gate(&pending.id, answer, Status::Running)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -922,21 +924,61 @@ pub fn answer_in_background(id: &str, choice: Option<&str>, text: Option<&str>, 
         note: None,
     };
     if no_wake {
-        outcome.note = Some("recorded; not waking it yet".to_string());
+        outcome.note = Some("recorded; not waking it yet — the next wake is given your answer".to_string());
         return Ok(outcome);
     }
     if !wait_for_wake_to_finish(&pending.id) {
-        outcome.note = Some(format!(
-            "it's still busy after {}s — your answer is recorded, and it will act on it",
-            crate::spawner::CONFIRM_SECONDS
-        ));
+        outcome.note = Some(still_running_note(&pending.id));
+        return Ok(outcome);
+    }
+    if answer_heard(&pending.id, &pending.gate_id) {
+        outcome.note = Some("the wake that followed the last one has already acted on your answer".to_string());
         return Ok(outcome);
     }
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
     let strategy = Caller::Background.strategy(detach_of(&pending.id));
-    outcome.wake = Some(start_wake(&pending.id, strategy, Some(&answer))?);
+    match start_wake(&pending.id, strategy, Some(&answer)) {
+        Ok(started) => outcome.wake = Some(started),
+        Err(e) if lost_to_follow_on(&pending.id, &e) => {
+            outcome.note = Some("the wake after the last one has started, given your answer".to_string());
+        }
+        Err(e) => return Err(e),
+    }
     Ok(outcome)
+}
+
+/// What to tell a person whose answer landed while a wake was still running, once waiting for it
+/// has run out. Not "it will act on it" and leave it there: that wake was started before the
+/// answer, so its prompt never had it, and nothing used to give it to one. Now the run's own
+/// process follows a wake that missed an answer with one that is given it (`wake::follows_on`), so
+/// that is what to say — or, when the wake still running is that one, so.
+pub fn still_running_note(id: &str) -> String {
+    let state = read_run(id).ok();
+    let running = state.as_ref().and_then(|s| s.wake.as_ref()).map(|w| w.n);
+    let given = state.as_ref().and_then(|s| s.unheard_answer.as_ref()).and_then(|u| u.given_to_wake);
+    if running.is_some() && running == given {
+        return "a wake given your answer is running now — `otto ls` to watch".to_string();
+    }
+    format!(
+        "a wake is still running after {}s — your answer is recorded, and a wake given it starts as soon \
+         as that one finishes. `otto ls` to watch.",
+        crate::spawner::CONFIRM_SECONDS
+    )
+}
+
+/// Whether a wake given the answer to `gate` has already completed — the follow-on to a wake that
+/// finished just as the answer landed, in the instant before the answerer looked. Starting another
+/// with the answer would have it acted on twice.
+pub fn answer_heard(id: &str, gate: &str) -> bool {
+    read_run(id).is_ok_and(|s| !s.unheard_answer.is_some_and(|u| u.gate == gate))
+}
+
+/// Whether a refusal to start the answerer's wake is the race with the run's own follow-on: the
+/// wake that was running finished, and its process started the next one — given the answer — just
+/// before the answerer could. Nothing went wrong; that wake is the one the answerer wanted.
+pub fn lost_to_follow_on(id: &str, err: &OttoError) -> bool {
+    err.code == 2 && LockLiveness.probe(id).is_busy()
 }
 
 // ---------------------------------------------------------------------------

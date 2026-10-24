@@ -421,6 +421,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         authorizations: Map::new(),
         notified: std::collections::BTreeMap::new(),
         notes: Vec::new(),
+        unheard_answer: None,
         messages: Vec::new(),
         paused: None,
         wait: None,

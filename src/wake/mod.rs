@@ -31,7 +31,7 @@ use crate::clock::Timestamp;
 use crate::error::OttoError;
 use crate::event::Event;
 use crate::exec::{Exec, Output, RealExec};
-use crate::liveness::WakeLock;
+use crate::liveness::{Liveness, LockLiveness, WakeLock};
 use crate::state::{transaction, RunState, Status, Wake, WakeOutcome};
 use serde_json::Value;
 use std::time::Duration;
@@ -165,14 +165,24 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         if !follows_on(&crate::state::read_run(&args.id)?) {
             break;
         }
-        run_one_wake(&next, exec)?;
+        // Someone else started the next wake first — the person whose answer brought it, most
+        // likely, handing it over themselves. That wake is the follow-on; there is nothing to add.
+        if LockLiveness.probe(&args.id).is_busy() {
+            break;
+        }
+        match run_one_wake(&next, exec) {
+            // Lost the same race between the probe and the lock.
+            Err(e) if e.code == 2 && LockLiveness.probe(&args.id).is_busy() => break,
+            other => other?,
+        }
     }
     Ok(())
 }
 
 /// Whether the wake that just finished leaves one that should start now: it completed, and either
-/// claimed done (a check is next) or was a check that reopened the run (the fix is next). Not when
-/// anything else holds the run — a gate, a pause, a block.
+/// claimed done (a check is next), was a check that reopened the run (the fix is next), or a person
+/// answered its gate while it was still running (a wake given the answer is next — it never saw
+/// it). Not when anything else holds the run — a gate, a pause, a block.
 fn follows_on(state: &RunState) -> bool {
     let Some(wake) = &state.wake else { return false };
     if wake.outcome != Some(WakeOutcome::Complete) || state.gate.is_some() || state.is_paused() {
@@ -183,7 +193,8 @@ fn follows_on(state: &RunState) -> bool {
     }
     let claimed = state.done_claim.as_ref().is_some_and(|c| c.by_wake == wake.n);
     let reopened = state.last_verdict.as_ref().is_some_and(|v| !v.confirmed && v.wake == wake.n);
-    claimed || reopened
+    let answered = state.unheard_answer.as_ref().is_some_and(|a| a.given_to_wake != Some(wake.n));
+    claimed || reopened || answered
 }
 
 /// One wake, with the spawner injected so the whole path is testable without spending money.
@@ -202,7 +213,16 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     }
 
     let base = prompt::for_wake(&args.id, &run_path, &state);
-    let mut prompt = match &args.answer {
+    // A person's answer no wake has completed with yet is given to this one, whoever started it:
+    // the answerer handing it over (`args.answer`, the same words) or a follow-on, poke or `otto
+    // wake` with nothing in hand. Not to a check of a done claim — its job is the claim, cold — so
+    // it waits for the wake after. Read from the same `state` as the prompt, like the notes below.
+    let unheard = state
+        .unheard_answer
+        .clone()
+        .filter(|u| state.done_claim.is_none() && args.answer.as_deref().is_none_or(|a| a.trim_end() == u.answer));
+    let answer = args.answer.as_deref().or(unheard.as_ref().map(|u| u.answer.as_str()));
+    let mut prompt = match answer {
         Some(answer) => prompt::answer_prompt(&base, answer, state.gate.is_some()),
         None => base,
     };
@@ -265,6 +285,12 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         state.spawn_attempts = 0;
         if let Some(given) = &notes {
             crate::notes::mark_given(state, &given.ids, wake_number);
+        }
+        // Only if it is still the answer the prompt carried: one given a moment ago is not in it.
+        if let (Some(given), Some(current)) = (&unheard, state.unheard_answer.as_mut()) {
+            if current.is(given) {
+                current.given_to_wake = Some(wake_number);
+            }
         }
         // A check a wake armed belonged to the sleep that just ended; left in place it would stand
         // in front of the next period sleep too, still asking at the old wake's gap. A person's
@@ -436,6 +462,7 @@ fn finish_wake(
                 // for the next wake to be given again.
                 if n > 0 {
                     crate::notes::deliver(path, state, n)?;
+                    hear_answer(path, state, n)?;
                 }
                 let progress = crate::progress::account(state, mark.clone(), n);
                 if crate::progress::stalled(state) {
@@ -507,6 +534,27 @@ fn finish_wake(
             Ok(())
         }
     }
+}
+
+/// Wake `n` completed. An answer it was given has been heard, and no wake is given it again. One it
+/// was not given landed while it ran: the next wake is due now, not a period on, and is given it.
+/// `run_wake` starts that wake straight away (`follows_on`); this is for when nothing does — the
+/// process ends first — so poke's next pass starts it rather than the period's end.
+fn hear_answer(path: &std::path::Path, state: &mut RunState, n: u32) -> Result<(), OttoError> {
+    let Some(unheard) = &state.unheard_answer else { return Ok(()) };
+    if unheard.given_to_wake == Some(n) {
+        state.unheard_answer = None;
+        return Ok(());
+    }
+    if state.status == Status::Sleeping && state.gate.is_none() && !state.is_paused() {
+        let now = Timestamp::now();
+        state.next_wake_at = Some(now);
+        crate::event::record(
+            path,
+            &Event::TimerArmed { next_wake_at: now, note: Some(format!("gate {} answered mid-wake", unheard.gate)) },
+        )?;
+    }
+    Ok(())
 }
 
 /// Record a wake the account's usage limit stopped, and sleep the run until the limit resets.
@@ -1521,6 +1569,96 @@ mod tests {
         .unwrap();
         let call = exec.last_call().join(" ");
         assert!(call.contains("Approve, but rename the flag first."));
+    }
+
+    /// The person answering, as `otto answer` does: the gate's own pending view, then the record.
+    fn answer_gate(id: &str, answer: &str) {
+        let pending = crate::core::pending_gate(Some(id)).unwrap();
+        crate::core::record_answer(&pending, answer).unwrap();
+    }
+
+    #[test]
+    fn an_answer_that_lands_mid_wake_brings_a_wake_given_it_straight_away() {
+        let _h = TempHome::new();
+        test_init("w-mid", "a goal").unwrap();
+        let (mut exec, wakes) = script("w-mid", |n| {
+            if n == 1 {
+                // The wake asks, and the person answers before it has exited.
+                crate::state::ops::open_gate("w-mid", "ship", "Ship it?", None).unwrap();
+                answer_gate("w-mid", "Ship it, but tag it first.");
+            } else {
+                behave_well("w-mid");
+            }
+        });
+        run_wake(&args("w-mid"), &mut exec).unwrap();
+
+        assert_eq!(wakes.get(), 2, "the follow-on runs now, not a period later");
+        let calls = exec.calls.borrow();
+        assert!(!calls[0].join(" ").contains("Ship it, but tag it first."));
+        let second = calls[1].join(" ");
+        assert!(second.contains("Ship it, but tag it first."), "the follow-on is given the answer verbatim");
+        assert!(second.contains("already recorded"), "and told there is no gate left to close");
+        assert!(read_run("w-mid").unwrap().unheard_answer.is_none(), "heard by the wake that carried it");
+        // Due now, so poke would have started it had this process ended first.
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-mid").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("gate 001 answered mid-wake"));
+    }
+
+    #[test]
+    fn an_answer_recorded_with_no_wake_is_given_to_the_next_wake_and_only_that_one() {
+        let _h = TempHome::new();
+        test_init("w-later", "a goal").unwrap();
+        crate::state::ops::open_gate("w-later", "ship", "Ship it?", None).unwrap();
+        // `otto answer --no-wake`: recorded, and nothing started.
+        answer_gate("w-later", "Hold off until Monday.");
+
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-later"));
+        run_wake(&args("w-later"), &mut exec).unwrap();
+        assert!(exec.last_call().join(" ").contains("Hold off until Monday."));
+        assert!(read_run("w-later").unwrap().unheard_answer.is_none());
+
+        run_wake(&args("w-later"), &mut exec).unwrap();
+        assert!(!exec.last_call().join(" ").contains("Hold off until Monday."), "heard once is enough");
+    }
+
+    #[test]
+    fn an_answer_a_wake_crashed_on_is_given_again_to_the_retry() {
+        let _h = TempHome::new();
+        test_init("w-retry", "a goal").unwrap();
+        crate::state::ops::open_gate("w-retry", "ship", "Ship it?", None).unwrap();
+        answer_gate("w-retry", "Ship it.");
+
+        let mut exec = FakeExec::new();
+        // Exits non-zero having written nothing: incomplete.
+        exec.queue(Output { code: 1, ..Default::default() });
+        run_wake(&args("w-retry"), &mut exec).unwrap();
+        assert!(exec.last_call().join(" ").contains("Ship it."));
+        let unheard = read_run("w-retry").unwrap().unheard_answer.expect("a crash is not hearing it");
+        assert_eq!(unheard.given_to_wake, Some(1));
+
+        exec.on_exec(|| behave_well("w-retry"));
+        run_wake(&args("w-retry"), &mut exec).unwrap();
+        assert!(exec.last_call().join(" ").contains("Ship it."), "the retry is given it again");
+        assert!(read_run("w-retry").unwrap().unheard_answer.is_none());
+    }
+
+    #[test]
+    fn an_answer_the_answerer_handed_over_is_not_given_again() {
+        let _h = TempHome::new();
+        test_init("w-handed", "a goal").unwrap();
+        crate::state::ops::open_gate("w-handed", "ship", "Ship it?", None).unwrap();
+        answer_gate("w-handed", "Ship it.");
+
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| behave_well("w-handed"));
+        // What `otto answer` starts, with the answer in hand — read from a file, trailing newline.
+        run_wake(&WakeArgs { answer: Some("Ship it.\n".into()), ..args("w-handed") }, &mut exec).unwrap();
+        assert_eq!(exec.calls.borrow().len(), 1, "no follow-on: this wake was given it");
+        assert!(read_run("w-handed").unwrap().unheard_answer.is_none());
+
+        run_wake(&args("w-handed"), &mut exec).unwrap();
+        assert!(!exec.last_call().join(" ").contains("Ship it."));
     }
 
     /// A scripted run of wakes: the `n`th spawn writes a handoff and then does `step(n)`. Comes with

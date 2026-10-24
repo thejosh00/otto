@@ -1658,25 +1658,31 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
     println!("recorded against gate {} ({})", pending.gate_id, pending.slug);
 
     if args.no_wake {
-        println!("not waking it — `otto wake {short}` when you want it to continue");
+        println!("not waking it — the next wake is given your answer; `otto wake {short}` when you want it to continue");
         return Ok(());
     }
     if LockLiveness.probe(id).is_busy() {
         println!("a wake is still finishing — waiting for it before continuing the run");
     }
-    // The answer is already on disk, so if a wake is somehow still running after the wait, saying
-    // so is better than failing: poke will carry the run on from here either way.
+    // The answer is already on disk, and kept for whichever wake starts next, so if a wake is
+    // still running after the wait, saying so is better than failing: the wake after it is given it.
     if !crate::core::wait_for_wake_to_finish(id) {
-        println!(
-            "a wake is still running after {}s — your answer is recorded, and the \
-             run will act on it. `otto ls` to watch, or `otto wake {short}` once it is idle.",
-            crate::spawner::CONFIRM_SECONDS
-        );
+        println!("{}", crate::core::still_running_note(id));
+        return Ok(());
+    }
+    if crate::core::answer_heard(id, &pending.gate_id) {
+        println!("the wake that followed the last one has already acted on your answer");
         return Ok(());
     }
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
-    start_wake(id, detach_of(id), Some(answer))
+    match start_wake(id, detach_of(id), Some(answer)) {
+        Err(e) if crate::core::lost_to_follow_on(id, &e) => {
+            println!("the wake after the last one has started, given your answer — `otto ls` to watch");
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -226,7 +226,9 @@ always set one yourself, and yours wins. [Check scripts](guides/check-scripts.md
 A **gate** is the run asking a person something. A wake writes the question to
 `gates/NNN-<slug>.md`, opens the gate, and exits; the run is `awaiting_human` until someone
 answers with `otto answer` (or a button in the web UI). The answer is recorded verbatim and the
-next wake starts.
+next wake starts, given it. An answer that lands while the wake that asked is still finishing is
+given to the wake that follows it straight away; one recorded with `--no-wake` goes to whichever
+wake starts next.
 
 A gate question is written to be answered cold — you arrive hours later with no transcript — so
 it carries where the run is, the specific decision, named options with their consequences, and a

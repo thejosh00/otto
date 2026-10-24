@@ -53,6 +53,7 @@ what the ideas mean.
 | `policy` | `periodMinutes`, `periodAt` (a local `HH:MM` the period's wakes are due, with a period of whole days), `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, `verifyDone`, `maxDoneReopens`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
 | `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |
+| `unheardAnswer` | A person's answer that no wake has been given and completed with yet: `{gate, slug, answer, answeredAt, givenToWake}`. Every wake is given it until one that carried it completes |
 | `messages` | Messages the run has sent that the person has not marked done: `{id, kind, title, file, sentAt}`, `file` the message's `messages/NNN-<slug>.json` |
 
 ### `check`

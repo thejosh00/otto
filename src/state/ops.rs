@@ -14,7 +14,7 @@
 //! The CLI structs are a client of this, not the other way around: `otto state` is one caller
 //! among several, not the shape the engine itself is written in.
 
-use super::{transaction, write_atomic, Gate, Status};
+use super::{transaction, write_atomic, Gate, Status, UnheardAnswer};
 use crate::clock::Timestamp;
 use crate::error::OttoError;
 use crate::event::Event;
@@ -117,7 +117,21 @@ pub fn open_gate_about(
 /// Close the open gate. `answer: None` means expired — nobody answered, and the gate must carry
 /// its own `expiresAt` or this refuses: silence only has a meaning where an expiry said what it
 /// was in advance.
+///
+/// This is also how a wake records an answer it was handed, so it leaves nothing unheard: a person
+/// answering goes through `answer_gate`.
 pub fn close_gate(id: &str, answer: Option<&str>, status: Status) -> Result<(), OttoError> {
+    close(id, answer, status, false)
+}
+
+/// A person answering the open gate: `close_gate`, and the answer kept as unheard
+/// (`UnheardAnswer`) until a wake given it completes. In the same transaction as the close, so
+/// there is never a closed gate whose answer no wake will be told, nor the reverse.
+pub fn answer_gate(id: &str, answer: &str, status: Status) -> Result<(), OttoError> {
+    close(id, Some(answer), status, true)
+}
+
+fn close(id: &str, answer: Option<&str>, status: Status, by_person: bool) -> Result<(), OttoError> {
     transaction(id, |path, state| {
         let gate = state.gate.clone().ok_or_else(|| OttoError::conflict("no gate is open"))?;
         let expired = answer.is_none();
@@ -148,6 +162,15 @@ pub fn close_gate(id: &str, answer: Option<&str>, status: Status) -> Result<(), 
         state.status = status;
         state.next_wake_at = None;
         let answer_text = answer_text.trim_end().to_string();
+        if by_person && !expired {
+            state.unheard_answer = Some(UnheardAnswer {
+                gate: gate.id.clone(),
+                slug: gate.slug.clone(),
+                answer: answer_text.clone(),
+                answered_at: answered,
+                given_to_wake: None,
+            });
+        }
         if let (Some(about), false) = (&gate.about, expired) {
             // Best effort: the answer is in the gate file and the journal whatever happens here, and
             // an unreadable outputs index must not stop a person answering.
@@ -190,6 +213,30 @@ mod tests {
         let state = read_run("ops-b").unwrap();
         assert!(state.gate.is_none());
         assert_eq!(state.status, Status::Running);
+    }
+
+    #[test]
+    fn a_person_answering_leaves_the_answer_for_the_next_wake() {
+        let _home = TempHome::new();
+        test_init("ops-d", "a goal").unwrap();
+        open_gate("ops-d", "review", "well?", None).unwrap();
+        answer_gate("ops-d", "approve, after lunch", Status::Running).unwrap();
+        let state = read_run("ops-d").unwrap();
+        assert!(state.gate.is_none());
+        let unheard = state.unheard_answer.expect("no wake has been given it yet");
+        assert_eq!(unheard.answer, "approve, after lunch");
+        assert_eq!(unheard.gate, "001");
+        assert_eq!(unheard.given_to_wake, None);
+    }
+
+    #[test]
+    fn a_wake_closing_the_gate_itself_leaves_no_answer_unheard() {
+        let _home = TempHome::new();
+        test_init("ops-e", "a goal").unwrap();
+        open_gate("ops-e", "review", "well?", None).unwrap();
+        // `otto state close-gate`: the wake recording the answer it was handed has heard it.
+        close_gate("ops-e", Some("approve"), Status::Running).unwrap();
+        assert!(read_run("ops-e").unwrap().unheard_answer.is_none());
     }
 
     #[test]
