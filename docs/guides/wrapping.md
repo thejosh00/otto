@@ -23,6 +23,10 @@ thing that can say when to stop. `--repo` grants a wake access to a repository (
 wake starts in — point it at the repo when the work lives in one, so the repo's `CLAUDE.md` and
 project settings load.
 `otto run --dry-run` prints the run's id and its first wake's command, and creates nothing.
+A `--skill` must be installed where claude finds it by name — `~/.claude/skills/<name>/SKILL.md`,
+the same under the working directory's `.claude/`, or a command of that name — or the run is
+refused; each wake's prompt names the skill's file. A plugin's skill (`plugin:skill`) is not
+checked.
 
 ## How a skill that has never heard of otto survives
 

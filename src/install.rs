@@ -81,13 +81,30 @@ fn ensure_symlink(link: &Path, target: &Path) -> Result<LinkOutcome, OttoError> 
 
 /// `~/.claude/skills`, overridable via `$OTTO_CLAUDE_SKILLS_DIR` — used only by tests, so
 /// they never touch the real user's skill directory.
-fn skills_dir() -> PathBuf {
+pub(crate) fn skills_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OTTO_CLAUDE_SKILLS_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
     crate::paths::home_dir().join(".claude").join("skills")
+}
+
+/// Every file a skill invoked by name could be, in the order claude finds them: the user's own
+/// skills, then the working directory's, then a command of that name in either. Empty for a
+/// plugin's skill (`plugin:skill`), which lives wherever its plugin was installed — not otto's to
+/// look for, so not otto's to refuse.
+pub(crate) fn skill_places(name: &str, workdir: Option<&Path>) -> Vec<PathBuf> {
+    if name.contains(':') {
+        return Vec::new();
+    }
+    let user_skills = skills_dir();
+    let user = user_skills.parent().map(Path::to_path_buf).unwrap_or_else(|| user_skills.clone());
+    let project = workdir.map(|w| w.join(".claude"));
+    let mut places = vec![user_skills.join(name).join("SKILL.md")];
+    places.extend(project.iter().map(|p| p.join("skills").join(name).join("SKILL.md")));
+    places.extend(std::iter::once(&user).chain(project.iter()).map(|c| c.join("commands").join(format!("{name}.md"))));
+    places
 }
 
 pub fn install(args: InstallArgs) -> Result<(), OttoError> {

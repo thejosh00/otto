@@ -137,7 +137,7 @@ pub fn dry_run_line(argv: &[String]) -> String {
 /// exist yet. Same argv builder as the real thing, so what it shows is what would run.
 pub fn first_wake_dry_run_line(state: &crate::state::RunState, run_dir: &std::path::Path) -> Result<String, OttoError> {
     let launcher = launcher::resolve(state)?;
-    let prompt = prompt::user_prompt(&state.id, run_dir);
+    let prompt = prompt::for_wake(&state.id, run_dir, state);
     let session = transcript::session_id(&state.id, 1, &Timestamp::now().to_string());
     Ok(dry_run_line(&launcher::argv(state, &launcher, &prompt, &session)))
 }

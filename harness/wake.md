@@ -48,8 +48,11 @@ to this run outside any gate.
 
 **2. Load what the run wraps.** `run.json`'s `wraps` says what:
 
-- `skill` — invoke it by name, as a slash command. If it keeps its own files, see "A skill with
-  its own files" below.
+- `skill` — invoke it by name, as a slash command. Your prompt names its file; if invoking it
+  fails, read that file instead. If your prompt says it isn't installed, look for its `SKILL.md`
+  in the run's repos and working directory: found, follow it and say under `Needs` that it should
+  be installed; not found, set `blocked` with a gate naming the skill. If it keeps its own files,
+  see "A skill with its own files" below.
 - `instructions` — read that file. It is prose, and it is authoritative for *what* to do.
 - `goal-only` — the goal is the whole instruction.
 

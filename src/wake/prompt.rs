@@ -77,13 +77,37 @@ fn reopened_prompt(base: String, verdict: &crate::state::Verdict) -> String {
 /// prompt.
 pub fn for_wake(run_id: &str, run_dir: &std::path::Path, state: &crate::state::RunState) -> String {
     if let Some(claim) = &state.done_claim {
-        return verify_prompt(run_id, run_dir, claim);
+        return with_skill(verify_prompt(run_id, run_dir, claim), state);
     }
-    let base = user_prompt(run_id, run_dir);
+    let base = with_skill(user_prompt(run_id, run_dir), state);
     let last_wake = state.wake.as_ref().map(|w| w.n);
     match &state.last_verdict {
         Some(verdict) if !verdict.confirmed && Some(verdict.wake) == last_wake => reopened_prompt(base, verdict),
         _ => base,
+    }
+}
+
+/// A wrapped skill's file, or that there isn't one: invoking a skill by name is the first thing a
+/// wake does, and when it fails the wake is left to hunt for the skill's SKILL.md by itself — one
+/// did, the first wake of a run whose skill had never been installed. Looked for every wake, since
+/// a skill can be uninstalled under a run that was created with it. Nothing for a plugin's skill,
+/// which otto doesn't look for (`install::skill_places`).
+fn with_skill(prompt: String, state: &crate::state::RunState) -> String {
+    let (crate::state::WrapKind::Skill, Some(name)) = (state.wraps.kind, &state.wraps.reference) else {
+        return prompt;
+    };
+    let workdir = crate::config::workdir_for(state);
+    let places = crate::install::skill_places(name, workdir.as_deref());
+    if places.is_empty() {
+        return prompt;
+    }
+    match places.iter().find(|p| p.is_file()) {
+        Some(file) => format!("{prompt}\n\nIt wraps the skill `{name}`, whose file is `{}`.", file.display()),
+        None => format!(
+            "{prompt}\n\nIt wraps the skill `{name}`, which isn't installed: there is no `{}`, so invoking it by \
+             name will fail.",
+            places[0].display()
+        ),
     }
 }
 
@@ -181,6 +205,40 @@ mod tests {
         let recorded = answer_prompt(&user_prompt("r1", Path::new("/tmp/r1")), answer, false);
         assert!(recorded.contains(answer));
         assert!(!recorded.contains("otto state close-gate"), "a closed gate is not the wake's to close");
+    }
+
+    /// A wake of a skill's run is told where the skill's file is, so a failed invocation isn't
+    /// followed by a hunt for it — and told plainly when it has been uninstalled since. A checker
+    /// is told too: it reads the skill for what finished means.
+    #[test]
+    fn a_wrapped_skill_is_named_with_its_file() {
+        let home = crate::paths::test_support::TempHome::new();
+        let mut state = crate::state::test_run_state("r1");
+        state.wraps = crate::state::Wraps { kind: crate::state::WrapKind::Skill, reference: Some("curate".into()) };
+        state.launcher.workdir = Some(home.path().display().to_string());
+        let skill = home.path().join(".claude/skills/curate/SKILL.md");
+
+        let missing = for_wake("r1", Path::new("/tmp/r1"), &state);
+        assert!(missing.starts_with(&user_prompt("r1", Path::new("/tmp/r1"))), "{missing}");
+        assert!(missing.contains("`curate`, which isn't installed"), "{missing}");
+        assert!(missing.contains(&skill.display().to_string()), "says where it isn't: {missing}");
+
+        std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+        std::fs::write(&skill, "---\nname: curate\n---\nbody").unwrap();
+        let found = for_wake("r1", Path::new("/tmp/r1"), &state);
+        assert!(found.contains(&format!("whose file is `{}`", skill.display())), "{found}");
+
+        state.done_claim = Some(crate::state::DoneClaim {
+            by_wake: 2,
+            at: crate::clock::Timestamp::now(),
+            reason: None,
+            left_open: Vec::new(),
+        });
+        assert!(for_wake("r1", Path::new("/tmp/r1"), &state).contains(&skill.display().to_string()));
+
+        state.done_claim = None;
+        state.wraps.reference = Some("some-plugin:curate".into());
+        assert_eq!(for_wake("r1", Path::new("/tmp/r1"), &state), user_prompt("r1", Path::new("/tmp/r1")));
     }
 
     /// A claim makes the next wake a checker, and it has to be told — nothing else it reads first

@@ -427,6 +427,21 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         wait: None,
         role: None,
     };
+    // Fail now, as for --instructions: a wrapped skill claude can't find by name makes every wake
+    // start by failing to load it, and then hunt for its SKILL.md on its own. Checked here, once
+    // the working directory is settled, because the project's own skills count.
+    if let (WrapKind::Skill, Some(name)) = (state.wraps.kind, &state.wraps.reference) {
+        let places = crate::install::skill_places(name, state.launcher.workdir.as_deref().map(std::path::Path::new));
+        if !places.is_empty() && !places.iter().any(|p| p.is_file()) {
+            let looked: Vec<String> = places.iter().map(|p| p.display().to_string()).collect();
+            return Err(OttoError::usage(format!(
+                "--skill {name} isn't installed where claude would find it — none of {} exists. \
+                 Link its directory into {} first, or pass its SKILL.md as --instructions",
+                looked.join(", "),
+                crate::install::skills_dir().display(),
+            )));
+        }
+    }
     Ok(PlannedRun { state, path })
 }
 
@@ -1946,6 +1961,41 @@ mod tests {
         let third = init_run(InitArgs { goal: "a goal".into(), name: Some("three".into()), ..Default::default() }).unwrap();
         assert_eq!(third, "3");
         assert_eq!(read_run("three").unwrap().id, "3");
+    }
+
+    /// A wrapped skill claude can't find by name is refused at creation, as a missing
+    /// `--instructions` file is, saying where it looked — not left for the first wake to find out.
+    /// Anywhere claude would find it counts: the user's skills, the working directory's, or a
+    /// command. A plugin's skill isn't otto's to look for.
+    #[test]
+    fn a_wrapped_skill_must_be_installed() {
+        let home = TempHome::new();
+        let work = home.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let init = |skill: &str| InitArgs {
+            goal: "a goal".into(),
+            skill: Some(skill.into()),
+            workdir: Some(work.display().to_string()),
+            ..Default::default()
+        };
+        let err = init_run(init("legenda-curate")).expect_err("not installed anywhere");
+        let said = err.to_string();
+        assert!(said.contains("--skill legenda-curate isn't installed"), "{said}");
+        assert!(said.contains(&home.path().join(".claude/skills/legenda-curate/SKILL.md").display().to_string()), "{said}");
+        assert!(said.contains("--instructions"), "names the other way in: {said}");
+        assert!(crate::paths::all_run_ids().is_empty(), "a refused run leaves nothing behind");
+
+        let file = |dir: std::path::PathBuf, name: &str| {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), "---\nname: x\n---\nbody").unwrap();
+        };
+        file(home.path().join(".claude/skills/legenda-curate"), "SKILL.md");
+        init_run(init("legenda-curate")).expect("the user's own skill");
+        file(work.join(".claude/skills/local"), "SKILL.md");
+        init_run(init("local")).expect("the working directory's skill");
+        file(home.path().join(".claude/commands"), "tidy.md");
+        init_run(init("tidy")).expect("a command, invoked the same way");
+        init_run(init("some-plugin:skill")).expect("a plugin's skill is not looked for");
     }
 
     /// A name given is the name you get, or a refusal saying who has it. A name made up gets a
