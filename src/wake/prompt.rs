@@ -184,6 +184,26 @@ mod tests {
         }
     }
 
+    /// A wrapped skill that names its own way of handing code back — its app's submit, a message
+    /// saying the branch is ready to merge — left the wake to choose between it and a change, and
+    /// to work out which from an earlier wake's precedent. "Changes to code" settles it where a wake
+    /// handing code back reads: the code still goes back as a change, the skill's own part still
+    /// happens beside it, and the skill's way of landing it does not.
+    #[test]
+    fn a_wrapped_way_back_still_goes_back_as_a_change() {
+        let changes = HARNESS
+            .split("\n## Changes to code\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("the harness has a Changes to code section")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for said in ["its own way back", "still goes back as a change", "alongside the change", "not its way of landing"] {
+            assert!(changes.contains(said), "Changes to code must say {said:?}");
+        }
+    }
+
     #[test]
     fn the_user_prompt_is_small_and_run_specific() {
         let prompt = user_prompt("2026-09-12-thing", Path::new("/tmp/otto/runs/2026-09-12-thing"));

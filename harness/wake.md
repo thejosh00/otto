@@ -404,6 +404,13 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
   Otherwise a worktree at `<the repo's parent>/.work-trees/<run name>/<slug>`, on branch
   `<run name>/<slug>`. Its process also says whether approving pushes it or opens a pull request;
   that is the lander's to do either way.
+- **What you wrap may name its own way back**: its app's submit command, a message saying the
+  branch is ready to merge, a push or a pull request of its own. The code still goes back as a
+  change. What you wrap decides what the work is; how code reaches its base branch is otto's,
+  because that is the step that can't be undone. Do the rest of what it says alongside the change
+  (record it in its app, write its hand-back note), but not its way of landing: a message asking
+  the person to merge is what the change already asks, and a push is the lander's. Whatever it
+  says follows the merge, like restarting the service, waits for the note that it landed.
 - **One concern a change.** A person reviews it in a sitting, so two unrelated fixes are two
   branches and two changes. Over a few hundred lines, otto says so; split it if it is more than one
   thing.

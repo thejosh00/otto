@@ -39,6 +39,7 @@ continuous session into something durable:
 | "ask the user", "confirm with them" | Opens a [gate](../concepts.md#gates) and exits |
 | "wait", "poll", "check back in an hour" | Exits; the period brings a wake back |
 | "remember", "keep track of" | Writes it — the handoff for one wake, an artifact for longer |
+| Its own way of handing code back: its app's submit, a "ready to merge" message | Does the app's part too, but the code goes back as a [change](../concepts.md#changes-code-handed-back), and only the lander lands it |
 | Anything assuming earlier steps are in context | Reads the handoff and artifacts; there is no earlier context |
 
 These are instructions to a model, so they are occasionally ignored. The backstop is the
