@@ -244,7 +244,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         WaitOverdue { what: s(), since: at, give_up_at: at },
         NoteDropped { note: s(), standing: false },
         CheckSet { script: s(), wake_after: 24, by: s() },
-        PeriodSet { period_minutes: 60, previous_minutes: 60, at: None, previous_at: None },
+        PeriodSet { period_minutes: 60, previous_minutes: 60, at: None, previous_at: None, days: None, previous_days: None },
         PolicySet { set: serde_json::Map::new(), previous: serde_json::Map::new() },
         Renamed { from: s(), to: s() },
         Renumbered { from: s() },

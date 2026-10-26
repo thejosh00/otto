@@ -210,6 +210,148 @@ impl<'de> Deserialize<'de> for TimeOfDay {
     }
 }
 
+const DAY_NAMES: [&str; 7] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+/// The days of the week a daily run's period wakes fall on (`otto period 7 1d --on mon-fri`), on
+/// the local clock. A period wake due on any other day moves on to the next one in the set, at the
+/// same time of day. Never empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weekdays(u8);
+
+impl Weekdays {
+    const WEEKDAYS: u8 = 0b001_1111;
+    const WEEKENDS: u8 = 0b110_0000;
+    const ALL: u8 = 0b111_1111;
+
+    /// `mon,wed,fri`, `mon-fri`, `fri-mon` (round the weekend), `weekdays`, `weekends`, `Tuesdays
+    /// Thursdays`. `None` for anything else, or for no day at all, so each caller can say in its
+    /// own words what it expected.
+    pub fn parse(text: &str) -> Option<Self> {
+        let text = text.to_ascii_lowercase().split('-').map(str::trim).collect::<Vec<_>>().join("-");
+        let mut bits = 0;
+        for word in text.split(|c: char| c == ',' || c.is_whitespace()).filter(|w| !w.is_empty()) {
+            bits |= match word {
+                "weekdays" | "weekday" => Self::WEEKDAYS,
+                "weekends" | "weekend" => Self::WEEKENDS,
+                _ => match word.split_once('-') {
+                    Some((from, to)) => {
+                        let (mut day, to) = (day_index(from)?, day_index(to)?);
+                        let mut range = 1 << day;
+                        while day != to {
+                            day = (day + 1) % 7;
+                            range |= 1 << day;
+                        }
+                        range
+                    }
+                    None => 1 << day_index(word)?,
+                },
+            };
+        }
+        (bits != 0).then_some(Weekdays(bits))
+    }
+
+    /// `None` when these are all seven days, which keeps the run to nothing.
+    pub fn limiting(self) -> Option<Self> {
+        (self.0 != Self::ALL).then_some(self)
+    }
+
+    pub fn contains(self, day: time::Weekday) -> bool {
+        self.0 & (1 << day.number_days_from_monday()) != 0
+    }
+
+    /// `at`, or the first time a whole number of days after it that falls on one of these days on
+    /// the local clock — so a run kept to 3 AM on weekdays wakes at 3 AM on Monday, not Saturday.
+    pub fn next_on(self, mut at: OffsetDateTime, offset: UtcOffset) -> OffsetDateTime {
+        for _ in 0..7 {
+            if self.contains(at.to_offset(offset).weekday()) {
+                break;
+            }
+            at += time::Duration::days(1);
+        }
+        at
+    }
+
+    fn days(self) -> impl Iterator<Item = usize> {
+        (0..7).filter(move |d| self.0 & (1 << d) != 0)
+    }
+
+    /// `weekdays`, `weekends`, `Mondays`, `Mon, Wed and Fri` — what comes after "on" in the
+    /// plain-words lines and on the web page.
+    pub fn plain(self) -> String {
+        let title = |d: usize| format!("{}{}", DAY_NAMES[d][..1].to_ascii_uppercase(), &DAY_NAMES[d][1..]);
+        let names: Vec<String> = self.days().map(|d| title(d)[..3].to_string()).collect();
+        match (self.0, names.as_slice()) {
+            (Self::WEEKDAYS, _) => "weekdays".to_string(),
+            (Self::WEEKENDS, _) => "weekends".to_string(),
+            (Self::ALL, _) => "every day".to_string(),
+            (_, [_]) => format!("{}s", title(self.days().next().unwrap_or(0))),
+            (_, [rest @ .., last]) => format!("{} and {last}", rest.join(", ")),
+            (_, []) => String::new(),
+        }
+    }
+}
+
+/// Where a day name, or the start of one at least three letters long, falls in the week from
+/// Monday: `mon`, `tues`, `thurs`, `saturday`, `sundays`.
+fn day_index(word: &str) -> Option<u8> {
+    let word = word.strip_suffix('s').filter(|w| DAY_NAMES.contains(w)).unwrap_or(word);
+    if word.len() < 3 {
+        return None;
+    }
+    DAY_NAMES.iter().position(|name| name.starts_with(word)).map(|d| d as u8)
+}
+
+/// `mon-fri`, `mon,wed,fri`, `sat,sun`: the short form `otto show` and `otto ls` print, and
+/// `--on` reads back.
+impl fmt::Display for Weekdays {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let short = |d: usize| &DAY_NAMES[d][..3];
+        let mut parts = Vec::new();
+        let mut day = 0;
+        while day < 7 {
+            if self.0 & (1 << day) == 0 {
+                day += 1;
+                continue;
+            }
+            let start = day;
+            while day < 6 && self.0 & (1 << (day + 1)) != 0 {
+                day += 1;
+            }
+            parts.push(match day - start {
+                0 => short(start).to_string(),
+                1 => format!("{},{}", short(start), short(day)),
+                _ => format!("{}-{}", short(start), short(day)),
+            });
+            day += 1;
+        }
+        f.write_str(&parts.join(","))
+    }
+}
+
+/// `["mon","wed","fri"]` in `run.json` and the journal.
+impl Serialize for Weekdays {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.days().map(|d| &DAY_NAMES[d][..3]))
+    }
+}
+
+/// A list of day names, or one string of them as `--on` takes it.
+impl<'de> Deserialize<'de> for Weekdays {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Said {
+            Text(String),
+            List(Vec<String>),
+        }
+        let text = match Said::deserialize(deserializer)? {
+            Said::Text(text) => text,
+            Said::List(days) => days.join(","),
+        };
+        Weekdays::parse(&text).ok_or_else(|| serde::de::Error::custom(format!("not days of the week: {text:?}")))
+    }
+}
+
 /// The inverse of `parse_age` for whole minutes: the largest unit that divides evenly.
 pub fn format_minutes(minutes: u64) -> String {
     if minutes > 0 && minutes % (24 * 60) == 0 {
@@ -368,6 +510,55 @@ mod tests {
         // Local, not UTC: 3 AM at UTC-05:00 is 08:00Z.
         let cdt = UtcOffset::from_hms(-5, 0, 0).unwrap();
         assert_eq!(three.snap(datetime!(2026-10-22 20:57 UTC) + day, cdt), datetime!(2026-10-23 08:00 UTC));
+    }
+
+    #[test]
+    fn days_of_the_week_parse_the_ways_a_person_writes_them() {
+        let d = |s: &str| Weekdays::parse(s).map(|d| d.to_string());
+        assert_eq!(d("mon,wed,fri").as_deref(), Some("mon,wed,fri"));
+        assert_eq!(d("Mon, Wed, Fri").as_deref(), Some("mon,wed,fri"));
+        assert_eq!(d("mon-fri").as_deref(), Some("mon-fri"));
+        assert_eq!(d("Monday - Friday").as_deref(), Some("mon-fri"));
+        assert_eq!(d("weekdays").as_deref(), Some("mon-fri"));
+        assert_eq!(d("weekends").as_deref(), Some("sat,sun"));
+        assert_eq!(d("tues thurs").as_deref(), Some("tue,thu"));
+        assert_eq!(d("Saturdays").as_deref(), Some("sat"));
+        assert_eq!(d("fri-mon").as_deref(), Some("mon,fri-sun"), "round the weekend");
+        assert_eq!(d("mon-wed,fri,sat").as_deref(), Some("mon-wed,fri,sat"));
+        for bad in ["", ",", "mo", "t", "funday", "mon-", "-fri", "mon-fri-sun", "weds"] {
+            assert_eq!(d(bad), None, "{bad:?}");
+        }
+        assert_eq!(Weekdays::parse("mon-sun").unwrap().limiting(), None, "every day keeps it to nothing");
+        assert!(Weekdays::parse("mon-sat").unwrap().limiting().is_some());
+
+        let plain = |s: &str| Weekdays::parse(s).unwrap().plain();
+        assert_eq!(plain("mon-fri"), "weekdays");
+        assert_eq!(plain("sat,sun"), "weekends");
+        assert_eq!(plain("tue"), "Tuesdays");
+        assert_eq!(plain("mon,wed"), "Mon and Wed");
+        assert_eq!(plain("mon,wed,fri"), "Mon, Wed and Fri");
+
+        let days = Weekdays::parse("mon,wed,fri").unwrap();
+        assert_eq!(serde_json::to_string(&days).unwrap(), r#"["mon","wed","fri"]"#);
+        assert_eq!(serde_json::from_str::<Weekdays>(r#"["mon","wed","fri"]"#).unwrap(), days);
+        assert_eq!(serde_json::from_str::<Weekdays>(r#""mon,wed,fri""#).unwrap(), days);
+        assert!(serde_json::from_str::<Weekdays>(r#"[]"#).is_err());
+    }
+
+    #[test]
+    fn a_day_not_in_the_set_moves_on_to_the_next_one_at_the_same_time() {
+        let weekdays = Weekdays::parse("weekdays").unwrap();
+        let utc = UtcOffset::UTC;
+        // 2026-10-23 is a Friday.
+        assert_eq!(weekdays.next_on(datetime!(2026-10-23 03:00 UTC), utc), datetime!(2026-10-23 03:00 UTC));
+        assert_eq!(weekdays.next_on(datetime!(2026-10-24 03:00 UTC), utc), datetime!(2026-10-26 03:00 UTC));
+        assert_eq!(weekdays.next_on(datetime!(2026-10-25 15:30 UTC), utc), datetime!(2026-10-26 15:30 UTC));
+        let sunday = Weekdays::parse("sun").unwrap();
+        assert_eq!(sunday.next_on(datetime!(2026-10-26 03:00 UTC), utc), datetime!(2026-11-01 03:00 UTC));
+        // Local, not UTC: 02:00Z on a Saturday is still Friday evening at UTC-05:00.
+        let cdt = UtcOffset::from_hms(-5, 0, 0).unwrap();
+        assert_eq!(weekdays.next_on(datetime!(2026-10-24 02:00 UTC), cdt), datetime!(2026-10-24 02:00 UTC));
+        assert_eq!(weekdays.next_on(datetime!(2026-10-24 06:00 UTC), cdt), datetime!(2026-10-26 06:00 UTC));
     }
 
     #[test]

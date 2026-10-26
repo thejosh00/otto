@@ -349,6 +349,8 @@ legend { font: 600 12px/16px var(--mono); text-transform: uppercase; letter-spac
 .segmented label { padding: 6px 12px; cursor: pointer; font-size: 14px; color: var(--ink-2); }
 .segmented input { position: absolute; opacity: 0; pointer-events: none; }
 .segmented label:has(input:checked) { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.segmented label:has(input:focus-visible) { box-shadow: var(--glow-focus); }
+.day-picker label { padding: 6px 9px; }
 details summary { cursor: pointer; color: var(--ink-2); font-size: 14px; }
 
 .empty { text-align: center; padding: 40px 16px; color: var(--ink-2); }

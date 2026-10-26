@@ -148,8 +148,10 @@ function formatMinutes(m) {
   return `${m}m`;
 }
 
-// How often, in words: `every hour`, `every 2 days`, `every day at 3:00 AM`, `every 30 minutes`.
-function everyText(m, at) {
+// How often, in words: `every hour`, `every 2 days`, `every day at 3:00 AM`, `on weekdays at
+// 3:00 AM`, `every 30 minutes`.
+function everyText(m, at, days) {
+  if (m === 1440 && days && days.length) return `on ${daysText(days)}` + (at ? ` at ${clockText(at)}` : "");
   if (m % 1440 === 0) return (m === 1440 ? "every day" : `every ${m / 1440} days`) + (at ? ` at ${clockText(at)}` : "");
   if (m % 60 === 0) return m === 60 ? "every hour" : `every ${m / 60} hours`;
   return `every ${m} minutes`;
@@ -163,6 +165,37 @@ function clockText(at) {
 
 // Whether `1d`, `2d`… — the only periods a time of day fits (state::whole_days).
 const wholeDays = (text) => /^\s*[1-9]\d*d\s*$/.test(text || "");
+// Whether `1d` — the only period days of the week fit (state::daily).
+const oneDay = (text) => /^\s*1d\s*$/.test(text || "");
+
+const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const dayKey = (name) => name.slice(0, 3).toLowerCase();
+
+// `["mon","wed","fri"]` → `Mon, Wed and Fri`; `weekdays`, `weekends`, `Tuesdays` — as
+// clock::Weekdays::plain says them.
+function daysText(days) {
+  const on = DAY_NAMES.filter((name) => days.includes(dayKey(name)));
+  const keys = on.map(dayKey).join(",");
+  if (keys === "mon,tue,wed,thu,fri") return "weekdays";
+  if (keys === "sat,sun") return "weekends";
+  if (on.length === 7) return "every day";
+  if (on.length === 1) return `${on[0]}s`;
+  const short = on.map((name) => name.slice(0, 3));
+  return `${short.slice(0, -1).join(", ")} and ${short[short.length - 1]}`;
+}
+
+// The days of the week a daily run keeps to, one toggle each, Monday first; all on is every day.
+// `.picked()` is what `--on` takes, "" for every day, or null when none is on.
+function dayPicker(current) {
+  const keep = current && current.length ? current : DAY_NAMES.map(dayKey);
+  const boxes = DAY_NAMES.map((name) => h("input", { type: "checkbox", value: dayKey(name), checked: keep.includes(dayKey(name)) }));
+  const el = h("div.segmented.day-picker", boxes.map((box, i) => h("label", { title: DAY_NAMES[i] }, box, DAY_NAMES[i].slice(0, 3))));
+  el.picked = () => {
+    const on = boxes.filter((box) => box.checked).map((box) => box.value);
+    return on.length === 7 ? "" : on.length ? on.join(",") : null;
+  };
+  return el;
+}
 
 // Mirrors paths::label: a run is `#7 legenda`; one from before numbering is its old id.
 function runLabel(id, name) {
@@ -1737,7 +1770,7 @@ function runView(id, opened) {
     if (head.querySelector(".menu:not([hidden])")) return; // nor a menu someone has open
     const s = d.state;
     const key = JSON.stringify([d.name, d.glance, d.running, s.status, s.paused, s.gate && s.gate.id, s.nextWakeAt,
-      d.lastRun && d.lastRun.at, s.goal, s.policy.periodMinutes, s.policy.periodAt, Math.floor(Date.now() / 60000)]);
+      d.lastRun && d.lastRun.at, s.goal, s.policy.periodMinutes, s.policy.periodAt, s.policy.periodDays, Math.floor(Date.now() / 60000)]);
     if (key === shownHead) return;
     shownHead = key;
     const over = ["done", "stopped", "failed"].includes(s.status);
@@ -1779,7 +1812,7 @@ function runView(id, opened) {
     else if (!["done", "stopped", "failed"].includes(s.status) && !s.gate && !paused && s.nextWakeAt) {
       bits.push(`next run ${nextAt(s.nextWakeAt)}`);
     }
-    if (!["done", "stopped", "failed"].includes(s.status)) bits.push(s.policy.perpetual ? `${everyText(s.policy.periodMinutes || 60, s.policy.periodAt)}, until you stop it` : everyText(s.policy.periodMinutes || 60, s.policy.periodAt));
+    if (!["done", "stopped", "failed"].includes(s.status)) bits.push(s.policy.perpetual ? `${everyText(s.policy.periodMinutes || 60, s.policy.periodAt, s.policy.periodDays)}, until you stop it` : everyText(s.policy.periodMinutes || 60, s.policy.periodAt, s.policy.periodDays));
     if (d.lastRun) bits.push(`last ran ${relative(d.lastRun.at)}`);
     return bits.join(" · ");
   }
@@ -2035,7 +2068,7 @@ function runView(id, opened) {
         h("dt", "Runs"), h("dd", `${s.budget.spentWakes}${s.budget.wakes ? " of " + s.budget.wakes : ""}${s.budget.hours ? `, ${s.budget.hours}h budget` : ""}`),
         d.usage.wakes ? [h("dt", "Tokens"), h("dd", tokenSummary(d.usage))] : null,
         d.wakeCost ? [h("dt", "A run costs"), h("dd", `~${d.wakeCost.avgTurns} turns, ${humaniseTokens(d.wakeCost.avgCacheCreation)} cache-write tokens (last ${d.wakeCost.wakes})`)] : null,
-        over ? null : [h("dt", "How often"), h("dd", everyText(s.policy.periodMinutes || 60, s.policy.periodAt))]),
+        over ? null : [h("dt", "How often"), h("dd", everyText(s.policy.periodMinutes || 60, s.policy.periodAt, s.policy.periodDays))]),
       over ? "" : renderCheck(d));
     factsEl.replaceChildren(h("dl.facts", settingRows(d).map(([k, v]) => [h("dt", k), h("dd", v)])));
     if (!settingsForm.dataset.open) {
@@ -2070,20 +2103,26 @@ function runView(id, opened) {
     const at = h("input", { type: "time", value: d.state.policy.periodAt || "" });
     const atField = h("label.field", h("span", "At (optional)"), at,
       h("small", "Your clock. Leave it empty to run whenever the day comes round."));
-    const syncAt = () => { atField.hidden = !wholeDays(input.value); };
+    const days = dayPicker(d.state.policy.periodDays);
+    const daysField = h("div.field", h("span", "On"), days,
+      h("small", "Your clock. A run due on a day left out waits for the next one that's on."));
+    const syncAt = () => { atField.hidden = !wholeDays(input.value); daysField.hidden = !oneDay(input.value); };
     input.addEventListener("input", syncAt);
     syncAt();
     const close = () => { delete settingsForm.dataset.open; refresh(); };
     let saveButton;
     settingsForm.replaceChildren(h("div.card", { style: "margin-top:10px" },
-      h("p", `How often it runs when nothing else says otherwise — now ${everyText(d.state.policy.periodMinutes || 60, d.state.policy.periodAt)}.`),
+      h("p", `How often it runs when nothing else says otherwise — now ${everyText(d.state.policy.periodMinutes || 60, d.state.policy.periodAt, d.state.policy.periodDays)}.`),
       h("div.grid2", h("div.field", h("span", "Every"), input), atField),
+      daysField,
       h("div.row.end", { style: "margin-top:10px" },
         h("button.ghost.small", { onclick: close }, "Cancel"),
         (saveButton = h("button.primary.small", {
           onclick: (e) => busy(e.currentTarget, async () => {
-            const r = await api(path + "/period", { period: input.value, at: wholeDays(input.value) ? at.value : "" });
-            toast(`Runs ${everyText(r.periodMinutes, r.periodAt)}` + (r.rescheduled && r.nextWakeAt ? ` — next ${nextAt(r.nextWakeAt)}` : ""));
+            const on = oneDay(input.value) ? days.picked() : "";
+            if (on === null) throw new Error("Pick at least one day for it to run on");
+            const r = await api(path + "/period", { period: input.value, at: wholeDays(input.value) ? at.value : "", days: on });
+            toast(`Runs ${everyText(r.periodMinutes, r.periodAt, r.periodDays)}` + (r.rescheduled && r.nextWakeAt ? ` — next ${nextAt(r.nextWakeAt)}` : ""));
             close();
           }),
         }, "Save")))));
@@ -2316,7 +2355,11 @@ function newRunView() {
   f.at = at;
   const atField = h("label.field", h("span", "At (optional)"), at,
     h("small", "Your clock — put heavy work where you aren't using the machine. The first run still starts now."));
-  const syncAt = () => { atField.hidden = !wholeDays(period.value); };
+  const days = dayPicker(null);
+  f.on = days;
+  const daysField = h("div.field", h("span", "On"), days,
+    h("small", "Leave them all on to run every day. The first run still starts now."));
+  const syncAt = () => { atField.hidden = !wholeDays(period.value); daysField.hidden = !oneDay(period.value); };
   period.addEventListener("input", syncAt);
   syncAt();
 
@@ -2355,7 +2398,8 @@ function newRunView() {
       h("div.grid2",
         h("div",
           h("label.field", h("span", "How often it looks"), period, h("small", "30m, 1h, 1d. It only spends a full run when there's something to do, if it can check for free.")),
-          atField),
+          atField,
+          daysField),
         h("div.field", h("span", "When it's finished"),
           h("label.check", keepsGoing, "It keeps going until I stop it"), untilField))),
     h("details.more",
@@ -2428,6 +2472,7 @@ function newRunView() {
       perpetual: f.perpetual.checked,
       period: text("period"),
       at: wholeDays(f.period.value) ? text("at") : null,
+      on: oneDay(f.period.value) ? f.on.picked() || null : null,
       budgetWakes: Number(f.budgetWakes.value) || 0,
       budgetHours: Number(f.budgetHours.value) || 0,
       launcher: f.launcher.value,
@@ -2449,6 +2494,7 @@ function newRunView() {
   async function submit(button, dry) {
     const b = body();
     if (!b.goal) { toast("Say what it should do first", true); f.goal.focus(); return; }
+    if (oneDay(f.period.value) && f.on.picked() === null) { toast("Pick at least one day for it to run on", true); return; }
     if (/<[^>]+>/.test(b.goal)) { toast("Fill in the <…> parts of the template first", true); f.goal.focus(); return; }
     if (b.skill === undefined && wrap.querySelector("input:checked").value === "skill") { toast("Name the skill", true); return; }
     if (!b.workdir && !defaultWorkdir) { toast("Give a working directory — there is no default yet", true); f.workdir.focus(); return; }

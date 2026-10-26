@@ -107,6 +107,11 @@ pub struct InitArgs {
     /// heavy work you want done while you aren't using the machine. The first wake still starts now
     #[arg(long, value_name = "TIME", requires = "period", help_heading = "When it is done")]
     pub at: Option<String>,
+    /// With a period of 1d, the days of the week it wakes on, on your clock: `mon-fri`,
+    /// `mon,wed,fri`, `weekends`. A wake due on any other day waits for the next of these. The
+    /// first wake still starts now
+    #[arg(long, value_name = "DAYS", requires = "period", help_heading = "When it is done")]
+    pub on: Option<String>,
     /// Block with a gate after this many wakes (0: unlimited)
     #[arg(long = "budget-wakes", value_name = "N", default_value_t = 0, help_heading = "When it is done")]
     pub budget_wakes: u32,
@@ -184,6 +189,7 @@ impl Default for InitArgs {
             perpetual: false,
             period: None,
             at: None,
+            on: None,
             target: None,
             id: None,
             name: None,
@@ -331,6 +337,17 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
     if policy.period_at.is_some() && !super::whole_days(policy.period_minutes) {
         return Err(OttoError::usage(format!(
             "--at needs a period of whole days (1d, 2d), not {}",
+            crate::clock::format_minutes(policy.period_minutes)
+        )));
+    }
+    if let Some(on) = &args.on {
+        policy.period_days = crate::clock::Weekdays::parse(on)
+            .ok_or_else(|| OttoError::usage(format!("--on takes days of the week (mon-fri, mon,wed,fri, weekends), not {on:?}")))?
+            .limiting();
+    }
+    if policy.period_days.is_some() && !super::daily(policy.period_minutes) {
+        return Err(OttoError::usage(format!(
+            "--on needs a period of 1d, not {}",
             crate::clock::format_minutes(policy.period_minutes)
         )));
     }

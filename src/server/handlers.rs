@@ -159,6 +159,9 @@ pub struct PeriodBody {
     /// The time of day its wakes are due, as `otto period --at` takes it: `3:00`, `22:30`. Empty:
     /// whenever the period comes round. Left out: unchanged.
     at: Option<String>,
+    /// The days of the week it wakes on, as `otto period --on` takes them: `mon,wed,fri`. Empty:
+    /// every day. Left out: unchanged.
+    days: Option<String>,
 }
 
 pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Response {
@@ -175,7 +178,15 @@ pub async fn period(Path(id): Path<String>, Json(body): Json<PeriodBody>) -> Res
                     .ok_or_else(|| OttoError::usage(format!("a time of day is like 3:00 or 22:30, not \"{text}\"")))?,
             ),
         };
-        crate::core::set_period(&id, Some(minutes as u64), at)
+        let days = match body.days.as_deref().map(str::trim) {
+            None => crate::core::PeriodDays::Keep,
+            Some("") => crate::core::PeriodDays::Clear,
+            Some(text) => crate::core::PeriodDays::Set(
+                crate::clock::Weekdays::parse(text)
+                    .ok_or_else(|| OttoError::usage(format!("days of the week are like mon,wed,fri or mon-fri, not \"{text}\"")))?,
+            ),
+        };
+        crate::core::set_period(&id, Some(minutes as u64), at, days)
     })
     .await
 }

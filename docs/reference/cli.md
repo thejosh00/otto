@@ -52,6 +52,9 @@ When it is done:
       --at <TIME>
           With a period of whole days, the local time its wakes are due: `3:00`, `22:30`, `3am` — for heavy work you want done while you aren't using the machine. The first wake still starts now
 
+      --on <DAYS>
+          With a period of 1d, the days of the week it wakes on, on your clock: `mon-fri`, `mon,wed,fri`, `weekends`. A wake due on any other day waits for the next of these. The first wake still starts now
+
       --budget-wakes <N>
           Block with a gate after this many wakes (0: unlimited)
           
@@ -676,7 +679,7 @@ Arguments:
           The run: its number or name (a unique prefix of the name will do)
 
   [DURATION]
-          How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured from the start of one wake to the start of the next. Omit it, and --at, to see the current period
+          How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured from the start of one wake to the start of the next. Omit it, --at and --on, to see the current period
 
 Options:
       --at <TIME>
@@ -684,6 +687,12 @@ Options:
 
       --any-time
           Drop the time of day: it wakes whenever the period comes round
+
+      --on <DAYS>
+          With a period of 1d, the days of the week it wakes on, on your clock: `mon-fri`, `mon,wed,fri`, `weekends`. A wake due on any other day waits for the next of these
+
+      --any-day
+          Drop the days of the week: it wakes every day
 
   -h, --help
           Print help
@@ -1284,6 +1293,9 @@ When it is done:
 
       --at <TIME>
           With a period of whole days, the local time its wakes are due: `3:00`, `22:30`, `3am` — for heavy work you want done while you aren't using the machine. The first wake still starts now
+
+      --on <DAYS>
+          With a period of 1d, the days of the week it wakes on, on your clock: `mon-fri`, `mon,wed,fri`, `weekends`. A wake due on any other day waits for the next of these. The first wake still starts now
 
       --budget-wakes <N>
           Block with a gate after this many wakes (0: unlimited)

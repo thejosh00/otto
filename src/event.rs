@@ -318,6 +318,11 @@ pub enum Event {
         at: Option<crate::clock::TimeOfDay>,
         #[serde(rename = "previousAt", default, skip_serializing_if = "Option::is_none")]
         previous_at: Option<crate::clock::TimeOfDay>,
+        /// The days of the week its period wakes fall on, when it keeps to some.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        days: Option<crate::clock::Weekdays>,
+        #[serde(rename = "previousDays", default, skip_serializing_if = "Option::is_none")]
+        previous_days: Option<crate::clock::Weekdays>,
     },
     /// A person changed the run's policy (`otto policy`): each key it set, with what it was before
     /// (`null` when it had no value of its own).

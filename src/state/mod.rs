@@ -487,6 +487,11 @@ pub fn whole_days(period_minutes: u64) -> bool {
     period_minutes > 0 && period_minutes % (24 * 60) == 0
 }
 
+/// Whether a period is one day — the only kind days of the week (`periodDays`) fit.
+pub fn daily(period_minutes: u64) -> bool {
+    period_minutes == 24 * 60
+}
+
 fn default_verify_done() -> bool {
     true
 }
@@ -523,6 +528,11 @@ pub struct Policy {
     /// wake arms, a check's own retry gap and an answered gate still wake when they say.
     #[serde(rename = "periodAt", default, skip_serializing_if = "Option::is_none")]
     pub period_at: Option<crate::clock::TimeOfDay>,
+    /// With a period of one day, the days of the week on the local clock its wakes fall on —
+    /// `otto period 7 1d --on mon-fri`. A period wake due on another day moves on to the next one
+    /// of these, at the same time. `None`: every day. Like `periodAt`, only the period's own sleeps.
+    #[serde(rename = "periodDays", default, skip_serializing_if = "Option::is_none")]
+    pub period_days: Option<crate::clock::Weekdays>,
     /// A wake's `set-status done` is a claim that a fresh wake checks before the run is done
     /// (`DoneClaim`). `false`: done is done, on the word of the wake that said it.
     #[serde(rename = "verifyDone", default = "default_verify_done")]
@@ -547,6 +557,7 @@ impl Default for Policy {
             perpetual: false,
             period_minutes: default_period_minutes(),
             period_at: None,
+            period_days: None,
             verify_done: default_verify_done(),
             max_done_reopens: default_max_done_reopens(),
             extra: Map::new(),
@@ -611,6 +622,12 @@ impl Policy {
                     self.extra.insert(key, value);
                 }
             },
+            "periodDays" => match serde_json::from_value::<crate::clock::Weekdays>(value.clone()) {
+                Ok(days) => self.period_days = days.limiting(),
+                Err(_) => {
+                    self.extra.insert(key, value);
+                }
+            },
             "verifyDone" => match value.as_bool() {
                 Some(b) => self.verify_done = b,
                 None => {
@@ -631,11 +648,17 @@ impl Policy {
 
     /// When a period's sleep anchored on `anchor` ends: one period on, then onto `periodAt` when
     /// the run has one (`TimeOfDay::snap`), so a wake poke started a few minutes late, or a
-    /// catch-up hours off, doesn't move every wake after it.
+    /// catch-up hours off, doesn't move every wake after it — and on past any day `periodDays`
+    /// leaves out (`Weekdays::next_on`).
     pub fn period_due(&self, anchor: time::OffsetDateTime) -> time::OffsetDateTime {
+        let offset = crate::clock::local_offset();
         let due = anchor + time::Duration::minutes(self.period_minutes as i64);
-        match self.period_at {
-            Some(at) if whole_days(self.period_minutes) => at.snap(due, crate::clock::local_offset()),
+        let due = match self.period_at {
+            Some(at) if whole_days(self.period_minutes) => at.snap(due, offset),
+            _ => due,
+        };
+        match self.period_days {
+            Some(days) if daily(self.period_minutes) => days.next_on(due, offset),
             _ => due,
         }
     }
@@ -1225,6 +1248,32 @@ mod tests {
     use super::*;
     use crate::paths::test_support::TempHome;
     use std::sync::Arc;
+
+    #[test]
+    fn a_daily_period_kept_to_weekdays_skips_the_weekend_at_its_time_of_day() {
+        let local = crate::clock::local_offset();
+        let at = |text: &str| time::PrimitiveDateTime::parse(text, time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]")).unwrap().assume_offset(local);
+        let mut policy = Policy { period_minutes: 24 * 60, ..Policy::default() };
+        policy.set("periodAt".into(), Value::String("3:00".into()));
+        policy.set("periodDays".into(), serde_json::json!(["mon", "tue", "wed", "thu", "fri"]));
+        // 2026-10-23 is a Friday: a wake poke started at 3:05 is followed by Monday's.
+        assert_eq!(policy.period_due(at("2026-10-23 03:05")), at("2026-10-26 03:00"));
+        assert_eq!(policy.period_due(at("2026-10-22 03:05")), at("2026-10-23 03:00"));
+        // One you ran by hand on a Sunday morning is followed by Monday's too.
+        assert_eq!(policy.period_due(at("2026-10-25 10:00")), at("2026-10-26 03:00"));
+        // Without a time of day, at the time the last one started.
+        policy.period_at = None;
+        assert_eq!(policy.period_due(at("2026-10-23 14:20")), at("2026-10-26 14:20"));
+        // A period that isn't one day ignores them.
+        policy.period_minutes = 2 * 24 * 60;
+        assert_eq!(policy.period_due(at("2026-10-23 14:20")), at("2026-10-25 14:20"));
+
+        // All seven keeps it to nothing, and a value that isn't days is kept as an extra key.
+        policy.set("periodDays".into(), Value::String("mon-sun".into()));
+        assert_eq!(policy.period_days, None);
+        policy.set("periodDays".into(), Value::String("someday".into()));
+        assert_eq!(policy.extra["periodDays"], Value::String("someday".into()));
+    }
 
     #[test]
     fn read_all_runs_surfaces_a_malformed_timestamp_as_unreadable() {

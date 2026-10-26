@@ -475,8 +475,14 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "period-set" => happening(
                 "you",
                 format!(
-                    "You set it to run every {}{}",
-                    crate::clock::format_minutes(v.get("periodMinutes").and_then(Value::as_u64).unwrap_or(0)),
+                    "You set it to run {}{}",
+                    match v.get("days").and_then(|d| serde_json::from_value::<crate::clock::Weekdays>(d.clone()).ok()) {
+                        Some(days) => format!("on {}", days.plain()),
+                        None => format!(
+                            "every {}",
+                            crate::clock::format_minutes(v.get("periodMinutes").and_then(Value::as_u64).unwrap_or(0))
+                        ),
+                    },
                     str_of(v, "at")
                         .and_then(crate::clock::TimeOfDay::parse)
                         .map(|at| format!(" at {}", at.plain()))

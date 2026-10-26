@@ -192,8 +192,16 @@ A run whose period is whole days can also say **when in the day**: `otto period 
 you'd rather it did while you aren't using the machine. Each period wake lands on the next 3 AM
 at least six hours after the last wake started (for `2d`, the one two days on), so a wake poke
 started a few minutes late, or a catch-up in the afternoon, doesn't move the ones after it — and
-one you ran by hand at 10 PM isn't followed by another at 3. `--any-time` drops it again. The first wake of a new run still starts
-straight away; timers a wake arms, and wakes for a gate or a note, come when they come.
+one you ran by hand at 10 PM isn't followed by another at 3. `--any-time` drops it again.
+
+A run whose period is one day can also say **which days of the week**: `otto period <id> 1d --on
+mon-fri` (or `--on` on `otto run`; `mon,wed,fri` and `weekends` work too) keeps its period wakes
+to those days on this machine's clock. A wake that would fall on any other day waits for the next
+one that's on, at the same time — so Friday's is followed by Monday's, at 3 AM if it has `--at
+3:00`. `--any-day` drops it again.
+
+The first wake of a new run still starts straight away, whatever the time or day; timers a wake
+arms, and wakes for a gate or a note, come when they come.
 
 A wake can say something different for one sleep: `otto state arm-timer --in 600` because CI
 takes ten minutes, or `--at` for tomorrow morning. That lasts one sleep; after it the run is back

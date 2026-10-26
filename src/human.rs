@@ -1466,7 +1466,7 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
             _ if state.gate.is_some() => println!("  next wake after the gate is answered"),
             _ => println!("  next wake nothing scheduled"),
         }
-        println!("  period    {}", every(state.policy.period_minutes, state.policy.period_at));
+        println!("  period    {}", every(state.policy.period_minutes, state.policy.period_at, state.policy.period_days));
     }
     if detail.usage.wakes > 0 {
         println!("  tokens    {}", detail.usage.summary());
@@ -1879,7 +1879,7 @@ pub struct PeriodArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
     /// How often it wakes when a wake doesn't ask for something else: `30m`, `4h`, `1d`. Measured
-    /// from the start of one wake to the start of the next. Omit it, and --at, to see the current period
+    /// from the start of one wake to the start of the next. Omit it, --at and --on, to see the current period
     #[arg(value_name = "DURATION")]
     pub period: Option<String>,
     /// With a period of whole days, the local time its wakes are due: `3:00`, `22:30`, `3am` — for
@@ -1889,14 +1889,26 @@ pub struct PeriodArgs {
     /// Drop the time of day: it wakes whenever the period comes round
     #[arg(long, conflicts_with = "at")]
     pub any_time: bool,
+    /// With a period of 1d, the days of the week it wakes on, on your clock: `mon-fri`,
+    /// `mon,wed,fri`, `weekends`. A wake due on any other day waits for the next of these
+    #[arg(long, value_name = "DAYS")]
+    pub on: Option<String>,
+    /// Drop the days of the week: it wakes every day
+    #[arg(long, conflicts_with = "on")]
+    pub any_day: bool,
 }
 
-/// `every 1d at 03:00`, or `every 4h`: how often a run wakes, as `otto show` and `otto period` say it.
-pub(crate) fn every(minutes: u64, at: Option<crate::clock::TimeOfDay>) -> String {
-    match at {
-        Some(at) => format!("every {} at {at}", crate::clock::format_minutes(minutes)),
-        None => format!("every {}", crate::clock::format_minutes(minutes)),
+/// `every 1d at 03:00 on mon-fri`, or `every 4h`: how often a run wakes, as `otto show` and
+/// `otto period` say it.
+pub(crate) fn every(minutes: u64, at: Option<crate::clock::TimeOfDay>, days: Option<crate::clock::Weekdays>) -> String {
+    let mut every = format!("every {}", crate::clock::format_minutes(minutes));
+    if let Some(at) = at {
+        every += &format!(" at {at}");
     }
+    if let Some(days) = days {
+        every += &format!(" on {days}");
+    }
+    every
 }
 
 pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
@@ -1907,9 +1919,17 @@ pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
         (None, true) => crate::core::PeriodAt::Clear,
         (None, false) => crate::core::PeriodAt::Keep,
     };
-    if args.period.is_none() && at == crate::core::PeriodAt::Keep {
+    let days = match (&args.on, args.any_day) {
+        (Some(text), _) => crate::core::PeriodDays::Set(crate::clock::Weekdays::parse(text).ok_or_else(|| {
+            OttoError::usage(format!("--on takes days of the week like mon-fri, mon,wed,fri or weekends, not \"{text}\""))
+        })?),
+        (None, true) => crate::core::PeriodDays::Clear,
+        (None, false) => crate::core::PeriodDays::Keep,
+    };
+    if args.period.is_none() && at == crate::core::PeriodAt::Keep && days == crate::core::PeriodDays::Keep {
         let state = crate::state::read_run(&args.id)?;
-        println!("{} wakes {}", state.label(), every(state.policy.period_minutes, state.policy.period_at));
+        let p = &state.policy;
+        println!("{} wakes {}", state.label(), every(p.period_minutes, p.period_at, p.period_days));
         return Ok(());
     }
     let minutes = match &args.period {
@@ -1922,15 +1942,18 @@ pub fn period(args: PeriodArgs) -> Result<(), OttoError> {
         }
         None => None,
     };
-    let outcome = crate::core::set_period(&args.id, minutes, at)?;
+    let outcome = crate::core::set_period(&args.id, minutes, at, days)?;
     println!(
         "{} now wakes {} (was {})",
         crate::paths::label_of(&outcome.id),
-        every(outcome.period_minutes, outcome.period_at),
-        every(outcome.previous_minutes, outcome.previous_at)
+        every(outcome.period_minutes, outcome.period_at, outcome.period_days),
+        every(outcome.previous_minutes, outcome.previous_at, outcome.previous_days)
     );
     if let (Some(was), None, crate::core::PeriodAt::Keep) = (outcome.previous_at, outcome.period_at, at) {
         println!("it no longer waits for {was} — a time of day needs a period of whole days");
+    }
+    if let (Some(was), None, crate::core::PeriodDays::Keep) = (outcome.previous_days, outcome.period_days, days) {
+        println!("it no longer keeps to {was} — days of the week need a period of 1d");
     }
     match (outcome.rescheduled, outcome.next_wake_at) {
         (true, Some(at)) if at.is_past() => println!("its period has already passed — the next poke wakes it"),
