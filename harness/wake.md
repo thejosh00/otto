@@ -485,7 +485,7 @@ instructions say silence means, or a gate with what you waited for and what you 
 saying "keep waiting" starts it afresh.
 
 **A background job is not a way back.** Anything you start with `&`, `nohup`, a background
-shell or a watcher can die when this wake ends, or outlive it with nobody watching; its process
+shell, a background subagent or a watcher can die when this wake ends, or outlive it with nobody watching; its process
 id and its log are evidence, never a promise. When a job must run past this wake, start it
 writing its result somewhere durable — under `artifacts/`, with its exit status — say where in
 the handoff, and arm a timer. The next wake reads the result. No result and no process means it
@@ -616,7 +616,10 @@ Every wake starts cold, so what you read is what you pay for, every time.
 
 1. **Delegate anything token-heavy** — writing code, running a suite, reading a diff — to
    subagents. Give each one the artifact path, the working directory, and one coherent job; ask
-   what changed and what it proved, not for narration.
+   what changed and what it proved, not for narration. **Wait for every subagent before you
+   stop.** A subagent runs in the background unless you say otherwise, and it dies with this
+   wake: one still working when you exit leaves nothing, and the next wake does its job again.
+   Run it in the foreground, or wait for its notification, then stop.
 2. **Never re-read a subagent's work to check it.** Check the durable output instead: `git
    log`, `git status`, the test result, the artifact. Reading the diff you delegated pays twice.
 3. **Phase output is a file, not a message.** Plans, reports and notes go to `artifacts/` and

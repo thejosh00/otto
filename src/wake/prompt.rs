@@ -204,6 +204,30 @@ mod tests {
         }
     }
 
+    /// "Staying cheap" told a wake to delegate to subagents, and only shell jobs were said to die
+    /// with the wake. Subagents run in the background by default, so a wake delegated four jobs,
+    /// exited cleanly, and the next wake redid all of it (feedback from lectio-teach, wake 16). Where
+    /// a wake reads to delegate, it must also read that it waits for them before it stops.
+    #[test]
+    fn a_wake_waits_for_its_subagents_before_it_stops() {
+        let cheap = HARNESS
+            .split("\n## Staying cheap\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("the harness has a Staying cheap section")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for said in ["Wait for every subagent before you stop", "dies with this wake", "in the foreground"] {
+            assert!(cheap.contains(said), "Staying cheap must say {said:?}");
+        }
+        let waiting = HARNESS.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            waiting.contains("a background subagent or a watcher can die when this wake ends"),
+            "A background job is not a way back must name subagents"
+        );
+    }
+
     #[test]
     fn the_user_prompt_is_small_and_run_specific() {
         let prompt = user_prompt("2026-09-12-thing", Path::new("/tmp/otto/runs/2026-09-12-thing"));
