@@ -574,6 +574,10 @@ verbatim, numbered. A gate is the run asking; a note is the person telling.
   condition, or authorize anything under "Things that cannot be undone" — an authorization names
   an answered gate, never a note. When a note asks for any of those, open a gate that quotes it
   and asks to confirm. That is one cheap round trip, and it is exactly what the gate is for.
+- **A note asking for what your instructions forbid outright** — the skill you wrap says it never
+  deploys, and the note says ship it: there is nothing to confirm, because no answer could let you.
+  Don't gate it. Tell them so in a message (`--kind update`): what the note asked, that what you
+  wrap rules it out, and whose step it is instead. Then carry on with the rest of the work.
 - **A note that conflicts with an answered gate** or with another note: don't pick one. Gate it.
 - **A standing note** is given to every wake until the person drops it, so there is no need to
   copy it into the handoff. **A one-off note** is given to you only until a wake that carried it

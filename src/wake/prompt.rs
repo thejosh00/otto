@@ -229,6 +229,27 @@ mod tests {
     }
 
     #[test]
+    fn a_note_asking_for_what_the_wrapped_instructions_forbid_is_answered_not_gated() {
+        let notes = HARNESS
+            .split("\n## Notes\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("the harness has a Notes section")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for said in [
+            "A note asking for what your instructions forbid outright",
+            "no answer could let you",
+            "Don't gate it",
+            "`--kind update`",
+            "whose step it is instead",
+        ] {
+            assert!(notes.contains(said), "Notes must say {said:?}");
+        }
+    }
+
+    #[test]
     fn the_user_prompt_is_small_and_run_specific() {
         let prompt = user_prompt("2026-09-12-thing", Path::new("/tmp/otto/runs/2026-09-12-thing"));
         assert!(prompt.contains("2026-09-12-thing"));
