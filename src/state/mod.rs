@@ -891,7 +891,46 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<(), OttoError> {
     tmp.flush()?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| OttoError::usage(e.to_string()))?;
+    // The rename is atomic but not durable until the directory entry itself is on disk: without
+    // this, a crash just after can bring back the previous version of the file (never a torn one).
+    std::fs::File::open(dir)?.sync_all()?;
     Ok(())
+}
+
+/// A blocking exclusive flock on `path` (created if missing), released on drop. The one helper
+/// behind every lock on a shared file in otto: a run's `.lock` (`RunLock`, under `transaction`), a
+/// repo lock's flock, `runs/.last-id.lock` and `config.json.lock`. flock is per open file, so
+/// taking the same one twice in one process deadlocks — take each at most once.
+///
+/// Lock order — always acquire in this order, never the reverse, and release before going back up:
+///
+/// 1. `WakeLock` (`<run>/.wake.lock`, try-lock: refuses rather than waits)
+/// 2. `RunLock` (`<run>/.lock`) — at most one run's at a time
+/// 3. a repo lock's flock (`runs/.repo-flocks/repo-<slug>.flock`)
+/// 4. leaves, held only around their own read-modify-write and never while taking anything else:
+///    `runs/.last-id.lock` and `config.json.lock`
+///
+/// So nothing that holds a repo flock ever takes a run lock, and nothing holding a leaf takes
+/// anything at all.
+pub(crate) struct Flock {
+    file: std::fs::File,
+}
+
+impl Flock {
+    pub(crate) fn acquire(path: &Path) -> Result<Self, OttoError> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        fs4::fs_std::FileExt::lock_exclusive(&file)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for Flock {
+    fn drop(&mut self) {
+        let _ = fs4::fs_std::FileExt::unlock(&self.file);
+    }
 }
 
 /// Serializes writers for one run (blocking exclusive flock on `<run>/.lock`), released
@@ -899,25 +938,15 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<(), OttoError> {
 /// per-open-fd, so acquiring it twice from nested calls in the same process deadlocks
 /// just as it would in Python. Every mutation must go through `transaction()` exactly
 /// once — no "reentrant-safe" cleverness here.
+/// Built on `Flock`; see it for the lock order.
 pub struct RunLock {
-    file: std::fs::File,
+    _flock: Flock,
 }
 
 impl RunLock {
     pub fn acquire(run_path: &Path) -> Result<Self, OttoError> {
         std::fs::create_dir_all(run_path)?;
-        let file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(run_path.join(".lock"))?;
-        fs4::fs_std::FileExt::lock_exclusive(&file)?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for RunLock {
-    fn drop(&mut self) {
-        let _ = fs4::fs_std::FileExt::unlock(&self.file);
+        Ok(Self { _flock: Flock::acquire(&run_path.join(".lock"))? })
     }
 }
 
