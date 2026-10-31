@@ -291,7 +291,8 @@ What reaches the run is a note that starts `About change <n>@v<k>`:
   is more than a small fix. A request that changes the approach the plan took goes back to `plan`,
   and its gate.
 - **On its pull request, a reviewer (or CI) said…**: a change to make is the same as above; the
-  lander pushes the next version to the pull request without asking the person again. A question,
+  lander pushes the next version to the pull request — without asking the person again only when
+  they allow changes to it without them (`allowChanges`); otherwise they approve it again first. A question,
   or an ask the code already meets — look before you assume it doesn't — is a reply drafted for
   the person to post: `otto state change reply <id> <change> --comment <its id> --text "…"`.
 - **A judgement that is the person's** — a reviewer wants it done another way, the scope grew — is

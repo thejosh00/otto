@@ -128,8 +128,8 @@ author's worktree and branch: what reviewers ask, its author answers there.
 
 ## Updating its pull request
 
-Its author submitted the next version, and it goes to the pull request without asking the person
-again — the pull request is where it is reviewed. Lock, claim, then:
+Its author submitted the next version and it is approved again — by the person, or without them
+because the pull request's `allowChanges` lets it change without them. Lock, claim, then:
 
 ```
 otto state change check <id> <change> --head <sha>            # the new version's commit
@@ -148,7 +148,7 @@ The person said merge it.
 ```
 gh pr view <url> --json headRefOid
 otto state change check <id> <change> --head <headRefOid>     # exit 2: someone else pushed — relay it
-gh pr merge <url> --<the repository's merge method>
+gh pr merge <url> --<the repository's merge method> --match-head-commit <headRefOid>   # the commit just checked, and nothing pushed since
 git -C <repo> fetch origin
 otto state change merged <id> <change> --sha <its merge commit>
 ```

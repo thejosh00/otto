@@ -376,10 +376,10 @@ otto state change submit <id> --repo ~/work/svc --branch svc-retry --title "Retr
 ```bash
 otto changes                       # what waits on your review, what is in hand, what landed this week
 otto changes show 3/2 --patch      # one change: what its author said, its files, its patch, what happened
-otto changes approve 3/2 7/1       # each as its repository's process says: the lander is woken to do it
+otto changes approve 3/2@v1 7/1@v3 # each as its repository's process says: the lander is woken to do it
 otto changes revise 3/2 --text "keep the old flag working"   # back to its author, in your words
 otto changes drop 3/2              # it won't land; the lander cleans up after it
-otto changes approve 3/2 --pr      # as a pull request this once, whatever its process says
+otto changes approve 3/2@v1 --pr   # as a pull request this once, whatever its process says
 otto changes merge 3/2             # its pull request is approved and passing: merge it
 ```
 
@@ -396,7 +396,9 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   the process with the approval, so changing it later doesn't change what is already approved; and
   `--pr` or `--push` lands one change another way.
 - **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
-  that version, its commit and its `git patch-id`. Just before it pushes, the lander checks the commit
+  that version, its commit and its `git patch-id`. You name the version you looked at
+  (`3/2@v1`; the web UI sends the one it showed): if a newer one arrived since, approving is refused
+  (exit 2, or 409) and nothing is approved unseen. Just before it pushes, the lander checks the commit
   it is about to put on the base (`otto state change check`): the approved commit, or a clean rebase of
   the same patch onto a base that moved. If the code around it changed, it comes back to you as a new
   version; if it conflicts, it goes back to its author.
@@ -410,10 +412,10 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
   the author is told it landed, and woken to do it.
-- **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2 --pr` for one
+- **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2@v1 --pr` for one
   change, has the lander open one, and the **babysitter** watch it until it merges or closes. What a reviewer asks, and CI failing, goes to the change's author as a note:
-  it changes the code and submits again, and the lander pushes that to the pull request without asking
-  you again — the pull request is where it is reviewed. How much the babysitter may change itself is
+  it changes the code and submits again, and that version comes back to you to approve — unless you
+  allow changes to it without you, when the lander pushes it to the pull request without asking. How much the babysitter may change itself is
   yours to say, in words, per process and per pull request (`allowChanges`: `trivial`, `small`,
   `anything but security`; nothing until you say): within them it fixes the code, and the lander
   pushes that; beyond them it goes to the author, or, the author finished, to you as a question. A question gets a reply the author drafts and
