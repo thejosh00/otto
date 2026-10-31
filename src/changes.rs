@@ -2778,10 +2778,14 @@ pub(crate) mod tests {
         assert!(c.decision.is_some(), "the approval to open it as a pull request stands");
         assert!(note_texts("c-pr").last().unwrap().contains("call it louder"));
 
-        // The next version goes to the pull request without asking the person again.
+        // The next version goes back to the person (nothing is allowed without them), and once they
+        // approve it, to the pull request.
         std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
         submit("c-pr", &submit_fix(&repo, "Shout")).unwrap();
+        let c = change("c-pr", 1);
+        assert_eq!((c.state, c.decision.is_none()), (ChangeState::Review, true));
+        approve(&[Looked { r: r("c-pr", 1), version: Some(2) }], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         let c = change("c-pr", 1);
         assert_eq!((c.state, c.decision.as_ref().unwrap().version), (ChangeState::Approved, 2));
         assert_eq!(due().unwrap()[0].todo, "update its pull request");
