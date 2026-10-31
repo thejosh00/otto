@@ -831,16 +831,21 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 c.worktree = worktree.clone().or(c.worktree.take());
                 c.versions.push(version);
                 let what = format!("v{k}: {} commit{}, +{} −{}", snap.commits, if snap.commits == 1 { "" } else { "s" }, snap.stat.add, snap.stat.del);
-                // With a pull request open, the pull request is where it is reviewed: the next
-                // version goes to it. Otherwise an approval was for the version it named, and this
-                // one is new.
+                // With a pull request open and the person allowing changes to it without them
+                // (`allow_changes`), the next version goes to it. Otherwise an approval was for the
+                // version it named, and this one is new: back to the person.
                 match (c.pr.is_some(), c.decision.as_mut()) {
-                    (true, Some(d)) => {
+                    (true, Some(d)) if d.allow_changes.is_some() => {
                         d.version = k;
                         d.sha = sha.clone();
                         d.patch_id = snap.patch_id.clone();
                         c.enter(ChangeState::Approved);
                         c.moment("author", format!("{what} — for its pull request"));
+                    }
+                    (true, Some(_)) => {
+                        c.decision = None;
+                        c.enter(ChangeState::Review);
+                        c.moment("author", format!("{what} — the person allows no change to its pull request without them: yours to approve again"));
                     }
                     _ => {
                         c.decision = None;
@@ -2813,6 +2818,53 @@ pub(crate) mod tests {
         let c = merged("c-prl", &r("c-pr", 1), &v2).unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::Merged, Move::Lander));
         assert!(note_texts("c-pr").last().unwrap().contains("merged"));
+    }
+
+    /// A change approved as a pull request and opened, for what its author submits next.
+    fn opened_as_a_pull_request(run: &str, lander: &str, repo: &Repo) {
+        submit(run, &submit_fix(repo, "Shout")).unwrap();
+        approve(&[seen(r(run, 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let v1 = claim(lander, &r(run, 1)).unwrap().sha.unwrap();
+        pr_pushed(lander, &r(run, 1), &v1, Some("https://github.com/o/app/pull/9"), false).unwrap();
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+    }
+
+    #[test]
+    fn a_pull_requests_next_version_goes_back_to_the_person_unless_they_allow_changes() {
+        let _h = TempHome::new();
+        test_init("c-rs", "a goal").unwrap();
+        test_init("c-rsl", "land changes").unwrap();
+        set_lander("c-rsl");
+        let repo = repo();
+        opened_as_a_pull_request("c-rs", "c-rsl", &repo);
+        assert_eq!(change("c-rs", 1).decision.unwrap().allow_changes, None, "standard allows nothing");
+        submit("c-rs", &submit_fix(&repo, "Shout")).unwrap();
+        let c = change("c-rs", 1);
+        assert_eq!((c.state, c.decision.is_none(), c.whose_move()), (ChangeState::Review, true, Move::You), "nothing allowed: the person looks again");
+        assert!(c.pr.is_some(), "its pull request is still its own");
+        assert!(due().unwrap().is_empty(), "nothing for the lander until the person approves v2");
+        approve(&[Looked { r: r("c-rs", 1), version: Some(2) }], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let c = change("c-rs", 1);
+        assert_eq!((c.state, c.decision.as_ref().unwrap().version), (ChangeState::Approved, 2));
+        assert_eq!(due().unwrap()[0].todo, "update its pull request");
+    }
+
+    #[test]
+    fn a_pull_requests_next_version_keeps_its_approval_when_the_person_allows_changes() {
+        let _h = TempHome::new();
+        test_init("c-ra", "a goal").unwrap();
+        test_init("c-ral", "land changes").unwrap();
+        set_lander("c-ral");
+        let repo = repo();
+        opened_as_a_pull_request("c-ra", "c-ral", &repo);
+        allow(&r("c-ra", 1), Some("typos and test fixes")).unwrap();
+        submit("c-ra", &submit_fix(&repo, "Shout")).unwrap();
+        let c = change("c-ra", 1);
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((c.state, d.version, d.sha.as_str()), (ChangeState::Approved, 2, c.latest().sha.as_str()));
+        assert_eq!(d.allow_changes.as_deref(), Some("typos and test fixes"));
+        assert_eq!(due().unwrap()[0].todo, "update its pull request");
     }
 
     #[test]
