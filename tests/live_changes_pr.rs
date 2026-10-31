@@ -184,7 +184,9 @@ fn live_changes_pr() {
     let branch = change(&author)["branch"].as_str().unwrap_or("").to_string();
 
     checks.step(&format!("4 - approved as a pull request: the lander opens it (up to {}min)", step_timeout.as_secs() / 60));
-    let out = otto(&["changes", "approve", "author/1", "--pr"]);
+    // Approve names the version looked at: its latest.
+    let k = change(&author)["versions"].as_array().map(|v| v.len()).unwrap_or(1);
+    let out = otto(&["changes", "approve", &format!("author/1@v{k}"), "--pr"]);
     checks.check(out.status.success(), "approved as a pull request", format!("approve failed: {}", String::from_utf8_lossy(&out.stderr)));
     if !poke_until(step_timeout, || change(&author)["state"] == "pr-open") {
         say_where_runs_are();

@@ -137,7 +137,9 @@ fn live_changes() {
     checks.step(&format!("5 - approve it; the lander lands it (up to {}min)", land_timeout.as_secs() / 60));
     // Its remote is a local one, with no pull requests: it pushes straight to main.
     otto(&["config", "project", repo.to_str().unwrap(), "--process", "direct"]);
-    let out = otto(&["changes", "approve", "author/1"]);
+    // Approve names the version looked at: its latest.
+    let k = change(&author).and_then(|c| c["versions"].as_array().map(|v| v.len())).unwrap_or(1);
+    let out = otto(&["changes", "approve", &format!("author/1@v{k}")]);
     checks.check(out.status.success(), "approved", format!("approve failed: {}", String::from_utf8_lossy(&out.stderr)));
     checks.check(stdout(&out).contains("woke"), "the lander was woken", format!("the lander wasn't woken: {}", stdout(&out)));
     let landed = poke_until(land_timeout, || change(&author).is_some_and(|c| c["state"] == "landed" && !c["cleaned"].is_null()));

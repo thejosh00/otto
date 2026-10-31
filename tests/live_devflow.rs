@@ -294,7 +294,9 @@ fn run_devflow(decide: Decide) {
     match decide {
         Decide::Land => {
             checks.step(&format!("6 - approve it; the lander lands it as the process says (up to {}min)", land_timeout.as_secs() / 60));
-            let out = otto(&["changes", "approve", &reference]);
+            // Approve names the version looked at: its latest.
+            let k = change(&run).and_then(|c| c["versions"].as_array().map(|v| v.len())).unwrap_or(1);
+            let out = otto(&["changes", "approve", &format!("{reference}@v{k}")]);
             checks.check(out.status.success(), "approved", format!("approve failed: {}", String::from_utf8_lossy(&out.stderr)));
             let d = change(&run).unwrap_or(Value::Null)["decision"].clone();
             checks.check(d["mode"] == "push" && d["process"] == want_process.as_str(), "approved to push, as its process says", format!("the decision: {d}"));
