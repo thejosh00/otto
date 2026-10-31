@@ -118,6 +118,17 @@ fn next_id_path() -> PathBuf {
     runs_dir().join(".last-id")
 }
 
+/// Record `n` as issued, under `runs/.last-id.lock` and only if it is larger than what is there, so
+/// `.last-id` never goes backwards and never reissues a number a deleted run had. A leaf lock in
+/// the order documented on `state::Flock`.
+fn raise_issued_run_number(n: u64) -> Result<(), OttoError> {
+    let _flock = crate::state::Flock::acquire(&runs_dir().join(".last-id.lock"))?;
+    if n > issued_run_number() {
+        crate::state::write_atomic(&next_id_path(), &n.to_string())?;
+    }
+    Ok(())
+}
+
 fn issued_run_number() -> u64 {
     std::fs::read_to_string(next_id_path()).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
 }
@@ -139,7 +150,7 @@ pub fn claim_next_run_id() -> Result<(String, PathBuf), OttoError> {
         let path = runs_dir().join(n.to_string());
         match std::fs::create_dir(&path) {
             Ok(()) => {
-                let _ = std::fs::write(next_id_path(), n.to_string());
+                let _ = raise_issued_run_number(n);
                 return Ok((n.to_string(), path));
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
@@ -153,8 +164,8 @@ pub fn claim_next_run_id() -> Result<(String, PathBuf), OttoError> {
 /// number `.last-id` doesn't already cover: one given before it was kept.
 pub fn retire_run_number(id: &str) -> Result<(), OttoError> {
     match id.parse::<u64>() {
-        Ok(n) if n > issued_run_number() => Ok(std::fs::write(next_id_path(), n.to_string())?),
-        _ => Ok(()),
+        Ok(n) => raise_issued_run_number(n),
+        Err(_) => Ok(()),
     }
 }
 
@@ -471,6 +482,31 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::lock_env;
     use super::*;
+
+    #[test]
+    fn last_id_never_goes_backwards() {
+        let _home = test_support::TempHome::new();
+        std::fs::create_dir_all(runs_dir()).unwrap();
+        retire_run_number("12").unwrap();
+        retire_run_number("5").unwrap();
+        assert_eq!(issued_run_number(), 12);
+        // A claim below what was issued (its directory gone) is never handed out again.
+        let (id, _) = claim_next_run_id().unwrap();
+        assert_eq!(id, "13");
+        retire_run_number("7").unwrap();
+        assert_eq!(issued_run_number(), 13);
+    }
+
+    #[test]
+    fn concurrent_claims_leave_last_id_at_the_highest() {
+        let _home = test_support::TempHome::new();
+        let handles: Vec<_> = (0..8).map(|_| std::thread::spawn(|| claim_next_run_id().unwrap().0)).collect();
+        let mut ids: Vec<u64> = handles.into_iter().map(|h| h.join().unwrap().parse().unwrap()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 8, "every claim got its own number");
+        assert_eq!(issued_run_number(), *ids.last().unwrap());
+    }
 
     struct EnvGuard {
         key: &'static str,
