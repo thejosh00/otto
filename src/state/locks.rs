@@ -6,7 +6,7 @@
 //! (the wake lock, on the host filesystem) rather than inferred from a heartbeat the owner
 //! promised to keep writing — see `liveness`.
 
-use super::{journal, write_atomic, RunLock};
+use super::{journal, write_atomic, Flock, RunLock};
 use crate::error::OttoError;
 use crate::liveness::Liveness;
 use serde_json::{json, Value};
@@ -32,6 +32,16 @@ fn repo_lock_path(repo: &str) -> Result<(PathBuf, String), OttoError> {
     Ok((dir.join(format!("repo-{slug}.json")), expanded))
 }
 
+/// The flock that serializes every check-then-write on one repo lock: `runs/.repo-flocks/
+/// repo-<slug>.flock`. Kept out of `.locks` and never removed — deleting a flock file someone is
+/// waiting on would let the next comer lock a different inode — so `.locks` holds only the claims.
+/// Taken after the run's own lock, never before (see `Flock`).
+fn repo_flock(lock_path: &std::path::Path) -> Result<Flock, OttoError> {
+    let name = lock_path.with_extension("flock");
+    let name = name.file_name().unwrap_or_default();
+    Flock::acquire(&crate::paths::runs_dir().join(".repo-flocks").join(name))
+}
+
 fn repo_lock_entries() -> Result<Vec<PathBuf>, OttoError> {
     let dir = crate::paths::repo_locks_dir()?;
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
@@ -53,6 +63,7 @@ fn repo_lock_entries() -> Result<Vec<PathBuf>, OttoError> {
 /// `holder_is_gone` then reads as a run that no longer exists.
 pub fn repoint(from: &str, to: &str) {
     for path in repo_lock_entries().unwrap_or_default() {
+        let Ok(_flock) = repo_flock(&path) else { continue };
         let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let Ok(mut held) = serde_json::from_str::<Value>(&text) else { continue };
         if held.get("run").and_then(Value::as_str) == Some(from) {
@@ -136,6 +147,9 @@ pub fn lock(args: LockArgs) -> Result<(), OttoError> {
     let (path, expanded_repo) = repo_lock_path(&args.repo)?;
     let run_path = crate::paths::run_dir(&args.id)?;
     let _lock = RunLock::acquire(&run_path)?;
+    // Check, break and write as one step: without it two runs claiming the same repo at once both
+    // see it free and both believe they own the worktree.
+    let _flock = repo_flock(&path)?;
 
     if path.exists() {
         let held: Value =
@@ -188,7 +202,8 @@ pub struct UnlockArgs {
     pub repo: Option<String>,
 }
 
-/// Release this run's locks. Never touches a lock held by another run.
+/// Release this run's locks. Never touches a lock held by another run: the owner is checked
+/// under the repo's flock, so a lock broken and re-taken since this run held it stays put.
 pub fn unlock(args: UnlockArgs) -> Result<(), OttoError> {
     let run_path = crate::paths::run_dir(&args.id)?;
     let _lock = RunLock::acquire(&run_path)?;
@@ -198,6 +213,9 @@ pub fn unlock(args: UnlockArgs) -> Result<(), OttoError> {
     };
     let mut released = Vec::new();
     for path in &targets {
+        // Read, check the owner and remove under the repo's flock, so a lock another run took a
+        // moment ago is never the one removed.
+        let _flock = repo_flock(path)?;
         let held: Value = match std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()) {
             Some(v) => v,
             None => continue,
@@ -276,6 +294,68 @@ mod tests {
     fn journal_text(id: &str) -> String {
         let path = crate::paths::run_dir(id).unwrap().join("journal.jsonl");
         std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn concurrent_locks_on_one_repo_have_exactly_one_winner() {
+        let _home = TempHome::new();
+        let ids: Vec<String> = (0..8).map(|i| format!("race-{i}")).collect();
+        for id in &ids {
+            test_init(id, "dev-flow").unwrap();
+            // Sleeping toward a future wake: a held lock is not breakable, so a loser must lose.
+            set_wake(id, Some(60));
+        }
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(ids.len()));
+        let handles: Vec<_> = ids
+            .iter()
+            .cloned()
+            .map(|id| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    lock(LockArgs { id, repo: "/tmp/repo-race".into(), force: false }).is_ok()
+                })
+            })
+            .collect();
+        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count();
+        assert_eq!(winners, 1, "exactly one run may claim the repo");
+        let (path, _) = repo_lock_path("/tmp/repo-race").unwrap();
+        let held: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let owner = held.get("run").and_then(Value::as_str).unwrap();
+        assert_eq!(journal_text(owner).matches("lock-acquired").count(), 1);
+        for id in ids.iter().filter(|id| id.as_str() != owner) {
+            assert!(!journal_text(id).contains("lock-acquired"), "{id} must not think it owns the repo");
+        }
+    }
+
+    #[test]
+    fn unlock_by_a_former_owner_leaves_the_new_owners_lock() {
+        let _home = TempHome::new();
+        test_init("stale-owner", "dev-flow").unwrap();
+        test_init("new-owner", "dev-flow").unwrap();
+        lock(LockArgs { id: "stale-owner".into(), repo: "/tmp/repo-stale".into(), force: false }).unwrap();
+        set_wake("stale-owner", Some(60));
+        lock(LockArgs { id: "new-owner".into(), repo: "/tmp/repo-stale".into(), force: true }).unwrap();
+        // The run that lost it wakes up believing it still owns the repo and lets it go.
+        let err = unlock(UnlockArgs { id: "stale-owner".into(), repo: Some("/tmp/repo-stale".into()) })
+            .expect_err("it no longer owns the lock");
+        assert_eq!(err.code, 2);
+        unlock(UnlockArgs { id: "stale-owner".into(), repo: None }).unwrap();
+        let (path, _) = repo_lock_path("/tmp/repo-stale").unwrap();
+        let held: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(held.get("run").unwrap(), "new-owner");
+        assert!(!journal_text("stale-owner").contains("lock-released"));
+    }
+
+    #[test]
+    fn the_flock_is_kept_apart_from_the_locks() {
+        let _home = TempHome::new();
+        test_init("flock-a", "dev-flow").unwrap();
+        lock(LockArgs { id: "flock-a".into(), repo: "/tmp/repo-flock".into(), force: false }).unwrap();
+        let (path, _) = repo_lock_path("/tmp/repo-flock").unwrap();
+        let name = path.with_extension("flock").file_name().unwrap().to_owned();
+        assert!(crate::paths::runs_dir().join(".repo-flocks").join(name).exists());
+        assert_eq!(std::fs::read_dir(crate::paths::repo_locks_dir().unwrap()).unwrap().count(), 1);
     }
 
     #[test]
