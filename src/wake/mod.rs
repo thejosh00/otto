@@ -200,6 +200,11 @@ fn follows_on(state: &RunState) -> bool {
 /// One wake, with the spawner injected so the whole path is testable without spending money.
 fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     let run_path = crate::paths::run_dir(&args.id)?;
+    // Hold the wake lock for the whole wake, taken before the state is read: this is what
+    // liveness observes, and a second `otto wake` (poke, the web's wake button) refuses rather
+    // than racing — so the prompt, its notes and its answer are built from a state no other wake
+    // is also delivering. A dry run spawns nothing and so takes no lock.
+    let _wake_lock = if args.dry_run { None } else { Some(WakeLock::acquire(&args.id)?) };
     let state = crate::state::read_run(&args.id)?;
 
     // A late wake firing into a closed run is normal, and doing nothing is correct.
@@ -236,7 +241,7 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         prompt = prompt::with_notes(&prompt, &given.block);
     }
 
-    // Ahead of the argv rather than after the lock, because the session id is part of the command
+    // Ahead of the argv, because the session id is part of the command
     // line: it is what makes the wake's usage findable afterwards, so `--dry-run` has to be able
     // to show it. Capturing `started_at` early is harmless and if anything safer — the handoff
     // freshness check compares against it, and an earlier mark is the more permissive one.
@@ -253,10 +258,6 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         println!("{}", dry_run_line(&argv));
         return Ok(());
     }
-
-    // Hold the wake lock for the whole wake. This is what liveness observes, and taking it
-    // here means a second `otto wake` refuses rather than racing.
-    let _wake_lock = WakeLock::acquire(&args.id)?;
 
     // Recorded before the spawn, so a crash in the next instant still leaves evidence.
     let id = args.id.clone();
@@ -1443,6 +1444,20 @@ mod tests {
         let mut exec = FakeExec::new();
         let err = run_wake(&args("w-solo"), &mut exec).expect_err("must refuse");
         assert_eq!(err.code, 2);
+        assert!(exec.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn the_wake_lock_is_taken_before_the_state_is_read() {
+        let _h = TempHome::new();
+        test_init("w-first", "a goal").unwrap();
+        let _held = WakeLock::acquire("w-first").unwrap();
+        // With run.json unreadable, reading the state first would fail as not-found (3); taking the
+        // lock first refuses as a conflict (2) without ever looking.
+        std::fs::remove_file(crate::paths::run_dir("w-first").unwrap().join("run.json")).unwrap();
+        let mut exec = FakeExec::new();
+        let err = run_wake(&args("w-first"), &mut exec).expect_err("must refuse");
+        assert_eq!(err.code, 2, "{err}");
         assert!(exec.calls.borrow().is_empty());
     }
 
