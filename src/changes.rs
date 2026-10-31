@@ -985,10 +985,36 @@ pub struct Decided {
     pub wake: Option<String>,
 }
 
-/// Approve the latest version of each change, to land as its repository's process says — or as
-/// `how` says, when the person chose. Refused whole when there is no lander to land them, and each
-/// one refused that isn't waiting for review.
-pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
+/// A change and the version of it the person looked at, to approve: `<run>/<number>@v<k>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Looked {
+    pub r: ChangeRef,
+    /// `None` when they didn't say: refused, naming the latest, so nothing is approved unseen.
+    pub version: Option<u32>,
+}
+
+impl Looked {
+    pub fn parse(text: &str) -> Result<Self, OttoError> {
+        let text = text.trim();
+        let (change, version) = match text.rsplit_once('@') {
+            Some((change, v)) => {
+                let k = v.trim().trim_start_matches(['v', 'V']).parse::<u32>().map_err(|_| {
+                    OttoError::usage(format!("{text:?}: the part after @ is the version you looked at, like @v2"))
+                })?;
+                (change, Some(k))
+            }
+            None => (text, None),
+        };
+        Ok(Looked { r: ChangeRef::parse(change)?, version })
+    }
+}
+
+/// Approve the version of each change the person looked at, to land as its repository's process
+/// says — or as `how` says, when the person chose. A compare-and-swap: a version that isn't its
+/// latest any more (a newer one arrived since they looked) is refused, and nothing is decided.
+/// Refused whole when there is no lander to land them, and each one refused that isn't waiting for
+/// review.
+pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
     if how.is_some_and(|h| h.merge_when_ready && h.mode != LandMode::Pr) {
         return Err(OttoError::usage("merging when ready is for a pull request: approve it with --pr"));
     }
@@ -1001,9 +1027,31 @@ pub fn approve(refs: &[ChangeRef], how: Option<How>, note: Option<&str>) -> Resu
     }
     let note = check_say(note, "--note")?;
     let mut out = Vec::new();
-    for r in refs {
+    for looked in refs {
+        let r = &looked.r;
         out.push(with_change(r, |path, _state, c| {
             refuse_unless(c, &[ChangeState::Review], "approved")?;
+            let latest = c.latest().k;
+            match looked.version {
+                None => {
+                    return Err(OttoError::usage(format!(
+                        "say which version of {} you approve: its latest is v{latest} — `otto changes approve {}@v{latest}`",
+                        r.display(),
+                        r.display()
+                    )))
+                }
+                Some(k) if k == latest => {}
+                Some(k) if k < latest => {
+                    return Err(OttoError::conflict(format!(
+                        "v{latest} of {} arrived since you looked at v{k}: nothing is approved — look at it (`otto changes show {}`), then \
+                         approve {}@v{latest}",
+                        r.display(),
+                        r.display(),
+                        r.display()
+                    )))
+                }
+                Some(k) => return Err(OttoError::usage(format!("{} has no v{k}: its latest is v{latest}", r.display()))),
+            }
             let process = config.process_for(&c.repo);
             let chosen = how.unwrap_or(How { mode: process.mode, merge_when_ready: process.merge_when_ready });
             if chosen.mode == LandMode::Pr && git(Path::new(&c.repo), &["remote"]).unwrap_or_default().trim().is_empty() {
@@ -2302,7 +2350,7 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::paths::test_support::TempHome;
     use crate::state::commands::test_init;
@@ -2323,14 +2371,14 @@ mod tests {
     }
 
     /// A repository with a remote, `main` pushed, and a worktree on branch `fix` one commit ahead.
-    struct Repo {
+    pub(crate) struct Repo {
         _tmp: tempfile::TempDir,
-        main: PathBuf,
+        pub(crate) main: PathBuf,
         origin: PathBuf,
-        wt: PathBuf,
+        pub(crate) wt: PathBuf,
     }
 
-    fn repo() -> Repo {
+    pub(crate) fn repo() -> Repo {
         let tmp = tempfile::tempdir().unwrap();
         let origin = tmp.path().join("origin.git");
         let main = tmp.path().join("app");
@@ -2351,19 +2399,25 @@ mod tests {
         Repo { _tmp: tmp, main, origin, wt }
     }
 
-    fn submit_fix<'a>(r: &'a Repo, title: &'a str) -> Submit<'a> {
+    pub(crate) fn submit_fix<'a>(r: &'a Repo, title: &'a str) -> Submit<'a> {
         Submit { repo: r.main.to_str().unwrap(), branch: "fix", title, summary: "Shouts the second line.", tests: Some("1 passed"), ..Default::default() }
     }
 
-    fn change(run: &str, n: u32) -> Change {
+    pub(crate) fn change(run: &str, n: u32) -> Change {
         read_index(&crate::paths::run_dir(run).unwrap()).unwrap().changes.into_iter().find(|c| c.n == n).unwrap()
     }
 
-    fn r(run: &str, n: u32) -> ChangeRef {
+    pub(crate) fn r(run: &str, n: u32) -> ChangeRef {
         ChangeRef { run: run.into(), n }
     }
 
-    fn set_lander(id: &str) {
+    /// As the person who looked at its latest version: what approving it names.
+    pub(crate) fn seen(r: ChangeRef) -> Looked {
+        let k = change(&r.run, r.n).latest().k;
+        Looked { r, version: Some(k) }
+    }
+
+    pub(crate) fn set_lander(id: &str) {
         crate::config::save_lander(Some(id)).unwrap();
     }
 
@@ -2421,22 +2475,65 @@ mod tests {
     }
 
     #[test]
+    fn a_change_to_approve_names_the_version_looked_at() {
+        let _h = TempHome::new();
+        test_init("c-lk", "a goal").unwrap();
+        assert_eq!(Looked::parse("c-lk/2@v3").unwrap(), Looked { r: r("c-lk", 2), version: Some(3) });
+        assert_eq!(Looked::parse(" c-lk/2@3 ").unwrap().version, Some(3));
+        assert_eq!(Looked::parse("c-lk/2").unwrap().version, None);
+        assert!(Looked::parse("c-lk/2@latest").unwrap_err().message.contains("@v2"));
+    }
+
+    /// Approve is a compare-and-swap on the version the person saw: one that arrived since is refused
+    /// (exit 2), not approved unseen, and nothing is decided.
+    #[test]
+    fn approving_a_version_that_is_no_longer_the_latest_is_refused() {
+        let _h = TempHome::new();
+        test_init("c-cas", "a goal").unwrap();
+        test_init("c-casl", "land changes").unwrap();
+        set_lander("c-casl");
+        let repo = repo();
+        submit("c-cas", &submit_fix(&repo, "t")).unwrap();
+        let looked_at_v1 = Looked { r: r("c-cas", 1), version: Some(1) };
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        assert_eq!(submit("c-cas", &submit_fix(&repo, "t")).unwrap().version, 2);
+
+        let err = approve(&[looked_at_v1], None, None).unwrap_err();
+        assert_eq!(err.code, 2, "stale is a conflict, exit 2: {}", err.message);
+        assert!(err.message.contains("v2") && err.message.contains("since you looked at v1"), "{}", err.message);
+        let c = change("c-cas", 1);
+        assert_eq!((c.state, c.decision.is_none()), (ChangeState::Review, true), "the decision stays unset");
+
+        let err = approve(&[Looked { r: r("c-cas", 1), version: None }], None, None).unwrap_err();
+        assert_eq!(err.code, 1);
+        assert!(err.message.contains("its latest is v2") && err.message.contains("c-cas/1@v2"), "{}", err.message);
+        assert!(approve(&[Looked { r: r("c-cas", 1), version: Some(5) }], None, None).unwrap_err().message.contains("no v5"));
+        assert!(change("c-cas", 1).decision.is_none());
+
+        approve(&[Looked { r: r("c-cas", 1), version: Some(2) }], None, None).unwrap();
+        let c = change("c-cas", 1);
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((c.state, d.version, d.sha.as_str()), (ChangeState::Approved, 2, c.latest().sha.as_str()));
+    }
+
+    #[test]
     fn approving_needs_a_lander_and_binds_to_the_version() {
         let _h = TempHome::new();
         test_init("c-app", "a goal").unwrap();
         test_init("c-lander", "land changes").unwrap();
         let repo = repo();
         submit("c-app", &submit_fix(&repo, "t")).unwrap();
-        let err = approve(&[r("c-app", 1)], None, None).unwrap_err();
+        let err = approve(&[seen(r("c-app", 1))], None, None).unwrap_err();
         assert!(err.message.contains("no lander"), "{}", err.message);
         set_lander("c-lander");
-        let out = approve(&[r("c-app", 1)], None, Some("ship it")).unwrap();
+        let out = approve(&[seen(r("c-app", 1))], None, Some("ship it")).unwrap();
         assert_eq!(out[0].state, ChangeState::Approved);
         let c = change("c-app", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.version, d.sha.as_str()), (1, c.latest().sha.as_str()));
         assert_eq!(c.whose_move(), Move::Lander);
-        assert!(approve(&[r("c-app", 1)], None, None).is_err(), "only a change waiting for review is approved");
+        assert!(approve(&[seen(r("c-app", 1))], None, None).is_err(), "only a change waiting for review is approved");
         assert_eq!(due().unwrap().len(), 1);
     }
 
@@ -2464,7 +2561,7 @@ mod tests {
         let l = &list(false).unwrap().changes[0];
         assert_eq!((l.process.as_str(), l.mode), ("reviewed", LandMode::Pr));
 
-        let out = approve(&[r("c-proc", 1)], None, None).unwrap();
+        let out = approve(&[seen(r("c-proc", 1))], None, None).unwrap();
         assert!(out[0].how.as_deref().unwrap().contains("pull request"));
         let d = change("c-proc", 1).decision.unwrap();
         assert_eq!((d.mode, d.merge_when_ready, d.process.as_deref(), d.land.as_deref(), d.overridden), (LandMode::Pr, true, Some("reviewed"), Some("squash-merge it"), false));
@@ -2486,7 +2583,7 @@ mod tests {
         set_lander("c-ovrl");
         let repo = repo();
         submit("c-ovr", &submit_fix(&repo, "one")).unwrap();
-        approve(&[r("c-ovr", 1)], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap();
+        approve(&[seen(r("c-ovr", 1))], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap();
         let c = change("c-ovr", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.mode, d.process.as_deref(), d.overridden), (LandMode::Push, Some("standard"), true));
@@ -2502,10 +2599,10 @@ mod tests {
         let repo = repo();
         submit("c-nor", &submit_fix(&repo, "one")).unwrap();
         sh(&repo.main, &["remote", "remove", "origin"]);
-        let err = approve(&[r("c-nor", 1)], None, None).unwrap_err();
+        let err = approve(&[seen(r("c-nor", 1))], None, None).unwrap_err();
         assert!(err.message.contains("no remote") && err.message.contains("--process direct"), "{}", err.message);
         crate::config::save_project(repo.main.to_str().unwrap(), Some("direct")).unwrap();
-        approve(&[r("c-nor", 1)], None, None).unwrap();
+        approve(&[seen(r("c-nor", 1))], None, None).unwrap();
         assert_eq!(change("c-nor", 1).decision.unwrap().mode, LandMode::Push);
     }
 
@@ -2518,7 +2615,7 @@ mod tests {
         let repo = repo();
         submit("c-land", &submit_fix(&repo, "t")).unwrap();
         set_lander("c-l");
-        approve(&[r("c-land", 1)], None, None).unwrap();
+        approve(&[seen(r("c-land", 1))], None, None).unwrap();
         assert!(claim("c-other", &r("c-land", 1)).unwrap_err().message.contains("isn't the lander"));
         let d = claim("c-l", &r("c-land", 1)).unwrap();
         assert_eq!(d.todo, "land");
@@ -2573,7 +2670,7 @@ mod tests {
         set_lander("c-lr");
         let repo = repo();
         submit("c-rev", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-rev", 1)], None, None).unwrap();
+        approve(&[seen(r("c-rev", 1))], None, None).unwrap();
         let out = revise(&r("c-rev", 1), "call it louder").unwrap();
         assert_eq!(out.state, ChangeState::Revising);
         let c = change("c-rev", 1);
@@ -2604,7 +2701,7 @@ mod tests {
         set_lander("c-bl");
         let repo = repo();
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], None, None).unwrap();
+        approve(&[seen(r("c-b", 1))], None, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let c = bounce("c-bl", &r("c-b", 1), "a.txt conflicts with main").unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::Revising, Move::Author));
@@ -2613,7 +2710,7 @@ mod tests {
         std::fs::write(repo.wt.join("a.txt"), "one\nTwo\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "again"]);
         submit("c-b", &submit_fix(&repo, "t")).unwrap();
-        approve(&[r("c-b", 1)], None, None).unwrap();
+        approve(&[seen(r("c-b", 1))], None, None).unwrap();
         claim("c-bl", &r("c-b", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
         let c = rebased("c-bl", &r("c-b", 1), &head).unwrap();
@@ -2654,8 +2751,8 @@ mod tests {
         set_babysitter("c-prb");
         let repo = repo();
         submit("c-pr", &submit_fix(&repo, "Shout")).unwrap();
-        assert!(approve(&[r("c-pr", 1)], Some(How { mode: LandMode::Push, merge_when_ready: true }), None).is_err(), "merging when ready is for a pull request");
-        approve(&[r("c-pr", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        assert!(approve(&[seen(r("c-pr", 1))], Some(How { mode: LandMode::Push, merge_when_ready: true }), None).is_err(), "merging when ready is for a pull request");
+        approve(&[seen(r("c-pr", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         assert_eq!(due().unwrap()[0].todo, "open its pull request");
         let d = claim("c-prl", &r("c-pr", 1)).unwrap();
         let v1 = d.sha.unwrap();
@@ -2728,7 +2825,7 @@ mod tests {
         set_babysitter("c-fxb");
         let repo = repo();
         submit("c-fx", &submit_fix(&repo, "Shout")).unwrap();
-        approve(&[r("c-fx", 1)], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        approve(&[seen(r("c-fx", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         assert_eq!(change("c-fx", 1).decision.unwrap().allow_changes, None, "standard allows nothing");
         let v1 = claim("c-fxl", &r("c-fx", 1)).unwrap().sha.unwrap();
         pr_pushed("c-fxl", &r("c-fx", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();

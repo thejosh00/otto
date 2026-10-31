@@ -2034,17 +2034,13 @@ fn wake_to_act(id: &str) -> (Option<String>, Option<String>) {
     }
 }
 
-fn change_refs(refs: &[String]) -> Result<Vec<crate::changes::ChangeRef>, OttoError> {
-    if refs.is_empty() {
-        return Err(OttoError::usage("name the change: <run>/<number>, as `otto changes` lists it"));
-    }
-    refs.iter().map(|r| crate::changes::ChangeRef::parse(r)).collect()
-}
-
 /// Approve changes to land — as each one's process says, or as `how` says — and wake the lander to
 /// land them.
 pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: Option<&str>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
-    let refs = change_refs(refs)?;
+    if refs.is_empty() {
+        return Err(OttoError::usage("name the change and the version you looked at: <run>/<number>@v<k>, as `otto changes` lists it"));
+    }
+    let refs = refs.iter().map(|r| crate::changes::Looked::parse(r)).collect::<Result<Vec<_>, _>>()?;
     let decided = crate::changes::approve(&refs, how, note)?;
     let lander = crate::config::lander()?.expect("approve refuses without a lander");
     let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander) };

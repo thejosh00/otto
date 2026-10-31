@@ -523,7 +523,8 @@ pub struct ChangesShowArgs {
 
 #[derive(clap::Args, Debug)]
 pub struct ChangesApproveArgs {
-    /// The changes: <run>/<number>, one or more
+    /// The changes and the version of each you looked at: <run>/<number>@v<k>, one or more. A
+    /// newer version than the one you name is refused (exit 2): look at it, then approve that
     #[arg(required = true, num_args = 1..)]
     pub changes: Vec<String>,
     /// For the lander and the record, in a sentence
@@ -832,10 +833,11 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
             ),
         };
         println!(
-            "\n{} follows the {} process.\notto changes approve {r}         {as_said}\notto changes approve {r} {other}  {other_words}\notto changes revise {r} --text \"…\"\notto changes drop {r}",
+            "\n{} follows the {} process.\notto changes approve {r}@v{k}         {as_said}\notto changes approve {r}@v{k} {other}  {other_words}\notto changes revise {r} --text \"…\"\notto changes drop {r}",
             l.repo,
             d.process.name,
-            r = l.reference
+            r = l.reference,
+            k = d.change.latest().k
         );
         if d.lander.is_none() {
             println!("No lander is set up; to land it yourself: {}", d.commands.get(1).map(String::as_str).unwrap_or(""));

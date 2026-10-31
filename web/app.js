@@ -983,9 +983,17 @@ function changesView(selected) {
       h("button.small.ghost", { onclick: () => { picked.clear(); drawList(); } }, "Clear"));
   };
 
+  // Each with the version this page showed: a newer one that arrived since is refused, not approved unseen.
+  const looked = (k) => {
+    if (k.includes("@")) return k;
+    const l = data && data.changes.find((x) => keyOf(x) === k);
+    return l ? `${k}@v${l.version}` : k;
+  };
+  const unversioned = (k) => k.split("@")[0];
   async function land(keys, button, how = {}) {
-    const r = await busy(button, () => api("/changes/approve", { changes: keys, ...how }));
+    const r = await busy(button, () => api("/changes/approve", { changes: keys.map(looked), ...how }));
     if (!r) return;
+    keys = keys.map(unversioned);
     keys.forEach((k) => picked.delete(k));
     toast(`${r.decided.length === 1 ? "Approved" : `Approved ${r.decided.length}`} — ${r.woke ? "the lander is on it" : r.notWoken ? `the lander lands ${r.decided.length === 1 ? "it" : "them"} when it next runs (${r.notWoken})` : "the lander lands them next"}`);
     if (keys.includes(selected)) moveOn();
@@ -1208,12 +1216,12 @@ function changeDetail(d, actions) {
         h("button.primary.land", {
           disabled: !d.lander,
           title: !d.lander ? "No lander is set up" : asPr ? "The lander opens a pull request and keeps it moving; what reviewers ask goes to its agent (a)" : `The lander puts it on ${c.base} and pushes it (a)`,
-          onclick: (e) => actions.land([key], e.currentTarget),
+          onclick: (e) => actions.land([`${key}@v${v.k}`], e.currentTarget),
         }, asPr ? (p.mergeWhenReady ? "Open a PR, merge when ready" : "Open a PR") : `Land on ${c.base}`),
         h("button", {
           disabled: !d.lander,
           title: `Not as ${p.name} says, this once`,
-          onclick: (e) => actions.land([key], e.currentTarget, asPr ? { push: true } : { pr: true }),
+          onclick: (e) => actions.land([`${key}@v${v.k}`], e.currentTarget, asPr ? { push: true } : { pr: true }),
         }, asPr ? `Land on ${c.base} instead` : "Open a PR instead"),
         h("button.danger", {
           onclick: async (e) => {

@@ -322,7 +322,7 @@ Usage: otto changes approve [OPTIONS] <CHANGES>...
 
 Arguments:
   <CHANGES>...
-          The changes: <run>/<number>, one or more
+          The changes and the version of each you looked at: <run>/<number>@v<k>, one or more. A newer version than the one you name is refused (exit 2): look at it, then approve that
 
 Options:
       --note <NOTE>

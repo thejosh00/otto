@@ -244,6 +244,57 @@ mod tests {
         assert_eq!(body["rows"][0]["short"], "web");
     }
 
+    /// The page's Approve sends the version it showed: that one is approved; one a newer version
+    /// arrived for since is refused with 409, and nothing is decided.
+    #[test]
+    fn approving_from_the_page_needs_the_version_it_showed() {
+        use crate::changes::tests::{change, repo, set_lander, submit_fix};
+        let _h = TempHome::new();
+        test_init("2026-09-21-wa", "a goal").unwrap();
+        test_init("2026-09-21-wal", "land changes").unwrap();
+        set_lander("2026-09-21-wal");
+        // Stopped, so approving doesn't start it.
+        crate::state::transaction("2026-09-21-wal", |_p, s| {
+            s.status = crate::state::Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        let repo = repo();
+        crate::changes::submit("2026-09-21-wa", &submit_fix(&repo, "t")).unwrap();
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo.wt)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        git(&["commit", "--quiet", "-am", "louder"]);
+        crate::changes::submit("2026-09-21-wa", &submit_fix(&repo, "t")).unwrap();
+
+        let approve = |change: &str| rt().block_on(send(post_req("/api/changes/approve", serde_json::json!({"changes": [change]}))));
+        let (status, body) = approve("wa/1@v1");
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("v2"), "{body}");
+        assert!(change("2026-09-21-wa", 1).decision.is_none(), "the decision stays unset");
+        let (status, body) = approve("wa/1");
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains("its latest is v2"), "{body}");
+        assert!(change("2026-09-21-wa", 1).decision.is_none());
+
+        let (status, body) = approve("wa/1@v2");
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let c = change("2026-09-21-wa", 1);
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((d.version, d.sha.as_str()), (2, c.latest().sha.as_str()));
+    }
+
     #[test]
     fn errors_keep_their_meaning_as_status_codes() {
         let _h = TempHome::new();

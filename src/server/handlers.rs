@@ -444,7 +444,8 @@ pub async fn change(Path((id, n)): Path<(String, u32)>, Query(q): Query<OutputQu
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApproveBody {
-    /// `<run>/<number>`, one or more.
+    /// `<run>/<number>@v<k>`, one or more: each with the version the page showed. One a newer
+    /// version arrived for since is refused (409), and nothing is approved for it.
     changes: Vec<String>,
     #[serde(default)]
     note: Option<String>,
