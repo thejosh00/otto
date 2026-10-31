@@ -301,9 +301,12 @@ pub fn save_workdir(text: &str) -> Result<PathBuf, OttoError> {
 }
 
 /// Change `config.json` as JSON, keeping everything else in the file as it was, and save it only if
-/// the result still loads.
+/// the result still loads. The whole read-modify-write holds `config.json.lock`, so two edits at
+/// once (the web UI saving a process while the lander is saved) both land. A leaf lock in the
+/// order documented on `state::Flock`: `change` must not take another lock.
 fn edit(change: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), OttoError>) -> Result<Config, OttoError> {
     let path = config_path();
+    let _flock = crate::state::Flock::acquire(&path.with_extension("json.lock"))?;
     let mut value = match std::fs::read_to_string(&path) {
         Ok(existing) => serde_json::from_str::<serde_json::Value>(&existing)
             .map_err(|e| OttoError::usage(format!("{} is not valid: {e}", path.display())))?,
@@ -456,6 +459,32 @@ mod tests {
 
     fn def(name: &str, command: &str) -> LauncherDef {
         LauncherDef { name: name.into(), command: command.into(), grant_flag: None }
+    }
+
+    #[test]
+    fn concurrent_edits_keep_every_change() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    edit(|object| {
+                        // Widen the read-modify-write window, so an unlocked edit would lose one.
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        let launchers = object.entry("launchers").or_insert_with(|| serde_json::json!([]));
+                        launchers.as_array_mut().unwrap().push(serde_json::json!({"name": format!("l{i}"), "command": "claude"}));
+                        Ok(())
+                    })
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let names: Vec<String> = load().unwrap().launchers().into_iter().map(|l| l.name).collect();
+        for i in 0..8 {
+            assert!(names.contains(&format!("l{i}")), "edit {i} was lost: {names:?}");
+        }
     }
 
     #[test]
