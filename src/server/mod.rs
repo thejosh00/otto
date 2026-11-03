@@ -101,6 +101,7 @@ pub fn router(state: AppState) -> Router {
         .route("/changes", get(handlers::changes))
         .route("/changes/approve", post(handlers::approve_changes))
         .route("/changes/{id}/{n}", get(handlers::change))
+        .route("/changes/{id}/{n}/evidence/{k}/{*name}", get(handlers::change_evidence))
         .route("/changes/{id}/{n}/revise", post(handlers::revise_change))
         .route("/changes/{id}/{n}/drop", post(handlers::drop_change))
         .route("/changes/{id}/{n}/merge", post(handlers::merge_change))
@@ -293,6 +294,35 @@ mod tests {
         let c = change("2026-09-21-wa", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.version, d.sha.as_str()), (2, c.latest().sha.as_str()));
+    }
+
+    /// A change's screenshot comes back as itself, and nothing the page didn't list comes back at all.
+    #[test]
+    fn a_changes_evidence_is_served_as_itself_and_inert() {
+        use crate::changes::tests::{repo, submit_fix};
+        let _h = TempHome::new();
+        test_init("2026-09-21-we", "a goal").unwrap();
+        let repo = repo();
+        let ev = tempfile::tempdir().unwrap();
+        std::fs::write(ev.path().join("after.png"), b"\x89PNGbytes").unwrap();
+        let found = crate::changes::find_evidence(&[ev.path().to_path_buf()]).unwrap();
+        crate::changes::submit("2026-09-21-we", &crate::changes::Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+
+        let response = rt().block_on(app().oneshot(get_req("/api/changes/we/1/evidence/1/after.png"))).unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers["content-type"], "image/png");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(headers["content-security-policy"].to_str().unwrap().starts_with("sandbox"));
+        let body = rt().block_on(axum::body::to_bytes(response.into_body(), 1 << 20)).unwrap();
+        assert_eq!(&body[..], b"\x89PNGbytes");
+
+        let (_, detail) = rt().block_on(send(get_req("/api/changes/we/1")));
+        assert_eq!(detail["evidence"][0]["name"], "after.png", "{detail}");
+        for path in ["/api/changes/we/1/evidence/1/..%2Fv1.summary.md", "/api/changes/we/1/evidence/1/nope.png", "/api/changes/we/1/evidence/2/after.png"] {
+            let response = rt().block_on(app().oneshot(get_req(path))).unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     #[test]

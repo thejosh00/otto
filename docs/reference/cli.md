@@ -1783,6 +1783,9 @@ Options:
       --tests <TESTS>
           What the tests said, in a line: "cargo test: 429 passed"
 
+      --evidence <PATH>
+          What shows it works — a screenshot, a transcript, tests failing before and passing after: a file, or a folder of them. Again for more. Pictures (png, jpg, gif, webp) and text (txt, log, md, json); copied, so the person sees what you saw
+
       --base <BASE>
           The branch it lands on. Omitted, the remote's default branch
 

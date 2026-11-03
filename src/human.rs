@@ -794,6 +794,12 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     if let Some(tests) = &v.tests {
         println!("tests: {tests}");
     }
+    if !d.evidence.is_empty() {
+        println!("evidence ({}; pictures show on the web page):", d.evidence.len());
+        for e in &d.evidence {
+            println!("  {}", crate::changes::home_relative(&e.file));
+        }
+    }
     println!(
         "{} commit{}, {} file{}, +{} −{}",
         v.commits,

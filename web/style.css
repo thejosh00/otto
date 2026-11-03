@@ -726,3 +726,13 @@ details.more fieldset { background: var(--bg); }
   .files li { grid-template-columns: 76px minmax(0, 1fr); }
   .pl { grid-template-columns: 34px 34px minmax(max-content, 1fr); }
 }
+
+/* A change's evidence: screenshots in a grid, transcripts below. */
+.evidence { display: grid; gap: 10px; max-width: 100%; }
+.evidence h3 { margin: 0; font-size: 15px; }
+.evidence-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.evidence-grid figure { margin: 0; display: grid; gap: 4px; }
+.evidence-grid img { width: 100%; height: auto; max-height: 360px; object-fit: contain; object-position: top left; border: 1px solid var(--line); border-radius: var(--cut-sm); background: var(--surface); }
+.evidence-grid figcaption code { font-size: 12px; overflow-wrap: anywhere; }
+.evidence pre.code { max-height: 420px; overflow: auto; }
+.no-evidence { margin: 0; font-size: 13px; }

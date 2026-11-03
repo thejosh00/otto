@@ -1103,6 +1103,25 @@ function changesView(selected) {
 }
 
 /** One change: what its author said, what to do about it, its files and patch, what happened. */
+// What its author showed it works with: pictures to look at, then transcripts to read. A picture
+// opens full size in a tab of its own; a text file small enough shows inline, the first one open.
+function evidenceSection(l, v, evidence) {
+  const url = (e) => `/api/changes/${enc(l.run)}/${l.n}/evidence/${v.k}/${e.name.split("/").map(enc).join("/")}`;
+  const images = evidence.filter((e) => e.kind === "image");
+  const texts = evidence.filter((e) => e.kind === "text");
+  return h("section.evidence",
+    h("h3", "Evidence ", h("span.faint", `${evidence.length} ${evidence.length === 1 ? "file" : "files"}${v.by === "lander" ? " · from before the lander's rebase" : ""}`)),
+    images.length ? h("div.evidence-grid", images.map((e) =>
+      h("figure",
+        h("a", { href: url(e), target: "_blank", rel: "noopener" }, h("img", { src: url(e), alt: e.name, loading: "lazy" })),
+        h("figcaption", h("code", e.name))))) : null,
+    texts.map((e, i) => h("details.attachment", { open: i === 0 },
+      h("summary", e.name),
+      e.text != null
+        ? (e.name.endsWith(".md") ? md(e.text) : h("pre.code", e.text))
+        : h("p.faint", "Too big to show here: ", h("a", { href: url(e), target: "_blank", rel: "noopener" }, "open it")))));
+}
+
 function changeDetail(d, actions) {
   const l = d.line;
   const c = d.change;
@@ -1202,6 +1221,8 @@ function changeDetail(d, actions) {
   if (v.by === "babysitter") parts.push(h("p.hint", "The babysitter made this version without you: ", v.why || ""));
   parts.push(md(d.summary));
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
+  if (d.evidence.length) parts.push(evidenceSection(l, v, d.evidence));
+  else if (v.by === "author") parts.push(h("p.hint.no-evidence", "No evidence with this version — only its summary says it works."));
   if (yours) {
     const words = h("textarea.revise", { rows: 3, placeholder: "What to change — its agent reads your words (r)" });
     const p = d.process;

@@ -370,7 +370,8 @@ own and hands that back as a **change**. You review it on one page, and a run of
 **lander** — puts it on the base branch once you approve.
 
 ```bash
-otto state change submit <id> --repo ~/work/svc --branch svc-retry --title "Retry flaky reads" --summary-file artifacts/change.md --tests "unit: 12 passed"
+otto state change submit <id> --repo ~/work/svc --branch svc-retry --title "Retry flaky reads" --summary-file artifacts/change.md --tests "unit: 12 passed" \
+  --evidence artifacts/evidence
 ```
 
 ```bash
@@ -383,6 +384,12 @@ otto changes approve 3/2@v1 --pr   # as a pull request this once, whatever its p
 otto changes merge 3/2             # its pull request is approved and passing: merge it
 ```
 
+- **A change shows it works.** `--evidence` hands over what proves it without reading the code —
+  screenshots, transcripts, tests failing before and passing after: a file, or a folder of them
+  (pictures and text only; no links). otto keeps a copy with the version, so what you look at is what
+  its author saw, and the change's page shows the pictures and the transcripts above the files. A
+  version submitted without any says so. Forgot it? The same commit again with `--evidence` adds it,
+  once; after that, new evidence comes with a new commit. A rebase by the lander keeps it.
 - **A change doesn't stop its run.** Submitting isn't a question: the run goes on with its next piece
   of work, and what happens to the change reaches it as a note — you asked for changes, it landed, it
   was dropped. A run that hands back a lot of code doesn't wait on you between pieces.

@@ -20,7 +20,8 @@
 //!
 //! On disk, with the run that wrote it: `changes/index.json` is everything but the text;
 //! `changes/<n>-<key>/v<k>.patch` is each version's patch and `v<k>.summary.md` what its author
-//! said about it, both verbatim.
+//! said about it, both verbatim; `v<k>.evidence/` is a copy of what its author showed it works
+//! with — screenshots and transcripts — taken when it was submitted (`Evidence`).
 
 use crate::clock::Timestamp;
 use crate::error::OttoError;
@@ -41,6 +42,15 @@ pub const PATCH_MAX_BYTES: usize = 1024 * 1024;
 pub const LARGE_LINES: u32 = 400;
 /// What the tests said, in a line or two.
 pub const TESTS_MAX_CHARS: usize = 300;
+/// Evidence is what a person looks at in a few minutes: a handful of screenshots and transcripts.
+pub const EVIDENCE_MAX_FILES: usize = 40;
+pub const EVIDENCE_MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
+pub const EVIDENCE_MAX_BYTES: u64 = 50 * 1024 * 1024;
+/// How much of a text file of evidence the change shows inline; past that, it is a link.
+const EVIDENCE_SHOW_MAX_BYTES: usize = 64 * 1024;
+/// What evidence may be: pictures a browser shows, and text. Nothing a browser would run.
+const EVIDENCE_IMAGE: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+const EVIDENCE_TEXT: &[&str] = &["txt", "log", "md", "json"];
 /// What a person or the lander says about a change when they move it on: it goes to the author in
 /// a note, with room left for the lines around it.
 pub const SAY_MAX_BYTES: usize = 3072;
@@ -205,6 +215,150 @@ pub struct ChangeVersion {
     /// What the tests said, in the author's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<String>,
+    /// What its author showed it works with: copies, so what the person saw stays with the version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<Evidence>,
+}
+
+/// One file of evidence: a screenshot, a transcript, tests failing before and passing after.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Evidence {
+    /// Its name as the author gave it: relative to the folder it came from (`screenshots/home-after.png`).
+    pub name: String,
+    /// The copy, relative to the run directory.
+    pub path: String,
+    pub bytes: u64,
+    pub kind: EvidenceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum EvidenceKind {
+    Image,
+    Text,
+}
+
+impl Evidence {
+    /// What to say it is when it's served.
+    pub fn content_type(&self) -> &'static str {
+        match self.name.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("json") => "application/json; charset=utf-8",
+            _ => "text/plain; charset=utf-8",
+        }
+    }
+}
+
+/// A file of evidence found, not yet copied.
+#[derive(Debug, Clone)]
+pub struct Found {
+    pub name: String,
+    pub from: PathBuf,
+    pub bytes: u64,
+    pub kind: EvidenceKind,
+}
+
+fn evidence_kind(name: &str) -> Option<EvidenceKind> {
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+    if EVIDENCE_IMAGE.contains(&ext.as_str()) {
+        Some(EvidenceKind::Image)
+    } else if EVIDENCE_TEXT.contains(&ext.as_str()) {
+        Some(EvidenceKind::Text)
+    } else {
+        None
+    }
+}
+
+/// Find the evidence the author named: each a file, or a folder of them (dotfiles skipped). Checked
+/// here, before anything is written: links are refused (evidence is copied, and a link could copy
+/// what was never meant to leave), and so are kinds a browser would run, and too much of it.
+pub fn find_evidence(given: &[PathBuf]) -> Result<Vec<Found>, OttoError> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<Found>) -> Result<(), OttoError> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .map_err(|e| OttoError::usage(format!("--evidence {}: {e}", dir.display())))?
+            .filter_map(Result::ok)
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            let p = e.path();
+            let meta = std::fs::symlink_metadata(&p)?;
+            if meta.is_dir() {
+                walk(root, &p, out)?;
+            } else {
+                let name = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                out.push(one(&p, &meta, name)?);
+            }
+        }
+        Ok(())
+    }
+    fn one(p: &Path, meta: &std::fs::Metadata, name: String) -> Result<Found, OttoError> {
+        if meta.file_type().is_symlink() {
+            return Err(OttoError::usage(format!("--evidence {}: a link — copy the file itself in", p.display())));
+        }
+        if !meta.is_file() {
+            return Err(OttoError::usage(format!("--evidence {}: not a file", p.display())));
+        }
+        let kind = evidence_kind(&name).ok_or_else(|| {
+            OttoError::usage(format!(
+                "--evidence {}: evidence is pictures ({}) or text ({})",
+                p.display(),
+                EVIDENCE_IMAGE.join(", "),
+                EVIDENCE_TEXT.join(", ")
+            ))
+        })?;
+        if meta.len() > EVIDENCE_MAX_FILE_BYTES {
+            return Err(OttoError::usage(format!("--evidence {}: over {} MB — a screenshot or a transcript, not a recording", p.display(), EVIDENCE_MAX_FILE_BYTES / (1024 * 1024))));
+        }
+        Ok(Found { name, from: p.to_path_buf(), bytes: meta.len(), kind })
+    }
+    let mut found = Vec::new();
+    for g in given {
+        let meta = std::fs::symlink_metadata(g).map_err(|_| OttoError::usage(format!("--evidence {}: no such file or folder", g.display())))?;
+        if meta.is_dir() {
+            walk(g, g, &mut found)?;
+        } else {
+            let name = g.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            found.push(one(g, &meta, name)?);
+        }
+    }
+    if !given.is_empty() && found.is_empty() {
+        return Err(OttoError::usage("--evidence: nothing in it — the screenshots or transcripts weren't written where you said"));
+    }
+    let mut names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+    names.sort_unstable();
+    if let Some(w) = names.windows(2).find(|w| w[0] == w[1]) {
+        return Err(OttoError::usage(format!("--evidence: two files are called {} — name them apart, or give their folder", w[0])));
+    }
+    if found.len() > EVIDENCE_MAX_FILES {
+        return Err(OttoError::usage(format!("--evidence: {} files, and a person looks at no more than {EVIDENCE_MAX_FILES} — keep what proves the change", found.len())));
+    }
+    let total: u64 = found.iter().map(|f| f.bytes).sum();
+    if total > EVIDENCE_MAX_BYTES {
+        return Err(OttoError::usage(format!("--evidence: {} MB in all, over {} MB", total / (1024 * 1024), EVIDENCE_MAX_BYTES / (1024 * 1024))));
+    }
+    Ok(found)
+}
+
+/// Copy what was found in beside the version it is for.
+fn keep_evidence(run_dir: &Path, dir: &str, k: u32, found: &[Found]) -> Result<Vec<Evidence>, OttoError> {
+    let mut kept = Vec::with_capacity(found.len());
+    for f in found {
+        let rel = format!("{dir}/v{k}.evidence/{}", f.name);
+        let to = run_dir.join(&rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&f.from, &to).map_err(|e| OttoError::new(format!("could not keep {}: {e}", f.from.display()), 4))?;
+        kept.push(Evidence { name: f.name.clone(), path: rel, bytes: f.bytes, kind: f.kind });
+    }
+    Ok(kept)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -652,6 +806,8 @@ pub struct Submit<'a> {
     pub title: &'a str,
     pub summary: &'a str,
     pub tests: Option<&'a str>,
+    /// What shows it works, found and checked (`find_evidence`).
+    pub evidence: Vec<Found>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -670,6 +826,10 @@ pub struct Submitted {
     pub too_big: bool,
     /// What it was before this version, when it was something.
     pub was: Option<ChangeState>,
+    /// Files of evidence the version carries now.
+    pub evidence: usize,
+    /// The same commit again, with evidence, when its version already had some: kept as it was.
+    pub evidence_ignored: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -781,10 +941,22 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 )));
             }
             if latest.sha == sha && latest.base_sha == snap.base_sha {
+                // The same commit is not a new version — but evidence its author forgot can join it,
+                // while it has none. Evidence the person may already have looked at stays as it was.
+                let fill = !s.evidence.is_empty() && latest.evidence.is_empty();
+                let ignored = !s.evidence.is_empty() && !fill;
                 let c = &mut index.changes[i];
                 c.title = title.clone();
                 c.worktree = worktree.clone().or(c.worktree.take());
-                let out = submitted(c, true, None);
+                if fill {
+                    let dir = c.dir();
+                    let k = c.latest().k;
+                    let kept = keep_evidence(path, &dir, k, &s.evidence)?;
+                    c.moment("author", format!("v{k}: added {} file{} of evidence", kept.len(), if kept.len() == 1 { "" } else { "s" }));
+                    c.versions.last_mut().expect("has a latest").evidence = kept;
+                }
+                let mut out = submitted(c, true, None);
+                out.evidence_ignored = ignored;
                 write_index(path, &index)?;
                 return Ok(out);
             }
@@ -805,6 +977,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
         };
         let summary_rel = format!("{dir}/v{k}.summary.md");
         crate::state::write_atomic(&path.join(&summary_rel), &format!("{summary}\n"))?;
+        let evidence = keep_evidence(path, &dir, k, &s.evidence)?;
         let version = ChangeVersion {
             k,
             sha: sha.clone(),
@@ -820,6 +993,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             summary: summary_rel,
             tests: tests.clone(),
             why: None,
+            evidence,
         };
         let lines = version.stat.add + version.stat.del;
         let (c, was) = match existing {
@@ -903,6 +1077,8 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         worktree: c.worktree.clone(),
         too_big: v.patch.is_none(),
         was,
+        evidence: v.evidence.len(),
+        evidence_ignored: false,
     }
 }
 
@@ -1513,6 +1689,8 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
         };
         let summary = c.latest().summary.clone();
         let tests = c.latest().tests.clone();
+        // The same work on a newer base: what showed it working is still the author's word for it.
+        let evidence = c.latest().evidence.clone();
         c.versions.push(ChangeVersion {
             k,
             sha: sha.clone(),
@@ -1528,6 +1706,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             summary,
             tests,
             why: None,
+            evidence,
         });
         c.decision = None;
         c.enter(ChangeState::Review);
@@ -1792,6 +1971,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             summary: summary_rel,
             tests,
             why: Some(why.clone()),
+            evidence: Vec::new(),
         });
         let d = c.decision.as_mut().expect("checked");
         d.version = k;
@@ -2324,6 +2504,33 @@ pub struct Detail {
     pub process: crate::config::Process,
     /// To look at it, or land it by hand, from a terminal.
     pub commands: Vec<String>,
+    /// The version's evidence, with each text file's words when small enough to show.
+    pub evidence: Vec<EvidenceView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceView {
+    pub name: String,
+    pub kind: EvidenceKind,
+    pub bytes: u64,
+    /// Where it is on disk, for a terminal.
+    pub file: String,
+    /// A text file's words, when it is small enough to show inline.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// One file of a version's evidence, to serve: found by the name the version lists, never by a path
+/// the asker makes up.
+pub fn evidence_file(r: &ChangeRef, k: u32, name: &str) -> Result<(Evidence, Vec<u8>), OttoError> {
+    let state = crate::state::read_run(&r.run)?;
+    let dir = crate::paths::run_dir(&state.id)?;
+    let change = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
+    let v = change.version(k).ok_or_else(|| OttoError::not_found(format!("change {} has no version {k}", r.display())))?;
+    let e = v.evidence.iter().find(|e| e.name == name).cloned().ok_or_else(|| OttoError::not_found(format!("v{k} of change {} has no evidence called {name}", r.display())))?;
+    let bytes = std::fs::read(dir.join(&e.path)).map_err(|err| OttoError::not_found(format!("{name}: {err}")))?;
+    Ok((e, bytes))
 }
 
 pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
@@ -2338,6 +2545,19 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
     };
     let patch = v.patch.as_ref().and_then(|p| std::fs::read_to_string(dir.join(p)).ok());
     let summary = std::fs::read_to_string(dir.join(&v.summary)).unwrap_or_default();
+    let evidence = v
+        .evidence
+        .iter()
+        .map(|e| EvidenceView {
+            name: e.name.clone(),
+            kind: e.kind,
+            bytes: e.bytes,
+            file: dir.join(&e.path).display().to_string(),
+            text: (e.kind == EvidenceKind::Text && e.bytes as usize <= EVIDENCE_SHOW_MAX_BYTES)
+                .then(|| std::fs::read_to_string(dir.join(&e.path)).ok())
+                .flatten(),
+        })
+        .collect();
     let repo = home_relative(&change.repo);
     let mut commands = vec![format!("git -C {repo} diff {}...{}", short_sha(&v.base_sha), short_sha(&v.sha))];
     if !change.state.is_over() {
@@ -2351,7 +2571,7 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
             line.overlaps = l.overlaps;
         }
     }
-    Ok(Detail { line, change, version: v, patch, summary, lander: lander_ref(), process, commands })
+    Ok(Detail { line, change, version: v, patch, summary, lander: lander_ref(), process, commands, evidence })
 }
 
 #[cfg(test)]
@@ -2455,6 +2675,131 @@ pub(crate) mod tests {
         assert_eq!((v2.n, v2.version, v2.files), (1, 2, 2), "the same branch is the next version of the same change");
         let j = std::fs::read_to_string(crate::paths::run_dir("c-sub").unwrap().join("journal.jsonl")).unwrap();
         assert_eq!(j.matches("\"change-submitted\"").count(), 2, "{j}");
+    }
+
+    /// A folder of evidence as a builder writes it: a screenshot, a transcript, and noise to skip.
+    fn evidence_dir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("screenshots")).unwrap();
+        std::fs::write(tmp.path().join("screenshots/home-after.png"), b"\x89PNG\r\n\x1a\nnot really").unwrap();
+        std::fs::write(tmp.path().join("red-green.txt"), "base: 1 failed\nbranch: 1 passed\n").unwrap();
+        std::fs::write(tmp.path().join(".DS_Store"), "x").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn a_version_keeps_a_copy_of_its_evidence_and_the_page_can_show_it() {
+        let _h = TempHome::new();
+        test_init("c-ev", "a goal").unwrap();
+        let repo = repo();
+        let ev = evidence_dir();
+        let found = find_evidence(&[ev.path().to_path_buf()]).unwrap();
+        let out = submit("c-ev", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        assert_eq!(out.evidence, 2, "dotfiles are skipped");
+
+        let v1 = change("c-ev", 1).latest().evidence.clone();
+        let names: Vec<_> = v1.iter().map(|e| (e.name.as_str(), e.kind)).collect();
+        assert_eq!(names, [("red-green.txt", EvidenceKind::Text), ("screenshots/home-after.png", EvidenceKind::Image)]);
+        assert!(v1.iter().all(|e| e.path.starts_with("changes/1-fix/v1.evidence/")), "{v1:?}");
+
+        // A copy: what the builder writes next doesn't change what the person was shown.
+        std::fs::write(ev.path().join("red-green.txt"), "rewritten\n").unwrap();
+        let d = read(&r("c-ev", 1), None).unwrap();
+        let text = d.evidence.iter().find(|e| e.name == "red-green.txt").unwrap();
+        assert_eq!(text.text.as_deref(), Some("base: 1 failed\nbranch: 1 passed\n"));
+        assert!(d.evidence.iter().find(|e| e.kind == EvidenceKind::Image).unwrap().text.is_none(), "a picture isn't inlined");
+
+        let (e, bytes) = evidence_file(&r("c-ev", 1), 1, "screenshots/home-after.png").unwrap();
+        assert_eq!((e.content_type(), &bytes[..4]), ("image/png", &b"\x89PNG"[..]));
+        assert!(evidence_file(&r("c-ev", 1), 1, "../index.json").is_err(), "only names the version lists");
+        assert!(evidence_file(&r("c-ev", 1), 2, "red-green.txt").is_err());
+    }
+
+    #[test]
+    fn evidence_is_one_versions_and_the_same_commit_may_only_fill_a_gap() {
+        let _h = TempHome::new();
+        test_init("c-ev2", "a goal").unwrap();
+        let repo = repo();
+        let ev = evidence_dir();
+        submit("c-ev2", &submit_fix(&repo, "t")).unwrap();
+        assert!(change("c-ev2", 1).latest().evidence.is_empty());
+
+        // Forgotten, then given with the same commit: it joins v1.
+        let found = find_evidence(&[ev.path().join("red-green.txt")]).unwrap();
+        let again = submit("c-ev2", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        assert!(again.unchanged && !again.evidence_ignored && again.evidence == 1);
+        assert_eq!(change("c-ev2", 1).latest().evidence[0].name, "red-green.txt");
+
+        // Once there, the same commit can't swap it for something else.
+        let found = find_evidence(&[ev.path().to_path_buf()]).unwrap();
+        let swap = submit("c-ev2", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        assert!(swap.unchanged && swap.evidence_ignored);
+        assert_eq!(change("c-ev2", 1).latest().evidence.len(), 1);
+
+        // A new version brings its own, or none; v1's stays with v1.
+        std::fs::write(repo.wt.join("b.txt"), "ALPHA\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "and alpha"]);
+        submit("c-ev2", &submit_fix(&repo, "t")).unwrap();
+        let c = change("c-ev2", 1);
+        assert!(c.latest().evidence.is_empty(), "v2 showed nothing");
+        assert_eq!(c.version(1).unwrap().evidence.len(), 1);
+    }
+
+    #[test]
+    fn a_rebase_by_the_lander_carries_the_evidence_forward() {
+        let _h = TempHome::new();
+        test_init("c-evr", "a goal").unwrap();
+        test_init("c-evrl", "land changes").unwrap();
+        set_lander("c-evrl");
+        let repo = repo();
+        let ev = evidence_dir();
+        submit("c-evr", &Submit { evidence: find_evidence(&[ev.path().to_path_buf()]).unwrap(), ..submit_fix(&repo, "t") }).unwrap();
+        approve(&[seen(r("c-evr", 1))], None, None).unwrap();
+        claim("c-evrl", &r("c-evr", 1)).unwrap();
+        let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        let c = rebased("c-evrl", &r("c-evr", 1), &head).unwrap();
+        assert_eq!((c.latest().k, c.latest().evidence.len()), (2, 2));
+        assert_eq!(c.latest().evidence, c.version(1).unwrap().evidence, "the same files, not copies of copies");
+    }
+
+    #[test]
+    fn evidence_a_person_should_not_be_handed_is_refused() {
+        let ev = evidence_dir();
+        let p = ev.path();
+        std::fs::write(p.join("page.html"), "<script>1</script>").unwrap();
+        assert!(find_evidence(&[p.join("page.html")]).unwrap_err().message.contains("pictures"));
+        std::fs::write(p.join("x.svg"), "<svg/>").unwrap();
+        assert!(find_evidence(&[p.join("x.svg")]).is_err(), "an svg can carry script");
+        std::os::unix::fs::symlink("/etc/hosts", p.join("hosts.txt")).unwrap();
+        assert!(find_evidence(&[p.join("hosts.txt")]).unwrap_err().message.contains("link"));
+        std::fs::remove_file(p.join("hosts.txt")).unwrap();
+        std::fs::remove_file(p.join("page.html")).unwrap();
+        std::fs::remove_file(p.join("x.svg")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", p.join("screenshots/inside.txt")).unwrap();
+        assert!(find_evidence(&[p.to_path_buf()]).unwrap_err().message.contains("link"), "a link inside a folder too");
+        std::fs::remove_file(p.join("screenshots/inside.txt")).unwrap();
+
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("red-green.txt"), "x").unwrap();
+        assert!(find_evidence(&[p.to_path_buf(), other.path().to_path_buf()]).unwrap_err().message.contains("two files"));
+        let empty = tempfile::tempdir().unwrap();
+        assert!(find_evidence(&[empty.path().to_path_buf()]).unwrap_err().message.contains("nothing in it"));
+        assert!(find_evidence(&[p.join("missing.png")]).unwrap_err().message.contains("no such"));
+        let big = tempfile::tempdir().unwrap();
+        std::fs::File::create(big.path().join("huge.log")).unwrap().set_len(EVIDENCE_MAX_FILE_BYTES + 1).unwrap();
+        assert!(find_evidence(&[big.path().to_path_buf()]).unwrap_err().message.contains("MB"));
+        assert!(find_evidence(&[]).unwrap().is_empty(), "none is fine");
+    }
+
+    #[test]
+    fn a_change_from_before_evidence_still_reads() {
+        let v: ChangeVersion = serde_json::from_value(serde_json::json!({
+            "k": 1, "sha": "a", "baseSha": "b", "patchId": "c", "at": "2026-10-01T00:00:00Z", "by": "author",
+            "patchBytes": 0, "commits": 1, "stat": {"files": [], "add": 0, "del": 0}, "summary": "s.md"
+        }))
+        .unwrap();
+        assert!(v.evidence.is_empty());
+        assert!(!serde_json::to_string(&v).unwrap().contains("evidence"), "and writes the same as before");
     }
 
     #[test]

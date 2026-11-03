@@ -186,6 +186,11 @@ pub struct SubmitArgs {
     /// What the tests said, in a line: "cargo test: 429 passed"
     #[arg(long)]
     pub tests: Option<String>,
+    /// What shows it works — a screenshot, a transcript, tests failing before and passing after: a
+    /// file, or a folder of them. Again for more. Pictures (png, jpg, gif, webp) and text (txt, log,
+    /// md, json); copied, so the person sees what you saw
+    #[arg(long, value_name = "PATH")]
+    pub evidence: Vec<String>,
     /// The branch it lands on. Omitted, the remote's default branch
     #[arg(long)]
     pub base: Option<String>,
@@ -422,6 +427,16 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
     let given = std::path::Path::new(&a.summary_file);
     let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
     let summary = std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {}: {e}", a.summary_file)))?;
+    let run_dir = crate::paths::run_dir(&id)?;
+    let given: Vec<std::path::PathBuf> = a
+        .evidence
+        .iter()
+        .map(|e| {
+            let p = std::path::Path::new(e);
+            if p.exists() || p.is_absolute() { p.to_path_buf() } else { run_dir.join(p) }
+        })
+        .collect();
+    let evidence = changes::find_evidence(&given)?;
     let out = changes::submit(
         &id,
         &changes::Submit {
@@ -432,11 +447,22 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             title: &a.title,
             summary: &summary,
             tests: a.tests.as_deref(),
+            evidence,
         },
     )?;
     let r = format!("{}/{}", crate::paths::short_id(&id), out.n);
     if out.unchanged {
-        println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
+        if out.evidence_ignored {
+            println!(
+                "change {r} v{} unchanged, and its evidence kept as it was — the person may already have looked at it. New \
+                 evidence comes with a new commit",
+                out.version
+            );
+        } else if !a.evidence.is_empty() {
+            println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
+        } else {
+            println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
+        }
         return Ok(());
     }
     println!(
@@ -448,6 +474,9 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
         out.lines,
         if out.lines == 1 { "" } else { "s" }
     );
+    if out.evidence > 0 {
+        println!("With {} file{} of evidence, shown on the change", out.evidence, if out.evidence == 1 { "" } else { "s" });
+    }
     if out.large {
         println!(
             "It is over {} changed lines: a person reviews one concern at a time. If it is more than one, split it into changes of its own",

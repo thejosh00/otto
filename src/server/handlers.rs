@@ -441,6 +441,29 @@ pub async fn change(Path((id, n)): Path<(String, u32)>, Query(q): Query<OutputQu
     blocking(move || crate::changes::read(&crate::changes::ChangeRef::parse(&format!("{id}/{n}"))?, q.v)).await
 }
 
+/// One file of a version's evidence, as itself rather than JSON: a screenshot the page shows as an
+/// image. Only pictures and text are ever kept, and each goes out sandboxed and unsniffed, so even a
+/// file that lies about what it is can't run as part of the page.
+pub async fn change_evidence(Path((id, n, k, name)): Path<(String, u32, u32, String)>) -> Response {
+    use axum::http::header;
+    use axum::response::IntoResponse;
+    let found = tokio::task::spawn_blocking(move || crate::changes::evidence_file(&crate::changes::ChangeRef::parse(&format!("{id}/{n}"))?, k, &name)).await;
+    match found {
+        Ok(Ok((e, bytes))) => (
+            [
+                (header::CONTENT_TYPE, e.content_type()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                (header::CONTENT_SECURITY_POLICY, "sandbox; default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"),
+                (header::CACHE_CONTROL, "private, max-age=3600"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Err(err)) => super::ApiError(err).into_response(),
+        Err(join) => super::ApiError(OttoError::new(format!("the request failed: {join}"), 4)).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApproveBody {
