@@ -611,6 +611,21 @@ mod tests {
 
     /// The reason the guard exists: another site in the same browser must not be able to stop,
     /// wake or start anything.
+    /// On a phone the top nav used to scroll inside itself, hiding items (the current page's among them)
+    /// with nothing to say they were there. Every item has to stay in view instead, however narrow.
+    #[test]
+    fn the_top_nav_wraps_on_a_row_of_its_own_when_narrow() {
+        let css = include_str!("../../web/style.css");
+        let at = css.find(".top nav {").expect("a rule for the top bar's nav");
+        let narrow = css[..at].rfind("@media").expect("that rule sits in a media query");
+        assert!(css[narrow..at].starts_with("@media (max-width: 720px)"), "only below the width it stops fitting");
+        assert!(css[narrow..at].contains("flex-wrap: wrap"), "the bar wraps, to give the nav its own row");
+        let rule = &css[at..at + css[at..].find('}').unwrap()];
+        for wanted in ["flex: 0 0 100%", "flex-wrap: wrap", "overflow-x: visible"] {
+            assert!(rule.contains(wanted), "{wanted} missing from {rule}");
+        }
+    }
+
     #[test]
     fn other_websites_are_refused() {
         let _h = TempHome::new();
