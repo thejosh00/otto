@@ -116,10 +116,13 @@ fetch, as for landing one. No rebase — the pull request shows whether it merge
 ```
 otto state change check <id> <change> --head <sha>            # exit 2 → DO NOT ACT
 git -C <repo> push origin <sha>:refs/heads/<branch>
-gh pr create --repo <owner/repo> --head <branch> --base <base> --title "<its title>" --body-file <its summary>
+gh pr create --repo <owner/repo> --head <branch> --base <base> --title "<its title>" --body-file <its prBody>
 otto state change pr-pushed <id> <change> --head <sha> --url <the pull request>
 otto state unlock <id>
 ```
+
+`prBody` in what `claim` printed is the file to describe it with: the whole of what its author said
+when that fits on a pull request, otherwise its summary. Use that file as it is.
 
 `mergeWhenReady` in what `claim` printed: also `gh pr merge <url> --auto` with the merge method the
 repository uses (its process's `land` says, else its docs; else `--squash`), and `--auto-merge` on

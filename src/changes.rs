@@ -37,6 +37,8 @@ pub const INDEX_FILE: &str = "changes/index.json";
 pub const TITLE_MAX_CHARS: usize = 120;
 /// What the author says about a version: what and why, then the risk. A page, not a history.
 pub const SUMMARY_MAX_BYTES: usize = 16 * 1024;
+/// The longest description GitHub takes on a pull request, in characters.
+pub const PR_BODY_MAX_CHARS: usize = 65536;
 /// A patch past this is kept as its stat only; the page says how to read it in the repo.
 pub const PATCH_MAX_BYTES: usize = 1024 * 1024;
 /// Changed lines past which a change is flagged large: one concern a change reviews quickly.
@@ -1449,8 +1451,11 @@ pub struct Due {
     /// As a pull request: what the babysitter may change on it without the person.
     pub allow_changes: Option<String>,
     pub approved_at: Option<Timestamp>,
-    /// What its author said about it, absolute: the commit message and PR body come from here.
+    /// What its author said about it, absolute: the commit message comes from here.
     pub summary: String,
+    /// The file to describe its pull request with, absolute: the whole of what its author said when
+    /// that fits, and otherwise its summary.
+    pub pr_body: String,
     pub landed_sha: Option<String>,
     /// Its pull request, when it has one.
     pub pr: Option<Pr>,
@@ -1462,6 +1467,13 @@ pub struct Due {
     /// whether it can still hear a note.
     pub author_dir: String,
     pub author_alive: bool,
+}
+
+/// What a version's pull request says: a reviewer there has no other way to read the whole of it,
+/// so the whole of it, unless GitHub would refuse that.
+fn pr_body(dir: &Path, v: &ChangeVersion) -> PathBuf {
+    let fits = |f: &&String| std::fs::read_to_string(dir.join(f)).is_ok_and(|text| text.chars().count() <= PR_BODY_MAX_CHARS);
+    dir.join(v.file.as_ref().filter(fits).unwrap_or(&v.summary))
 }
 
 fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
@@ -1500,6 +1512,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         allow_changes: d.and_then(|d| d.allow_changes.clone()),
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
+        pr_body: pr_body(dir, c.latest()).display().to_string(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
         pr: c.pr.clone(),
         replies: c.replies.iter().filter(|r| r.state == ReplyState::Post).cloned().collect(),
@@ -1562,6 +1575,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 allow_changes: d.and_then(|d| d.allow_changes.clone()),
                 approved_at: d.map(|d| d.at),
                 summary: dir.join(&c.latest().summary).display().to_string(),
+                pr_body: pr_body(&dir, c.latest()).display().to_string(),
                 landed_sha: None,
                 pr: c.pr.clone(),
                 replies: Vec::new(),
@@ -2863,6 +2877,41 @@ pub(crate) mod tests {
         assert!(submit("c-sum", &over).unwrap_err().message.contains("at most a page"));
         let huge = "word ".repeat(crate::outputs::FILE_MAX_BYTES / 5 + 1);
         assert!(submit("c-sum", &Submit { summary: "s", file: Some(&huge), ..submit_fix(&repo, "t") }).unwrap_err().message.contains("--file"));
+    }
+
+    #[test]
+    fn a_pull_request_says_the_whole_of_it_when_that_fits() {
+        let _h = TempHome::new();
+        test_init("c-body", "a goal").unwrap();
+        test_init("c-bodyl", "land changes").unwrap();
+        set_lander("c-bodyl");
+        let repo = repo();
+        let body = || due().unwrap()[0].pr_body.clone();
+        let approve_it = || approve(&[seen(r("c-body", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let next = |line: &str| {
+            std::fs::write(repo.wt.join("b.txt"), format!("{line}\n")).unwrap();
+            sh(&repo.wt, &["commit", "--quiet", "-am", line]);
+        };
+
+        // Only a summary: that is what it says.
+        submit("c-body", &submit_fix(&repo, "t")).unwrap();
+        approve_it();
+        assert!(body().ends_with("v1.summary.md"), "{}", body());
+
+        // The whole of it, right up to what GitHub takes, as it is sent: its last newline too, and
+        // counted in characters, not bytes.
+        next("two");
+        let fits = format!("a {}", "é".repeat(PR_BODY_MAX_CHARS - 3));
+        submit("c-body", &Submit { summary: "s", file: Some(&fits), ..submit_fix(&repo, "t") }).unwrap();
+        approve_it();
+        assert!(body().ends_with("v2.md"), "{}", body());
+
+        // One past it: back to the summary.
+        next("three");
+        let over = format!("a {}", "b".repeat(PR_BODY_MAX_CHARS - 2));
+        submit("c-body", &Submit { summary: "s", file: Some(&over), ..submit_fix(&repo, "t") }).unwrap();
+        approve_it();
+        assert!(body().ends_with("v3.summary.md"), "{}", body());
     }
 
     #[test]
