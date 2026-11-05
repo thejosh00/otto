@@ -1244,7 +1244,7 @@ function changeDetail(d, actions) {
     parts.push(h("div.decide",
       h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/settings/processes" }, p.name), ": ",
         asPr ? `approving opens a pull request${p.mergeWhenReady ? " that merges itself once approved and passing" : ""}` : `approving lands it on ${c.base}`,
-        p.land ? ` — ${p.land}` : "",
+        p.land ? ` — ${p.land.replace(/\.\s*$/, "")}` : "",
         asPr ? `. The babysitter changes ${p.allowChanges ? `what is ${p.allowChanges}` : "nothing"} on it without you.` : ""),
       h("div.row",
         h("button.primary.land", {
