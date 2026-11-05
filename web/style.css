@@ -590,6 +590,7 @@ button.toggle[aria-pressed="true"] { background: var(--accent-soft); border-colo
 .work-head .faint { font-size: 14px; }
 .work-search { margin-left: auto; width: min(240px, 100%); min-height: 34px; }
 .seg-pills { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.change-said > .seg-pills { margin-bottom: 8px; }
 .work-head .seg-pills { margin-left: auto; }
 .seg-pills button { font-size: 13px; min-height: 32px; padding: 4px 10px; background: var(--surface-2); color: var(--ink-2); }
 .seg-pills button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--warn); font-weight: 600; }

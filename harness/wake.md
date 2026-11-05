@@ -396,6 +396,7 @@ otto state lock <id> --repo <repo>       # then make the worktree and branch; un
 write what you'd tell the person reviewing it → artifacts/change-<slug>.md
 otto state change submit <id> --repo <repo> --branch <branch> --title "<what it does>" \
      --summary-file artifacts/change-<slug>.md --tests "<what the tests said>"
+     [--file <the whole of it, when that is over a page — then --summary-file is its summary>]
 → then carry on with the rest of the work
 ```
 
@@ -416,6 +417,10 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
   thing.
 - **The summary is the review.** What it does and why, first; then what could go wrong, and what
   you checked. Written for someone who wasn't here, like a gate's question.
+- **Over a page, a summary too**, as for an output. What you'd tell them runs over 500 words? It is
+  `--file`, and `--summary-file` is a summary of it they can read in a minute: the decision to make
+  and what could go wrong, standing alone. The page opens on that, with the whole a click away. Each
+  version gets its own. Forgot? Submit the same commit again with both; it joins that version.
 - **Committed, all of it.** otto refuses a worktree with changes nobody committed — what the person
   would review wouldn't be what's there.
 - **It doesn't stop the run.** Submitting is not a gate: carry on with the next piece of work. Don't

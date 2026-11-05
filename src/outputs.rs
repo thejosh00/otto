@@ -232,8 +232,20 @@ fn find_stage(index: &Index, stage: &str) -> Result<String, OttoError> {
     })
 }
 
-fn words(text: &str) -> u32 {
+pub(crate) fn words(text: &str) -> u32 {
     text.split_whitespace().count().min(u32::MAX as usize) as u32
+}
+
+/// A summary is at most a page, and shorter than the `of` words it summarises.
+pub(crate) fn check_summary(summary: &str, of: u32) -> Result<(), OttoError> {
+    let n = words(summary);
+    if n > PAGE_WORDS {
+        return Err(OttoError::usage(format!("a summary is at most a page, {PAGE_WORDS} words (this one is {n})")));
+    }
+    if n >= of {
+        return Err(OttoError::usage(format!("a summary is shorter than what it summarises (this one is {n} words, the file {of})")));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -314,13 +326,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
         (None, _) => None,
         (Some(_), None) => return Err(OttoError::usage("a summary is of a file — work kept at a --link has none")),
         (Some(s), Some(of)) => {
-            let n = words(s);
-            if n > PAGE_WORDS {
-                return Err(OttoError::usage(format!("a summary is at most a page, {PAGE_WORDS} words (this one is {n})")));
-            }
-            if n >= of {
-                return Err(OttoError::usage(format!("a summary is shorter than what it summarises (this one is {n} words, the file {of})")));
-            }
+            check_summary(s, of)?;
             Some(s.to_string())
         }
     };

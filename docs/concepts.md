@@ -434,9 +434,13 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   (`otto changes answer`); the run doesn't.
 - **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
   or been sent back 3 times is listed as stuck, and you're told once.
+- **A summary** works as it does for an output. Over a page (500 words), what its author says is
+  given as `--file`, with `--summary-file` a summary of it: the page opens on that, with a toggle to
+  the whole, and `otto changes show <change> --full` prints the whole. Each version has its own, and
+  it is the summary that becomes its pull request's description.
 
 A change's files live with the run that wrote it: `changes/index.json`, and each version's patch and
-summary beside it.
+summary beside it, with `v<k>.md` the whole of what its author said when there is more.
 
 ### System agents
 
@@ -575,7 +579,7 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
     outputs/<key>/v<n>.md        each version's text, verbatim
     outputs/<key>/v<n>.summary.md its summary, for one over a page
     changes/index.json           code it handed back: branches, versions, decisions, what happened
-    changes/<n>-<key>/v<k>.patch each version's patch, and v<k>.summary.md what its author said
+    changes/<n>-<key>/v<k>.patch each version's patch, v<k>.summary.md what its author said, v<k>.md the whole of it
     artifacts/                   whatever the work produces: todo.md, plans, ledgers, check.sh
   runs/.locks/                   repo locks
   archive/<id>/                  a deleted run's directory, kept until `otto cleanup`

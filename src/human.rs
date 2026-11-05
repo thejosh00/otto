@@ -513,6 +513,9 @@ pub struct ChangesShowArgs {
     /// Which version of it. Omitted, the latest
     #[arg(long, value_name = "N")]
     pub version: Option<u32>,
+    /// The whole of what its author said, when it has a summary. Omitted, the summary
+    #[arg(long)]
+    pub full: bool,
     /// Print the patch too
     #[arg(long)]
     pub patch: bool,
@@ -790,7 +793,17 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     for r in d.change.replies.iter().filter(|r| r.state == crate::changes::ReplyState::Draft) {
         println!("\na reply drafted to {}:\n{}\n  otto changes post {} --comment {}", r.comment, r.text, l.reference, r.comment);
     }
-    println!("\n{}\n", d.summary.trim_end());
+    match &d.text {
+        Some(text) if a.full => println!("\n{}\n", text.trim_end()),
+        Some(_) => println!(
+            "\n{}\n\n─── its summary — the whole of it is {} words: `otto changes show {}{} --full` ───\n",
+            d.summary.trim_end(),
+            v.words.unwrap_or_default(),
+            l.reference,
+            if v.k < d.change.latest().k { format!(" --version {}", v.k) } else { String::new() }
+        ),
+        None => println!("\n{}\n", d.summary.trim_end()),
+    }
     if let Some(tests) = &v.tests {
         println!("tests: {tests}");
     }

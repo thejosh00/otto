@@ -1122,6 +1122,13 @@ function evidenceSection(l, v, evidence) {
         : h("p.faint", "Too big to show here: ", h("a", { href: url(e), target: "_blank", rel: "noopener" }, "open it")))));
 }
 
+// Which of a summary and the whole of it is shown: a work output's, or a change's.
+function summaryPills(showFull, wordCount, choose) {
+  const words = wordCount ? ` · ${wordCount.toLocaleString()} words` : "";
+  return h("div.seg-pills", { role: "group", "aria-label": "Show" }, [[false, "Summary"], [true, `Full${words}`]].map(([full, label]) =>
+    h("button", { type: "button", "aria-pressed": String(showFull === full), onclick: () => choose(full) }, label)));
+}
+
 function changeDetail(d, actions) {
   const l = d.line;
   const c = d.change;
@@ -1219,7 +1226,13 @@ function changeDetail(d, actions) {
       }, `v${x.k}${x.by === "lander" ? " (rebased)" : x.by === "babysitter" ? " (babysitter)" : ""}`))));
   }
   if (v.by === "babysitter") parts.push(h("p.hint", "The babysitter made this version without you: ", v.why || ""));
-  parts.push(md(d.summary));
+  if (d.text != null) {
+    // A write-up over a page comes with a summary: what's shown is that, or the whole of it.
+    const said = h("div.change-said");
+    const show = (full) => said.replaceChildren(summaryPills(full, v.words, show), md(full ? d.text : d.summary));
+    show(false);
+    parts.push(said);
+  } else parts.push(md(d.summary));
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
   if (d.evidence.length) parts.push(evidenceSection(l, v, d.evidence));
   else if (v.by === "author") parts.push(h("p.hint.no-evidence", "No evidence with this version — only its summary says it works."));
@@ -1641,9 +1654,7 @@ function workPanel(runId, initial, onChanged) {
 
   // A document over a page comes with a summary: what's shown is that, or the whole of it.
   function summaryToggle(version) {
-    const words = version.words ? ` · ${version.words.toLocaleString()} words` : "";
-    return h("div.seg-pills", { role: "group", "aria-label": "Show" }, [[false, "Summary"], [true, `Full${words}`]].map(([full, label]) =>
-      h("button", { type: "button", "aria-pressed": String(showFull === full), onclick: () => { showFull = full; shown = null; render(last); } }, label)));
+    return summaryPills(showFull, version.words, (full) => { showFull = full; shown = null; render(last); });
   }
 
   // Older and newer, for a dated list: the next thing along, not the next version.

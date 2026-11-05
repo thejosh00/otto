@@ -303,6 +303,9 @@ Options:
       --version <N>
           Which version of it. Omitted, the latest
 
+      --full
+          The whole of what its author said, when it has a summary. Omitted, the summary
+
       --patch
           Print the patch too
 
@@ -1778,7 +1781,10 @@ Options:
           What it does, in a few words, for a list: "Answering a stopped run's question points to otto resume"
 
       --summary-file <PATH>
-          What you'd tell the person reviewing it: what it does and why first, then what could go wrong
+          What you'd tell the person reviewing it: what it does and why first, then what could go wrong. With --file, a summary of that, of at most a page (500 words)
+
+      --file <PATH>
+          The whole of what you'd tell them, when it is over a page: the page opens on the summary, with this a click away. The same commit again with this adds it to that version
 
       --tests <TESTS>
           What the tests said, in a line: "cargo test: 429 passed"

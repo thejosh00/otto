@@ -180,9 +180,14 @@ pub struct SubmitArgs {
     /// What it does, in a few words, for a list: "Answering a stopped run's question points to otto resume"
     #[arg(long, required = true)]
     pub title: String,
-    /// What you'd tell the person reviewing it: what it does and why first, then what could go wrong
+    /// What you'd tell the person reviewing it: what it does and why first, then what could go
+    /// wrong. With --file, a summary of that, of at most a page (500 words)
     #[arg(long = "summary-file", value_name = "PATH", required = true)]
     pub summary_file: String,
+    /// The whole of what you'd tell them, when it is over a page: the page opens on the summary,
+    /// with this a click away. The same commit again with this adds it to that version
+    #[arg(long, value_name = "PATH")]
+    pub file: Option<String>,
     /// What the tests said, in a line: "cargo test: 429 passed"
     #[arg(long)]
     pub tests: Option<String>,
@@ -424,10 +429,14 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
     let id = crate::paths::resolve_run_id(&a.id)?;
     // A wake runs in its working directory, and its artifacts are in the run directory: either is
     // where a relative path can mean.
-    let given = std::path::Path::new(&a.summary_file);
-    let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
-    let summary = std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {}: {e}", a.summary_file)))?;
     let run_dir = crate::paths::run_dir(&id)?;
+    let read_given = |path: &str| {
+        let given = std::path::Path::new(path);
+        let found = if given.is_file() { given.to_path_buf() } else { run_dir.join(given) };
+        std::fs::read_to_string(&found).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))
+    };
+    let summary = read_given(&a.summary_file)?;
+    let file = a.file.as_deref().map(read_given).transpose()?;
     let given: Vec<std::path::PathBuf> = a
         .evidence
         .iter()
@@ -446,12 +455,21 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             key: a.key.as_deref(),
             title: &a.title,
             summary: &summary,
+            file: file.as_deref(),
             tests: a.tests.as_deref(),
             evidence,
         },
     )?;
     let r = format!("{}/{}", crate::paths::short_id(&id), out.n);
     if out.unchanged {
+        if out.file_ignored {
+            println!(
+                "change {r} v{}: its write-up kept as it was — the person may already have read it. A new one comes with a new commit",
+                out.version
+            );
+        } else if out.summary_added {
+            println!("change {r} v{}: the same commit, and its summary kept with it", out.version);
+        }
         if out.evidence_ignored {
             println!(
                 "change {r} v{} unchanged, and its evidence kept as it was — the person may already have looked at it. New \
@@ -460,7 +478,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             );
         } else if !a.evidence.is_empty() {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
-        } else {
+        } else if !out.file_ignored && !out.summary_added {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
         }
         return Ok(());
@@ -474,6 +492,13 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
         out.lines,
         if out.lines == 1 { "" } else { "s" }
     );
+    let words = crate::outputs::words(&summary);
+    if file.is_none() && words > crate::outputs::PAGE_WORDS {
+        println!(
+            "It says {words} words, over a page, and has no summary: write one a person can read in a minute, and submit the same \
+             commit again with this as --file and that as --summary-file. The page opens on the summary."
+        );
+    }
     if out.evidence > 0 {
         println!("With {} file{} of evidence, shown on the change", out.evidence, if out.evidence == 1 { "" } else { "s" });
     }

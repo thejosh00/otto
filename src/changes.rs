@@ -20,7 +20,8 @@
 //!
 //! On disk, with the run that wrote it: `changes/index.json` is everything but the text;
 //! `changes/<n>-<key>/v<k>.patch` is each version's patch and `v<k>.summary.md` what its author
-//! said about it, both verbatim; `v<k>.evidence/` is a copy of what its author showed it works
+//! said about it, both verbatim, with the whole of it in `v<k>.md` when that is over a page and the
+//! summary is what the page opens on; `v<k>.evidence/` is a copy of what its author showed it works
 //! with — screenshots and transcripts — taken when it was submitted (`Evidence`).
 
 use crate::clock::Timestamp;
@@ -210,8 +211,15 @@ pub struct ChangeVersion {
     pub patch_bytes: u64,
     pub commits: u32,
     pub stat: Stat,
-    /// What its author said about it, relative to the run directory.
+    /// What its author said about it, relative to the run directory: what a person reads first.
     pub summary: String,
+    /// The whole of what its author said, when `summary` is a summary of it: relative to the run
+    /// directory. Changes from before this have none, nor does one whose summary says it all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// How long `file` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<u32>,
     /// What the tests said, in the author's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<String>,
@@ -805,6 +813,8 @@ pub struct Submit<'a> {
     pub key: Option<&'a str>,
     pub title: &'a str,
     pub summary: &'a str,
+    /// The whole of what the author has to say, when `summary` is a summary of it.
+    pub file: Option<&'a str>,
     pub tests: Option<&'a str>,
     /// What shows it works, found and checked (`find_evidence`).
     pub evidence: Vec<Found>,
@@ -830,6 +840,10 @@ pub struct Submitted {
     pub evidence: usize,
     /// The same commit again, with evidence, when its version already had some: kept as it was.
     pub evidence_ignored: bool,
+    /// The same commit again, and a whole write-up or a better summary of it joined the version.
+    pub summary_added: bool,
+    /// The same commit again, with a different whole write-up: kept as it was.
+    pub file_ignored: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -861,6 +875,13 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
     }
     if summary.len() > SUMMARY_MAX_BYTES {
         return Err(OttoError::usage(format!("a change's summary is at most {SUMMARY_MAX_BYTES} bytes — what and why, not a history")));
+    }
+    let file = s.file.map(str::trim_end);
+    if let Some(text) = file {
+        if text.len() > crate::outputs::FILE_MAX_BYTES {
+            return Err(OttoError::usage(format!("--file is at most {} bytes — a document a person reads", crate::outputs::FILE_MAX_BYTES)));
+        }
+        crate::outputs::check_summary(summary, crate::outputs::words(text))?;
     }
     let tests = s.tests.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     if tests.as_ref().is_some_and(|t| t.chars().count() > TESTS_MAX_CHARS) {
@@ -945,6 +966,13 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 // while it has none. Evidence the person may already have looked at stays as it was.
                 let fill = !s.evidence.is_empty() && latest.evidence.is_empty();
                 let ignored = !s.evidence.is_empty() && !fill;
+                // So can the whole of what it says, or a better summary of that. Its whole write-up,
+                // once there, stays as it was too.
+                let kept = latest.file.as_ref().and_then(|f| std::fs::read_to_string(path.join(f)).ok());
+                let file_ignored = file.is_some_and(|t| kept.as_ref().is_some_and(|old| old.trim_end() != t));
+                let new_file = if kept.is_none() { file } else { None };
+                let same_summary = std::fs::read_to_string(path.join(&latest.summary)).is_ok_and(|old| old.trim_end() == summary);
+                let new_summary = file.is_some() && !file_ignored && !same_summary;
                 let c = &mut index.changes[i];
                 c.title = title.clone();
                 c.worktree = worktree.clone().or(c.worktree.take());
@@ -955,8 +983,24 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                     c.moment("author", format!("v{k}: added {} file{} of evidence", kept.len(), if kept.len() == 1 { "" } else { "s" }));
                     c.versions.last_mut().expect("has a latest").evidence = kept;
                 }
+                if new_file.is_some() || new_summary {
+                    let dir = c.dir();
+                    let k = c.latest().k;
+                    let v = c.versions.last_mut().expect("has a latest");
+                    if let Some(text) = new_file {
+                        let (rel, words) = write_whole(path, &dir, k, text)?;
+                        v.file = Some(rel);
+                        v.words = Some(words);
+                    }
+                    if new_summary {
+                        v.summary = write_said(path, &dir, k, summary)?;
+                    }
+                    c.moment("author", format!("v{k}: {}", if new_file.is_some() { "added the whole of what it says, with a summary" } else { "a better summary" }));
+                }
                 let mut out = submitted(c, true, None);
                 out.evidence_ignored = ignored;
+                out.file_ignored = file_ignored;
+                out.summary_added = new_file.is_some() || new_summary;
                 write_index(path, &index)?;
                 return Ok(out);
             }
@@ -975,8 +1019,8 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             crate::state::write_atomic(&path.join(&rel), &String::from_utf8_lossy(&snap.patch))?;
             Some(rel)
         };
-        let summary_rel = format!("{dir}/v{k}.summary.md");
-        crate::state::write_atomic(&path.join(&summary_rel), &format!("{summary}\n"))?;
+        let summary_rel = write_said(path, &dir, k, summary)?;
+        let whole = file.map(|text| write_whole(path, &dir, k, text)).transpose()?;
         let evidence = keep_evidence(path, &dir, k, &s.evidence)?;
         let version = ChangeVersion {
             k,
@@ -991,6 +1035,8 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             commits: snap.commits,
             stat: snap.stat.clone(),
             summary: summary_rel,
+            words: whole.as_ref().map(|(_, words)| *words),
+            file: whole.map(|(rel, _)| rel),
             tests: tests.clone(),
             why: None,
             evidence,
@@ -1079,7 +1125,23 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         was,
         evidence: v.evidence.len(),
         evidence_ignored: false,
+        summary_added: false,
+        file_ignored: false,
     }
+}
+
+/// Keep what its author said of version `k`, and say where, relative to the run directory.
+fn write_said(run_dir: &Path, dir: &str, k: u32, summary: &str) -> Result<String, OttoError> {
+    let rel = format!("{dir}/v{k}.summary.md");
+    crate::state::write_atomic(&run_dir.join(&rel), &format!("{summary}\n"))?;
+    Ok(rel)
+}
+
+/// Keep the whole of what its author said of version `k`; where it is, and how long.
+fn write_whole(run_dir: &Path, dir: &str, k: u32, text: &str) -> Result<(String, u32), OttoError> {
+    let rel = format!("{dir}/v{k}.md");
+    crate::state::write_atomic(&run_dir.join(&rel), &format!("{text}\n"))?;
+    Ok((rel, crate::outputs::words(text)))
 }
 
 /// Its author no longer wants it — overtaken, or the wrong approach. The lander cleans up after it.
@@ -1688,6 +1750,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             Some(rel)
         };
         let summary = c.latest().summary.clone();
+        let (file, words) = (c.latest().file.clone(), c.latest().words);
         let tests = c.latest().tests.clone();
         // The same work on a newer base: what showed it working is still the author's word for it.
         let evidence = c.latest().evidence.clone();
@@ -1704,6 +1767,8 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             commits: snap.commits,
             stat: snap.stat,
             summary,
+            file,
+            words,
             tests,
             why: None,
             evidence,
@@ -1954,8 +2019,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             crate::state::write_atomic(&path.join(&rel), &String::from_utf8_lossy(&snap.patch))?;
             Some(rel)
         };
-        let summary_rel = format!("{dir}/v{k}.summary.md");
-        crate::state::write_atomic(&path.join(&summary_rel), &format!("{summary}\n"))?;
+        let summary_rel = write_said(path, &dir, k, summary)?;
         c.versions.push(ChangeVersion {
             k,
             sha: sha.clone(),
@@ -1969,6 +2033,8 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             commits: snap.commits,
             stat: snap.stat,
             summary: summary_rel,
+            file: None,
+            words: None,
             tests,
             why: Some(why.clone()),
             evidence: Vec::new(),
@@ -2499,6 +2565,9 @@ pub struct Detail {
     /// `None` when it was too big to keep.
     pub patch: Option<String>,
     pub summary: String,
+    /// The whole of what its author said, when `summary` is a summary of it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
     pub lander: Option<LanderRef>,
     /// The process its repository follows now: what approving it does.
     pub process: crate::config::Process,
@@ -2545,6 +2614,7 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
     };
     let patch = v.patch.as_ref().and_then(|p| std::fs::read_to_string(dir.join(p)).ok());
     let summary = std::fs::read_to_string(dir.join(&v.summary)).unwrap_or_default();
+    let text = v.file.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
     let evidence = v
         .evidence
         .iter()
@@ -2571,7 +2641,7 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
             line.overlaps = l.overlaps;
         }
     }
-    Ok(Detail { line, change, version: v, patch, summary, lander: lander_ref(), process, commands, evidence })
+    Ok(Detail { line, change, version: v, patch, summary, text, lander: lander_ref(), process, commands, evidence })
 }
 
 #[cfg(test)]
@@ -2743,6 +2813,78 @@ pub(crate) mod tests {
         let c = change("c-ev2", 1);
         assert!(c.latest().evidence.is_empty(), "v2 showed nothing");
         assert_eq!(c.version(1).unwrap().evidence.len(), 1);
+    }
+
+    #[test]
+    fn a_write_up_over_a_page_carries_its_summary() {
+        let _h = TempHome::new();
+        test_init("c-sum", "a goal").unwrap();
+        let repo = repo();
+        let long = "word ".repeat(600);
+        let with = |summary| Submit { summary, file: Some(&long), ..submit_fix(&repo, "t") };
+
+        // Submitted with only what it says, then the same commit with the whole: not a new version.
+        submit("c-sum", &submit_fix(&repo, "t")).unwrap();
+        let added = submit("c-sum", &with("Shouts it, and why.")).unwrap();
+        assert!(added.unchanged && added.summary_added && added.version == 1);
+        let d = read(&r("c-sum", 1), None).unwrap();
+        assert_eq!(d.summary, "Shouts it, and why.\n");
+        assert_eq!(d.text.as_deref().map(|t| t.split_whitespace().count()), Some(600));
+        assert_eq!(d.version.words, Some(600));
+
+        // A better summary of the same text replaces it; the same one again is nothing new.
+        assert!(submit("c-sum", &with("Shouts it, and why not.")).unwrap().summary_added);
+        assert_eq!(read(&r("c-sum", 1), None).unwrap().summary, "Shouts it, and why not.\n");
+        assert!(!submit("c-sum", &with("Shouts it, and why not.")).unwrap().summary_added);
+
+        // The write-up the person may have read stays; so does everything, when none is given.
+        let other = "other ".repeat(600);
+        let swap = submit("c-sum", &Submit { summary: "Something else.", file: Some(&other), ..submit_fix(&repo, "t") }).unwrap();
+        assert!(swap.unchanged && swap.file_ignored && !swap.summary_added);
+        let d = read(&r("c-sum", 1), None).unwrap();
+        assert!(d.text.unwrap().starts_with("word") && d.summary.starts_with("Shouts it, and why not"));
+        submit("c-sum", &submit_fix(&repo, "t")).unwrap();
+        assert_eq!(read(&r("c-sum", 1), None).unwrap().summary, "Shouts it, and why not.\n");
+
+        // A new version says its own: v1's would be stale, and v1 keeps what it had.
+        std::fs::write(repo.wt.join("b.txt"), "ALPHA\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "and alpha"]);
+        let v2 = submit("c-sum", &submit_fix(&repo, "t")).unwrap();
+        assert_eq!(v2.version, 2);
+        assert!(read(&r("c-sum", 1), None).unwrap().text.is_none());
+        assert!(read(&r("c-sum", 1), Some(1)).unwrap().text.is_some());
+
+        // The same rules as an output's.
+        let short = Submit { summary: "Longer than what it is a summary of.", file: Some("Short."), ..submit_fix(&repo, "t") };
+        assert!(submit("c-sum", &short).unwrap_err().message.contains("shorter"));
+        let a_page = "word ".repeat(crate::outputs::PAGE_WORDS as usize + 1);
+        let longer = "word ".repeat(2000);
+        let over = Submit { summary: &a_page, file: Some(&longer), ..submit_fix(&repo, "t") };
+        assert!(submit("c-sum", &over).unwrap_err().message.contains("at most a page"));
+        let huge = "word ".repeat(crate::outputs::FILE_MAX_BYTES / 5 + 1);
+        assert!(submit("c-sum", &Submit { summary: "s", file: Some(&huge), ..submit_fix(&repo, "t") }).unwrap_err().message.contains("--file"));
+    }
+
+    #[test]
+    fn a_rebase_by_the_lander_keeps_the_write_up_and_a_later_summary_is_its_own() {
+        let _h = TempHome::new();
+        test_init("c-sumr", "a goal").unwrap();
+        test_init("c-sumrl", "land changes").unwrap();
+        set_lander("c-sumrl");
+        let repo = repo();
+        let long = "word ".repeat(600);
+        submit("c-sumr", &Submit { summary: "First.", file: Some(&long), ..submit_fix(&repo, "t") }).unwrap();
+        approve(&[seen(r("c-sumr", 1))], None, None).unwrap();
+        claim("c-sumrl", &r("c-sumr", 1)).unwrap();
+        let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        let c = rebased("c-sumrl", &r("c-sumr", 1), &head).unwrap();
+        assert_eq!(c.latest().k, 2);
+        assert_eq!((&c.latest().file, c.latest().words), (&c.version(1).unwrap().file, Some(600)));
+
+        // The rebase shares v1's files; a better summary of v2 goes in a file of its own.
+        submit("c-sumr", &Submit { summary: "Second.", file: Some(&long), ..submit_fix(&repo, "t") }).unwrap();
+        assert_eq!(read(&r("c-sumr", 1), Some(2)).unwrap().summary, "Second.\n");
+        assert_eq!(read(&r("c-sumr", 1), Some(1)).unwrap().summary, "First.\n");
     }
 
     #[test]

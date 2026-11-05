@@ -261,7 +261,9 @@ otto state record-fact <id> change=<n>       # the number submit printed
 **`artifacts/change.md` is what the person reviews**, so it is written for someone who wasn't
 here: what it does and why, first (the ticket, the approach the plan took); then each acceptance
 criterion and its evidence from `artifacts/test-report.md`; then what is **not** covered and what
-could go wrong. Name the plan gate it implements, and anything you deviated from.
+could go wrong. Name the plan gate it implements, and anything you deviated from. Over a page (500
+words), it goes as `--file artifacts/change.md`, and `--summary-file` is a summary of it in
+`artifacts/change-summary.md`: the page opens on that, so it stands alone and reads in a minute.
 
 **Nothing leaves this machine here, or anywhere in this run.** Pushing, opening a pull request,
 merging: the lander does them, once the person approves, and only as the repository's process
