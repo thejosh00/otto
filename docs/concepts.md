@@ -565,6 +565,7 @@ want, while a wake's is evidence, to be reproduced before anything is fixed.
 
 ```bash
 otto feedback next                      # what to build now
+otto feedback due                       # whether a run building from this should wake
 otto feedback building 12 --change 7/7  # its change is out
 otto feedback landed 12                 # its change landed
 otto feedback verified 12               # and it's shown to have fixed it

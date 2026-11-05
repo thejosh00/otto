@@ -13,13 +13,18 @@
 #   otto service restart # serve the newly installed binary, on the port it already uses
 #
 # Pass --service to also install the web UI as a launchd service.
+#
+# otto compiles its harness in, so an install changes what every agent's next wake is told. The
+# binary it replaces is kept beside the new one, and `./install.sh --rollback` puts it back.
 set -euo pipefail
 
 with_service=0
+rollback=0
 for arg in "$@"; do
 	case "$arg" in
 	--service) with_service=1 ;;
-	*) echo "usage: $0 [--service]" >&2; exit 2 ;;
+	--rollback) rollback=1 ;;
+	*) echo "usage: $0 [--service] [--rollback]" >&2; exit 2 ;;
 	esac
 done
 
@@ -28,12 +33,31 @@ bin_dir="${OTTO_BIN_DIR:-$HOME/.local/bin}"
 
 cd "$repo_dir"
 
-echo "==> building otto (cargo build --release)"
-cargo build --release
+if [ "$rollback" = 1 ]; then
+	if [ ! -x "$bin_dir/otto.previous" ]; then
+		echo "nothing to roll back to: no $bin_dir/otto.previous" >&2
+		exit 1
+	fi
+	install -m 755 "$bin_dir/otto.previous" "$bin_dir/otto"
+	rm "$bin_dir/otto.previous"
+	echo "==> rolled back $bin_dir/otto to the one before the last install"
+else
+	echo "==> building otto (cargo build --release)"
+	cargo build --release
 
-mkdir -p "$bin_dir"
-install -m 755 target/release/otto "$bin_dir/otto"
-echo "==> installed $bin_dir/otto"
+	# A build that can't read this machine's runs must not replace one that can: the reviver and
+	# every agent run the installed binary, and none of them could say what went wrong.
+	echo "==> checking the new build reads your runs"
+	target/release/otto ls >/dev/null
+
+	mkdir -p "$bin_dir"
+	# cp, not mv: its modified time is when it stopped being current, which scripts/check.sh reads.
+	if [ -x "$bin_dir/otto" ]; then
+		cp "$bin_dir/otto" "$bin_dir/otto.previous"
+	fi
+	install -m 755 target/release/otto "$bin_dir/otto"
+	echo "==> installed $bin_dir/otto"
+fi
 
 if ! command -v otto >/dev/null 2>&1; then
 	echo "note: $bin_dir is not on your PATH — add it to your shell profile to run otto directly." >&2

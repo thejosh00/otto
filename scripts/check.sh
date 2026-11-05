@@ -1,7 +1,14 @@
 #!/bin/sh
-# The otto-feedback run's check (README, "otto improving itself"): nothing new while every report
-# is handled; a report waiting, or otto failing, is a wake.
-if [ "$("$HOME/.local/bin/otto" feedback --json)" = "[]" ]; then
-  echo "no feedback waiting"; exit 0
+# The otto-build run's check (README, "otto improving itself"): a wake only when there's something
+# for it to do, or otto failing. No model, no tokens.
+otto="$HOME/.local/bin/otto"
+
+# An agent stuck within a day of an install may be that install's doing, which is the run's to catch.
+if [ -n "$(find "$HOME/.local/bin/otto.previous" -mmin -1440 2>/dev/null)" ] &&
+	[ "$("$otto" state list --status blocked --json)" != "[]" ]; then
+	echo "an agent is blocked since the last install"; exit 1
 fi
-echo "feedback waiting"; exit 1
+
+due=$("$otto" feedback due) || { echo "otto failing"; exit 1; }
+echo "$due"
+[ "$due" = "nothing due" ]

@@ -131,6 +131,8 @@ pub enum FeedbackCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Whether a run building from this should wake, and why: what its check script asks
+    Due,
     /// Its change is out: `otto feedback building 12 --change 7/7`
     Building {
         /// The report's number
@@ -199,6 +201,7 @@ fn feedback_command(command: FeedbackCommand) -> Result<(), OttoError> {
                 println!("nothing to build now");
             }
         }
+        FeedbackCommand::Due => println!("{}", f::due().unwrap_or_else(|| "nothing due".to_string())),
         FeedbackCommand::Building { id, change } => moved(f::building(id, &change)?),
         FeedbackCommand::Landed { id } => moved(f::landed(id)?),
         FeedbackCommand::Verified { id } => moved(f::verified(id)?),

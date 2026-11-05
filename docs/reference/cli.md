@@ -643,6 +643,7 @@ Usage: otto feedback [OPTIONS] [COMMAND]
 Commands:
   add       File something you want built in otto. A wake reports with `otto state feedback` instead
   next      What to build now: nothing while something is being built, else whatever was reopened, else the oldest
+  due       Whether a run building from this should wake, and why: what its check script asks
   building  Its change is out: `otto feedback building 12 --change 7/7`
   landed    Its change landed
   verified  It is shown to have fixed what it was about
@@ -692,6 +693,18 @@ Options:
       --json
           Print it as JSON, or `null` when there's nothing to build
 
+  -h, --help
+          Print help
+```
+
+### `otto feedback due`
+
+```text
+Whether a run building from this should wake, and why: what its check script asks
+
+Usage: otto feedback due
+
+Options:
   -h, --help
           Print help
 ```

@@ -247,6 +247,31 @@ pub fn next() -> Option<Report> {
         .min_by_key(|r| (r.reopened_at.is_none(), r.parent.unwrap_or(r.id), r.id))
 }
 
+/// Why a run building from this should wake, for its check script: something to start, something
+/// landed to verify, or the change being built back with its author or over. A note alone won't do
+/// it: a check script stands in front of a run's wake, so one saying "nothing new" would leave a
+/// landed change or a person's "change this" unread until the safety net.
+pub fn due() -> Option<String> {
+    let reports = all();
+    if let Some(report) = reports.iter().find(|r| r.status == Status::Landed) {
+        return Some(format!("report {} landed and wants verifying", report.id));
+    }
+    if let Some(report) = reports.iter().find(|r| r.status == Status::Building && change_wants_its_author(r)) {
+        return Some(format!("report {}'s change wants its author", report.id));
+    }
+    next().map(|report| format!("report {} is next", report.id))
+}
+
+/// Over, sent back, or gone. An unreadable one is a wake too: only a wake can sort that out.
+fn change_wants_its_author(report: &Report) -> bool {
+    let found = report.change.as_deref().and_then(|text| {
+        let r = crate::changes::ChangeRef::parse(text).ok()?;
+        let dir = crate::paths::run_dir(&r.run).ok()?;
+        crate::changes::index_or_empty(&dir).changes.into_iter().find(|c| c.n == r.n)
+    });
+    found.is_none_or(|c| c.state.is_over() || c.whose_move() == crate::changes::Move::Author)
+}
+
 /// Its change is out. Refused while another is, which is how `next`'s one-at-a-time holds for a run
 /// that didn't ask it first.
 pub fn building(id: u32, change: &str) -> Result<Report, OttoError> {
@@ -705,6 +730,42 @@ mod tests {
         close(1, "no longer wanted", None).unwrap();
         assert_eq!((status_of(2), status_of(3)), (Status::Closed, Status::Closed));
         assert!(next().is_none());
+    }
+
+    /// Everything that wants the run has to get past its check script.
+    #[test]
+    fn due_says_what_wants_a_wake_and_stays_quiet_while_a_change_waits_on_you() {
+        use crate::changes::tests::{r, repo, submit_fix};
+        let _h = TempHome::new();
+        test_init("f-due", "a goal").unwrap();
+        assert_eq!(due(), None);
+        add("a thing").unwrap();
+        assert!(due().unwrap().contains("report 1 is next"));
+
+        let repo = repo();
+        crate::changes::submit("f-due", &submit_fix(&repo, "Shout")).unwrap();
+        building(1, "f-due/1").unwrap();
+        assert_eq!(due(), None, "it's with the person");
+
+        crate::changes::revise(&r("f-due", 1), "shout louder").unwrap();
+        assert!(due().unwrap().contains("wants its author"), "sent back");
+
+        crate::changes::drop_change(&r("f-due", 1), Some("not this way")).unwrap();
+        assert!(due().unwrap().contains("wants its author"), "dropped: a wake closes or rebuilds it");
+
+        landed(1).unwrap();
+        assert!(due().unwrap().contains("wants verifying"));
+        verified(1).unwrap();
+        assert_eq!(due(), None);
+    }
+
+    #[test]
+    fn due_wakes_for_a_change_it_can_t_find() {
+        let _h = TempHome::new();
+        let change = a_change();
+        add("a thing").unwrap();
+        building(1, &change).unwrap();
+        assert!(due().unwrap().contains("wants its author"));
     }
 
     #[test]
