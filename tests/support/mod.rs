@@ -36,9 +36,54 @@ pub fn workspace_dir() -> PathBuf {
     std::env::var_os("OTTO_WORKSPACE").map(PathBuf::from).unwrap_or_else(home_dir)
 }
 
-/// Run `otto <args...>`, inheriting this process's environment (so `OTTO_HOME`, `PATH`, etc.
-/// pass through exactly as they would from a person's shell).
+/// Give this test process an `OTTO_HOME` of its own, whatever the environment says. A live test
+/// left in the real one files its wakes' feedback in your queue — the first three reports ever
+/// filed were `live_chat`'s — keeps its runs among yours, and its `otto poke` acts on every agent
+/// you have. So every way into otto here comes through this first, and a new test can't forget.
+///
+/// In the temp directory, because nothing here can clean up after a test that panics, and what a
+/// failed run left is worth reading. A test that wants a home to itself (`live_changes`) just sets
+/// `OTTO_HOME` after `require_launcher`; `real_home` is for the one that needs yours.
+fn use_a_home_of_its_own() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let root = std::env::temp_dir().join(format!("otto-live-{stamp}-{}", std::process::id()));
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).expect("create the test's otto home");
+        let root = root.canonicalize().expect("the test's otto home exists");
+        std::env::set_var("OTTO_HOME", root.join("home"));
+        std::fs::create_dir_all(root.join("home")).expect("create the test's otto home");
+        // `otto run` asks where wakes run until the home's config says.
+        let config = serde_json::json!({ "workdir": root.join("work") }).to_string();
+        std::fs::write(root.join("home").join("config.json"), config).expect("write the test's config");
+    });
+}
+
+/// Back to the real `~/.otto` until this is dropped, for a test of what's installed: the launchd
+/// agent only ever looks there. Hold the test's own lock with it — the environment is the
+/// process's, and anything running beside it would be back in your home too.
+pub struct RealHome(Option<std::ffi::OsString>);
+
+pub fn real_home() -> RealHome {
+    use_a_home_of_its_own();
+    let own = std::env::var_os("OTTO_HOME");
+    std::env::remove_var("OTTO_HOME");
+    RealHome(own)
+}
+
+impl Drop for RealHome {
+    fn drop(&mut self) {
+        if let Some(own) = self.0.take() {
+            std::env::set_var("OTTO_HOME", own);
+        }
+    }
+}
+
+/// Run `otto <args...>` in this test's own home, otherwise inheriting this process's environment
+/// (so `PATH` and the rest pass through exactly as they would from a person's shell).
 pub fn otto(args: &[&str]) -> Output {
+    use_a_home_of_its_own();
     Command::new(otto_bin())
         .args(args)
         .output()
@@ -67,9 +112,10 @@ fn use_this_build_first_on_path() {
     });
 }
 
-/// Put this build first on PATH, and check `claude` is there — first, so a missing prerequisite
+/// A home of its own, this build first on PATH, and check `claude` is there — first, so a missing prerequisite
 /// reads as a clear message rather than a wall of unrelated timeouts.
 pub fn require_launcher(checks: &mut Checks) {
+    use_a_home_of_its_own();
     use_this_build_first_on_path();
     let claude_ok = Command::new("claude").arg("--version").output().map(|o| o.status.success()).unwrap_or(false);
     checks.check(claude_ok, "claude is reachable", "claude is not on PATH");

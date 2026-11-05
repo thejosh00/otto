@@ -33,9 +33,9 @@ fn tick_seconds() -> u32 {
     std::env::var("OTTO_LIVE_REVIVE_TICK_SECONDS").ok().and_then(|s| s.parse().ok()).unwrap_or(120)
 }
 
-/// Held for the whole of each test here. `otto poke` acts on every run there is, so a poke from
+/// Held for the whole of each test here. `otto poke` acts on every run in the home, so a poke from
 /// one test would start, recover or kill the other's run, and `cargo test` runs the two side by
-/// side unless told otherwise. For the same reason `test/live.sh` runs this file on its own.
+/// side unless told otherwise.
 static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The action field of the `otto poke --verbose` decision line for one run — that line reads
@@ -251,6 +251,8 @@ fn live_revive_launchd() {
 
     checks.step("0 - preconditions");
     require_launcher(&mut checks);
+    // The agent looks in the real `~/.otto`, so this run has to be among yours.
+    let _real = real_home();
     if !launchd_ready() {
         checks.skip(format!("agent {AGENT} is not loaded — run `otto agent start` first"));
         return;

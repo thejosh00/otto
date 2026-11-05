@@ -8,8 +8,9 @@
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #
-# live_revive pokes every run there is, so it runs after the rest, on its own. Its launchd half
-# (live_revive_launchd) needs the installed agent and is run by hand.
+# Each test binary gets an OTTO_HOME of its own (tests/support), so none of this touches your runs
+# or your feedback. live_revive's launchd half (live_revive_launchd) is the exception: it needs the
+# installed agent, so it runs among your runs, and only by hand.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -38,10 +39,12 @@ run() { # <test file> [test filter...]
 
 echo "running: $tests"
 for t in $tests; do
-    [ "$t" = live_revive ] || run "$t" &
+    case $t in
+    live_revive) run "$t" --exact live_revive & ;;
+    *) run "$t" & ;;
+    esac
 done
 wait
-case " $tests " in *" live_revive "*) run live_revive --exact live_revive ;; esac
 
 failed=0
 for t in $tests; do
