@@ -25,7 +25,7 @@ once; the [guides](README.md#guides) assume it. For *why* each piece is shaped t
 - [Outward actions and repo locks](#outward-actions-and-repo-locks)
 - [The reviver and notifications](#the-reviver-and-notifications)
 - [What a wake costs](#what-a-wake-costs)
-- [Feedback from wakes](#feedback-from-wakes)
+- [Feedback](#feedback)
 - [Where everything lives](#where-everything-lives)
 
 ## Runs and wakes
@@ -546,7 +546,7 @@ and prompt caching does not carry across wakes. So fewer, longer wakes are cheap
 short ones, and a check script that answers "nothing new" for free is the biggest saving
 available for a polling run.
 
-## Feedback from wakes
+## Feedback
 
 Wakes are otto's real users, and they hit things no test thought of: the harness disagreeing with
 the instructions a run wraps, a refusal that didn't say what to do instead. When otto itself gets in
@@ -558,6 +558,24 @@ otto feedback                 # what wakes have said about otto, newest first
 otto feedback --done 3 4      # read, and fixed or set aside
 otto feedback --all --json    # every report, for reading in bulk
 ```
+
+You file here too, with `otto feedback add "…"` or Feedback in the web UI, so one list holds what
+otto should build next. Who filed an item is stamped on it, and it matters: yours says what you
+want, while a wake's is evidence, to be reproduced before anything is fixed.
+
+```bash
+otto feedback next                      # what to build now
+otto feedback building 12 --change 7/7  # its change is out
+otto feedback landed 12                 # its change landed
+otto feedback verified 12               # and it's shown to have fixed it
+otto feedback reopen 12 --why "…"       # it didn't hold: back to the front
+otto feedback close 12 --why "…"        # it won't be built (--duplicate-of 9)
+otto feedback split 12 --part "…" --part "…"   # too big for one change
+```
+
+`next` is the oldest item, after anything reopened, and nothing at all while an item is being built,
+so a run can't get ahead of your review. A split item's parts take its place in the queue, in order,
+and it's over when they are.
 
 Each report is stamped by otto with the run, the wake, what the run wraps and which harness it was
 given (one from before the current harness says so). They're about otto, not the run's work, so they

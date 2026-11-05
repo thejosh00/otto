@@ -104,6 +104,8 @@ fn ensure_default_workdir(init: &InitArgs) -> Result<(), OttoError> {
 
 #[derive(clap::Args, Debug)]
 pub struct FeedbackArgs {
+    #[command(subcommand)]
+    pub command: Option<FeedbackCommand>,
     /// Include the reports already handled
     #[arg(long)]
     pub all: bool,
@@ -115,8 +117,142 @@ pub struct FeedbackArgs {
     pub json: bool,
 }
 
-/// What wakes have said about otto itself, newest first (`crate::feedback`).
+#[derive(clap::Subcommand, Debug)]
+pub enum FeedbackCommand {
+    /// File something you want built in otto. A wake reports with `otto state feedback` instead
+    Add {
+        /// What should change, and how you'd know it had
+        text: String,
+    },
+    /// What to build now: nothing while something is being built, else whatever was reopened, else
+    /// the oldest
+    Next {
+        /// Print it as JSON, or `null` when there's nothing to build
+        #[arg(long)]
+        json: bool,
+    },
+    /// Its change is out: `otto feedback building 12 --change 7/7`
+    Building {
+        /// The report's number
+        id: u32,
+        /// The change: <run>/<number>
+        #[arg(long)]
+        change: String,
+    },
+    /// Its change landed
+    Landed {
+        /// The report's number
+        id: u32,
+    },
+    /// It is shown to have fixed what it was about
+    Verified {
+        /// The report's number
+        id: u32,
+    },
+    /// It didn't hold, or shouldn't have closed: back to the front of the queue
+    Reopen {
+        /// The report's number
+        id: u32,
+        /// Why it's back
+        #[arg(long)]
+        why: String,
+    },
+    /// It won't be built, and why
+    Close {
+        /// The report's number
+        id: u32,
+        /// Why it won't be built
+        #[arg(long)]
+        why: String,
+        /// The report this repeats
+        #[arg(long, value_name = "N")]
+        duplicate_of: Option<u32>,
+    },
+    /// Too big for one change: build these instead, each landing on its own, in this order
+    Split {
+        /// The report's number
+        id: u32,
+        /// What one part builds (repeatable)
+        #[arg(long = "part", value_name = "TEXT", required = true)]
+        parts: Vec<String>,
+    },
+}
+
+/// What wakes have said about otto itself, and what you've asked of it (`crate::feedback`).
+fn feedback_command(command: FeedbackCommand) -> Result<(), OttoError> {
+    use crate::feedback as f;
+    let moved = |report: f::Report| println!("report {} is {}", report.id, report.status.as_str());
+    match command {
+        FeedbackCommand::Add { text } => {
+            if std::env::var_os("OTTO_RUN_ID").is_some() {
+                return Err(OttoError::usage("this is how a person files; a wake says what got in its way with `otto state feedback`"));
+            }
+            println!("filed as report {}", f::add(&text)?.id);
+        }
+        FeedbackCommand::Next { json } => {
+            let next = f::next();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&next)?);
+            } else if let Some(report) = next {
+                print_report(&report);
+            } else {
+                println!("nothing to build now");
+            }
+        }
+        FeedbackCommand::Building { id, change } => moved(f::building(id, &change)?),
+        FeedbackCommand::Landed { id } => moved(f::landed(id)?),
+        FeedbackCommand::Verified { id } => moved(f::verified(id)?),
+        FeedbackCommand::Reopen { id, why } => moved(f::reopen(id, &why)?),
+        FeedbackCommand::Close { id, why, duplicate_of } => moved(f::close(id, &why, duplicate_of)?),
+        FeedbackCommand::Split { id, parts } => {
+            let ids: Vec<String> = f::split(id, &parts)?.iter().map(|p| p.id.to_string()).collect();
+            println!("report {id} is split into {}", ids.join(", "));
+        }
+    }
+    Ok(())
+}
+
+fn print_report(report: &crate::feedback::Report) {
+    let harness = crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes());
+    let who = match report.source {
+        crate::feedback::Source::Person => "you".to_string(),
+        crate::feedback::Source::Wake => {
+            let wake = report.wake.map(|n| format!(", wake {n}")).unwrap_or_default();
+            format!("{}{wake}", crate::paths::label_of(&report.run))
+        }
+    };
+    let mut about = vec![report.status.as_str().to_string()];
+    if !report.wraps.is_empty() {
+        about.push(report.wraps.clone());
+    }
+    if let Some(parent) = report.parent {
+        about.push(format!("part of {parent}"));
+    }
+    if let Some(change) = &report.change {
+        about.push(format!("change {change}"));
+    }
+    if report.source == crate::feedback::Source::Wake && report.harness != harness {
+        about.push("an older harness".to_string());
+    }
+    if let Some(at) = report.handled_at {
+        about.push(format!("handled {}", crate::clock::local_clock(at)));
+    }
+    if let Some(of) = report.duplicate_of {
+        about.push(format!("repeats {of}"));
+    }
+    println!("{:>3}  {}  {who} · {}", report.id, crate::clock::local_clock(report.at), about.join(" · "));
+    for line in report.text.lines() {
+        println!("     {line}");
+    }
+    if let Some(why) = &report.why {
+        println!("     why: {why}");
+    }
+}
+
 pub fn feedback(args: FeedbackArgs) -> Result<(), OttoError> {
+    if let Some(command) = args.command {
+        return feedback_command(command);
+    }
     if !args.done.is_empty() {
         let marked = crate::feedback::mark_handled(&args.done)?;
         let list = |ids: &[u32]| ids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
@@ -135,34 +271,16 @@ pub fn feedback(args: FeedbackArgs) -> Result<(), OttoError> {
     }
     if reports.is_empty() {
         println!(
-            "{} — wakes send it with `otto state feedback` when otto gets in their way",
+            "{} — `otto feedback add` files something, and wakes send it with `otto state feedback` when otto gets in their way",
             if args.all { "no feedback yet" } else { "no feedback waiting" }
         );
         return Ok(());
     }
-    let harness = crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes());
     for (i, report) in reports.iter().enumerate() {
         if i > 0 {
             println!();
         }
-        let wake = report.wake.map(|n| format!(", wake {n}")).unwrap_or_default();
-        let mut about = vec![report.wraps.clone()];
-        if report.harness != harness {
-            about.push("an older harness".to_string());
-        }
-        if let Some(at) = report.handled_at {
-            about.push(format!("handled {}", crate::clock::local_clock(at)));
-        }
-        println!(
-            "{:>3}  {}  {}{wake} · {}",
-            report.id,
-            crate::clock::local_clock(report.at),
-            crate::paths::label_of(&report.run),
-            about.join(" · ")
-        );
-        for line in report.text.lines() {
-            println!("     {line}");
-        }
+        print_report(report);
     }
     if !args.all {
         println!("\n`otto feedback --done <n>…` once read");

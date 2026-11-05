@@ -2780,6 +2780,76 @@ function processesView() {
 }
 
 // ---------------------------------------------------------------------------
+// #/feedback — what otto should build next, from you and from its wakes
+// ---------------------------------------------------------------------------
+
+function feedbackView() {
+  const text = h("textarea", { rows: 3, placeholder: "What should change in otto, and how you'd know it had" });
+  const open = h("div");
+  const over = h("div");
+  const isOver = (r) => r.status === "verified" || r.status === "closed";
+
+  // Why a report is closing or coming back: said once, in place, before it's sent.
+  function askWhy(buttons, label, send) {
+    const why = h("input", { type: "text", placeholder: "Why?", style: "flex:1" });
+    const go = async () => {
+      if (!why.value.trim()) { why.focus(); return; }
+      try { await api(send, { why: why.value }); load(); } catch (err) { toast(err.message, true); }
+    };
+    why.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    buttons.replaceChildren(why, h("button", { onclick: go }, label));
+    why.focus();
+  }
+
+  function card(r, next) {
+    const who = r.source === "person" ? "you" : `${r.run}${r.wake ? `, wake ${r.wake}` : ""}`;
+    const facts = [
+      r.parent && `part of ${r.parent}`,
+      r.change && `change ${r.change}`,
+      r.duplicateOf && `repeats ${r.duplicateOf}`,
+    ].filter(Boolean);
+    const box = h("div.card",
+      h("div.row", { style: "justify-content:space-between;gap:8px" },
+        h("div", h("strong", `#${r.id}`), " ", h("span.pill", r.status), next ? h("span.muted", " · next up") : null),
+        h("span.muted", [who, ...facts].join(" · "))),
+      h("p", { style: "white-space:pre-wrap;margin:8px 0 0" }, r.text),
+      r.why ? h("p.muted", { style: "margin:6px 0 0" }, `Why: ${r.why}`) : null);
+    const finished = isOver(r);
+    const buttons = h("div", { style: "margin-top:8px;display:flex;gap:8px" });
+    if (finished || r.status === "landed") buttons.append(h("button", { onclick: () => askWhy(buttons, "Reopen", `/feedback/${r.id}/reopen`) }, "Reopen"));
+    if (!finished) buttons.append(h("button", { onclick: () => askWhy(buttons, "Close it", `/feedback/${r.id}/close`) }, "Close"));
+    box.append(buttons);
+    return box;
+  }
+
+  async function load() {
+    let data;
+    try { data = await api("/feedback"); } catch (err) { open.replaceChildren(h("div.banner.bad", err.message)); return; }
+    const waiting = data.reports.filter((r) => !isOver(r));
+    const finished = data.reports.filter(isOver);
+    open.replaceChildren(...(waiting.length
+      ? waiting.map((r) => card(r, r.id === data.next))
+      : [h("p.muted", "Nothing waiting.")]));
+    over.replaceChildren(...(finished.length
+      ? [h("details", h("summary", `Finished (${finished.length})`), h("div", { style: "margin-top:10px" }, finished.map((r) => card(r, false))))]
+      : []));
+  }
+
+  view.replaceChildren(
+    h("h1", "Feedback"),
+    h("p.muted", "What otto should build next: what you ask for here, and where otto got in its own agents' way. Whatever gets built still comes to you as a change to approve."),
+    h("div.card", { style: "margin:14px 0" }, text,
+      h("div", { style: "margin-top:8px" }, h("button.primary", {
+        onclick: async () => {
+          if (!text.value.trim()) { text.focus(); return; }
+          try { await api("/feedback", { text: text.value }); text.value = ""; toast("Filed"); load(); } catch (err) { toast(err.message, true); }
+        },
+      }, "File it"))),
+    open, h("div", { style: "margin-top:14px" }, over));
+  load();
+}
+
+// ---------------------------------------------------------------------------
 // #/settings — otto itself, usage, processes
 // ---------------------------------------------------------------------------
 
@@ -2807,12 +2877,13 @@ function route() {
   // The addresses settings had before it was one page still lead to its tabs.
   const older = { "#/system": "system", "#/agent": "system", "#/usage": "usage", "#/processes": "processes" };
   const settings = hash.match(/^#\/settings(?:\/([a-z]+))?$/) || (older[hash] && [hash, older[hash]]);
-  const section = run ? "agents" : inbox ? "inbox" : changes ? "changes" : settings ? "settings" : hash === "#/new" ? "new" : hash === "#/" ? "agents" : "";
+  const section = run ? "agents" : inbox ? "inbox" : changes ? "changes" : settings ? "settings" : hash === "#/new" ? "new" : hash === "#/feedback" ? "feedback" : hash === "#/" ? "agents" : "";
   for (const a of document.querySelectorAll("[data-nav]")) a.classList.toggle("active", a.dataset.nav === section);
   if (run) runView(decodeURIComponent(run[1]), run[2] ? { key: decodeURIComponent(run[2]), v: run[3] ? Number(run[3]) : null } : null);
   else if (inbox) inboxView(inbox[1] ? decodeURIComponent(inbox[1]) : null);
   else if (changes) changesView(changes[1] ? decodeURIComponent(changes[1]) : null);
   else if (hash === "#/new") newRunView();
+  else if (hash === "#/feedback") feedbackView();
   else if (settings) settingsView(settings[1] || "system");
   else agentsView();
   window.scrollTo(0, 0);

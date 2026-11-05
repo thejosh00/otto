@@ -638,7 +638,18 @@ Options:
 ```text
 What wakes have said about otto itself: where it got in their way
 
-Usage: otto feedback [OPTIONS]
+Usage: otto feedback [OPTIONS] [COMMAND]
+
+Commands:
+  add       File something you want built in otto. A wake reports with `otto state feedback` instead
+  next      What to build now: nothing while something is being built, else whatever was reopened, else the oldest
+  building  Its change is out: `otto feedback building 12 --change 7/7`
+  landed    Its change landed
+  verified  It is shown to have fixed what it was about
+  reopen    It didn't hold, or shouldn't have closed: back to the front of the queue
+  close     It won't be built, and why
+  split     Too big for one change: build these instead, each landing on its own, in this order
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
       --all
@@ -649,6 +660,148 @@ Options:
 
       --json
           Print the reports as JSON
+
+  -h, --help
+          Print help
+```
+
+### `otto feedback add`
+
+```text
+File something you want built in otto. A wake reports with `otto state feedback` instead
+
+Usage: otto feedback add <TEXT>
+
+Arguments:
+  <TEXT>
+          What should change, and how you'd know it had
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto feedback next`
+
+```text
+What to build now: nothing while something is being built, else whatever was reopened, else the oldest
+
+Usage: otto feedback next [OPTIONS]
+
+Options:
+      --json
+          Print it as JSON, or `null` when there's nothing to build
+
+  -h, --help
+          Print help
+```
+
+### `otto feedback building`
+
+```text
+Its change is out: `otto feedback building 12 --change 7/7`
+
+Usage: otto feedback building --change <CHANGE> <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+      --change <CHANGE>
+          The change: <run>/<number>
+
+  -h, --help
+          Print help
+```
+
+### `otto feedback landed`
+
+```text
+Its change landed
+
+Usage: otto feedback landed <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto feedback verified`
+
+```text
+It is shown to have fixed what it was about
+
+Usage: otto feedback verified <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto feedback reopen`
+
+```text
+It didn't hold, or shouldn't have closed: back to the front of the queue
+
+Usage: otto feedback reopen --why <WHY> <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+      --why <WHY>
+          Why it's back
+
+  -h, --help
+          Print help
+```
+
+### `otto feedback close`
+
+```text
+It won't be built, and why
+
+Usage: otto feedback close [OPTIONS] --why <WHY> <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+      --why <WHY>
+          Why it won't be built
+
+      --duplicate-of <N>
+          The report this repeats
+
+  -h, --help
+          Print help
+```
+
+### `otto feedback split`
+
+```text
+Too big for one change: build these instead, each landing on its own, in this order
+
+Usage: otto feedback split --part <TEXT> <ID>
+
+Arguments:
+  <ID>
+          The report's number
+
+Options:
+      --part <TEXT>
+          What one part builds (repeatable)
 
   -h, --help
           Print help

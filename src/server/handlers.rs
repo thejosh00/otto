@@ -317,6 +317,46 @@ pub async fn logs(State(state): State<Arc<AppState>>, Path(id): Path<String>, Qu
     .await
 }
 
+/// The backlog, newest first, as `otto feedback` lists it — with what's next marked on the page.
+#[derive(Serialize)]
+struct Feedback {
+    reports: Vec<crate::feedback::Report>,
+    next: Option<u32>,
+}
+
+pub async fn feedback() -> Response {
+    blocking(|| {
+        let mut reports = crate::feedback::all();
+        reports.reverse();
+        Ok(Feedback { reports, next: crate::feedback::next().map(|r| r.id) })
+    })
+    .await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedbackBody {
+    text: String,
+}
+
+pub async fn add_feedback(Json(body): Json<FeedbackBody>) -> Response {
+    blocking(move || crate::feedback::add(&body.text)).await
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedbackWhy {
+    why: String,
+}
+
+pub async fn close_feedback(Path(id): Path<u32>, Json(body): Json<FeedbackWhy>) -> Response {
+    blocking(move || crate::feedback::close(id, &body.why, None)).await
+}
+
+pub async fn reopen_feedback(Path(id): Path<u32>, Json(body): Json<FeedbackWhy>) -> Response {
+    blocking(move || crate::feedback::reopen(id, &body.why)).await
+}
+
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct InboxQuery {
