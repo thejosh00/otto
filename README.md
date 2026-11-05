@@ -112,6 +112,9 @@ clean rebase of the same patch lands; if the code around it changed, it comes ba
 conflicts, it goes back to the run that wrote it. Asking for changes sends your words to that run,
 and wakes it.
 
+<p align="center"><img src="assets/changes.png" alt="The Changes page in otto's web UI: changes listed by whose move it is, and one open for review with its summary, tests, evidence and the buttons to approve it" width="800"></p>
+<p align="center"><sub>The Changes page: everything listed by whose move it is, and eval-doctor's fix for the bug in its report open for review — its summary first with the whole write-up a click away, then its tests, its evidence, and what approving it does.</sub></p>
+
 How much you stay in the loop is decided once per repository, not once per change: each follows a
 **process**, and approving a change does what its process says. Every repository follows
 `standard` — open a pull request — until you give it another; one only you work in can follow
