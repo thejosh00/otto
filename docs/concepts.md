@@ -438,6 +438,8 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   given as `--file`, with `--summary-file` a summary of it: the page opens on that, with a toggle to
   the whole, and `otto changes show <change> --full` prints the whole. Each version has its own, and
   its pull request's description is the whole when that fits GitHub's limit, and the summary when not.
+  The lander rewrites it each time it pushes a version, over any edits made on GitHub; a babysitter's
+  fix leaves it saying what the author last said.
 
 A change's files live with the run that wrote it: `changes/index.json`, and each version's patch and
 summary beside it, with `v<k>.md` the whole of what its author said when there is more.

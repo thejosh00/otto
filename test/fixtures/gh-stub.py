@@ -189,6 +189,15 @@ def main(args):
             pr["comments"].append({"id": 7000 + len(pr["comments"]), "login": "otto-lander", "body": body or "", "at": now()})
             save(state)
             print(pr["url"] + "#issuecomment-" + str(7000 + len(pr["comments"]) - 1))
+        elif cmd[1] == "edit":
+            if flag(rest, "--body-file") or flag(rest, "-F"):
+                with open(flag(rest, "--body-file") or flag(rest, "-F")) as f:
+                    pr["body"] = f.read()
+            elif flag(rest, "--body") or flag(rest, "-b"):
+                pr["body"] = flag(rest, "--body") or flag(rest, "-b")
+            pr["updatedAt"] = now()
+            save(state)
+            print(pr["url"])
         elif cmd[1] == "checks":
             ci = pr.get("ci", "PENDING")
             print(f'test\t{"pass" if ci == "SUCCESS" else "fail" if ci == "FAILURE" else "pending"}\t1m\t{pr["url"]}/checks')

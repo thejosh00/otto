@@ -1469,9 +1469,11 @@ pub struct Due {
     pub author_alive: bool,
 }
 
-/// What a version's pull request says: a reviewer there has no other way to read the whole of it,
-/// so the whole of it, unless GitHub would refuse that.
-fn pr_body(dir: &Path, v: &ChangeVersion) -> PathBuf {
+/// What its pull request says: a reviewer there has no other way to read the whole of it, so the
+/// whole of it, unless GitHub would refuse that. Its latest version's, not counting the babysitter's:
+/// what a fix says is what the fix did, not what the change is.
+fn pr_body(dir: &Path, c: &Change) -> PathBuf {
+    let v = c.versions.iter().rev().find(|v| v.by != "babysitter").unwrap_or_else(|| c.latest());
     let fits = |f: &&String| std::fs::read_to_string(dir.join(f)).is_ok_and(|text| text.chars().count() <= PR_BODY_MAX_CHARS);
     dir.join(v.file.as_ref().filter(fits).unwrap_or(&v.summary))
 }
@@ -1512,7 +1514,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         allow_changes: d.and_then(|d| d.allow_changes.clone()),
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
-        pr_body: pr_body(dir, c.latest()).display().to_string(),
+        pr_body: pr_body(dir, c).display().to_string(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
         pr: c.pr.clone(),
         replies: c.replies.iter().filter(|r| r.state == ReplyState::Post).cloned().collect(),
@@ -1575,7 +1577,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 allow_changes: d.and_then(|d| d.allow_changes.clone()),
                 approved_at: d.map(|d| d.at),
                 summary: dir.join(&c.latest().summary).display().to_string(),
-                pr_body: pr_body(&dir, c.latest()).display().to_string(),
+                pr_body: pr_body(&dir, &c).display().to_string(),
                 landed_sha: None,
                 pr: c.pr.clone(),
                 replies: Vec::new(),
@@ -3436,6 +3438,7 @@ pub(crate) mod tests {
         assert_eq!((c.state, c.latest().k, c.latest().by.as_str()), (ChangeState::Approved, 2, "babysitter"));
         assert_eq!(c.decision.as_ref().unwrap().sha, fixed, "what goes to the pull request is the fix");
         assert_eq!(due().unwrap()[0].todo, "update its pull request");
+        assert!(due().unwrap()[0].pr_body.ends_with("v1.summary.md"), "what a fix says doesn't replace what the change is");
         assert!(note_texts("c-fx").last().unwrap().contains(&format!("merge --ff-only {fixed}")), "its author is told how to keep it");
         claim("c-fxl", &r("c-fx", 1)).unwrap();
         pr_pushed("c-fxl", &r("c-fx", 1), &fixed, None, false).unwrap();
