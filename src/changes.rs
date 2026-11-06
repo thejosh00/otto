@@ -2671,7 +2671,7 @@ pub(crate) mod tests {
     use crate::paths::test_support::TempHome;
     use crate::state::commands::test_init;
 
-    fn sh(dir: &Path, args: &[&str]) -> String {
+    pub(crate) fn sh(dir: &Path, args: &[&str]) -> String {
         let out = std::process::Command::new("git")
             .arg("-C")
             .arg(dir)

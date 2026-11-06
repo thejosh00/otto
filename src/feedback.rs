@@ -253,7 +253,7 @@ pub fn next() -> Option<Report> {
 /// landed change or a person's "change this" unread until the safety net.
 pub fn due() -> Option<String> {
     let reports = all();
-    if let Some(report) = reports.iter().find(|r| r.status == Status::Landed) {
+    if let Some(report) = reports.iter().find(|r| r.status == Status::Landed || change_landed(r)) {
         return Some(format!("report {} landed and wants verifying", report.id));
     }
     if let Some(report) = reports.iter().find(|r| r.status == Status::Building && change_wants_its_author(r)) {
@@ -262,14 +262,22 @@ pub fn due() -> Option<String> {
     next().map(|report| format!("report {} is next", report.id))
 }
 
+/// The change a report was handed to, if it can still be found.
+fn change_of(report: &Report) -> Option<crate::changes::Change> {
+    let r = crate::changes::ChangeRef::parse(report.change.as_deref()?).ok()?;
+    let dir = crate::paths::run_dir(&r.run).ok()?;
+    crate::changes::index_or_empty(&dir).changes.into_iter().find(|c| c.n == r.n)
+}
+
+/// Still marked building, though the change it was handed to has landed.
+fn change_landed(report: &Report) -> bool {
+    use crate::changes::ChangeState::{Landed, Merged};
+    report.status == Status::Building && change_of(report).is_some_and(|c| matches!(c.state, Landed | Merged))
+}
+
 /// Over, sent back, or gone. An unreadable one is a wake too: only a wake can sort that out.
 fn change_wants_its_author(report: &Report) -> bool {
-    let found = report.change.as_deref().and_then(|text| {
-        let r = crate::changes::ChangeRef::parse(text).ok()?;
-        let dir = crate::paths::run_dir(&r.run).ok()?;
-        crate::changes::index_or_empty(&dir).changes.into_iter().find(|c| c.n == r.n)
-    });
-    found.is_none_or(|c| c.state.is_over() || c.whose_move() == crate::changes::Move::Author)
+    change_of(report).is_none_or(|c| c.state.is_over() || c.whose_move() == crate::changes::Move::Author)
 }
 
 /// Its change is out. Refused while another is, which is how `next`'s one-at-a-time holds for a run
@@ -299,10 +307,14 @@ pub fn landed(id: u32) -> Result<Report, OttoError> {
     })
 }
 
+/// Shown to have fixed it. A report whose change has landed needs no `landed` first: the change is
+/// what says so.
 pub fn verified(id: u32) -> Result<Report, OttoError> {
     edit(|reports| {
         let i = index_of(reports, id)?;
-        require(&reports[i], Status::Landed)?;
+        if !change_landed(&reports[i]) {
+            require(&reports[i], Status::Landed)?;
+        }
         finish(&mut reports[i], Status::Verified);
         let done = reports[i].clone();
         settle_parent(reports, done.parent);
@@ -757,6 +769,51 @@ mod tests {
         assert!(due().unwrap().contains("wants verifying"));
         verified(1).unwrap();
         assert_eq!(due(), None);
+    }
+
+    /// A report handed to a change, and that change put on main the way the lander does it.
+    fn report_whose_change_landed(run: &str) -> crate::changes::tests::Repo {
+        use crate::changes::tests::{r, repo, seen, set_lander, sh, submit_fix};
+        let lander = format!("{run}-lander");
+        test_init(run, "a goal").unwrap();
+        test_init(&lander, "land changes").unwrap();
+        add("a thing").unwrap();
+        let repo = repo();
+        crate::changes::submit(run, &submit_fix(&repo, "Shout")).unwrap();
+        building(1, &format!("{run}/1")).unwrap();
+        assert!(verified(1).is_err(), "its change hasn't landed");
+        assert_eq!(status_of(1), Status::Building);
+
+        set_lander(&lander);
+        crate::changes::approve(&[seen(r(run, 1))], None, None).unwrap();
+        let sha = crate::changes::claim(&lander, &r(run, 1)).unwrap().sha.unwrap();
+        sh(&repo.wt, &["push", "--quiet", "origin", &format!("{sha}:main")]);
+        crate::changes::landed(&lander, &r(run, 1), &sha, None).unwrap();
+        repo
+    }
+
+    /// A wake told its change landed goes straight to verifying: the item needn't be moved by hand
+    /// first, and `due` says that rather than that the change wants its author.
+    #[test]
+    fn a_report_follows_its_change_landing() {
+        let _h = TempHome::new();
+        let _repo = report_whose_change_landed("f-land");
+        assert!(due().unwrap().contains("report 1 landed and wants verifying"), "{:?}", due());
+        assert_eq!(next().map(|r| r.id), None, "not over until it's verified");
+
+        let done = verified(1).unwrap();
+        assert_eq!(done.status, Status::Verified);
+        assert!(done.handled_at.is_some());
+        assert_eq!(due(), None);
+    }
+
+    /// The step still works for a wake that takes it.
+    #[test]
+    fn marking_it_landed_first_still_works() {
+        let _h = TempHome::new();
+        let _repo = report_whose_change_landed("f-land2");
+        landed(1).unwrap();
+        assert_eq!(verified(1).unwrap().status, Status::Verified);
     }
 
     #[test]
