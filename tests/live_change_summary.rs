@@ -84,7 +84,6 @@ fn live_change_summary() {
     let corrected = std::fs::read_to_string(run.artifact("corrected.md")).unwrap_or_default();
     println!("corrected.md:\n{corrected}");
     checks.check(!corrected.trim().is_empty(), "it wrote down what it did", "no artifacts/corrected.md");
-    checks.check(corrected.contains("summary kept as it was"), "otto's reply, as it quotes it, said the summary stayed as it was", "it quotes no reply saying the summary stayed as it was");
 
     checks.step("4 - the right file name reached the person");
     let (summary, messages) = what_the_person_can_read(&run);
@@ -92,6 +91,17 @@ fn live_change_summary() {
     let fixed_in_summary = summary.contains("greet.py") && !summary.contains("in hello.py");
     checks.check(fixed_in_summary || messages.contains("greet.py"), "the person can read the right file name", "the person is still told only hello.py");
     checks.check(locks_held() == 0, "no repo lock is held", "a repo lock is still held");
+
+    checks.step("5 - the reply itself, in otto's own words rather than the model's");
+    let index: Value = std::fs::read_to_string(run.dir.join("changes/index.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null);
+    let branch = index["changes"][0]["branch"].as_str().unwrap_or_default().to_string();
+    let title = index["changes"][0]["title"].as_str().unwrap_or_default().to_string();
+    let another = scratch.path().join("another-summary.md");
+    write_file(&another, "A summary no version has said yet.\n");
+    let again = otto(&["state", "change", "submit", "corrects", "--repo", repo.to_str().unwrap(), "--branch", &branch, "--title", &title, "--summary-file", another.to_str().unwrap()]);
+    let reply = stdout(&again);
+    println!("submitting the same commit with another summary: {reply}");
+    checks.check(reply.contains("summary kept as it was") && reply.contains("as a message"), "the reply says the summary stayed, and how to reach the person", "the reply doesn't say the summary stayed and how to reach the person");
 
     if checks.fail_count() > 0 {
         scratch.keep();

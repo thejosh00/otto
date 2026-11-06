@@ -5,7 +5,6 @@
 #
 #   test/live.sh                       # the routine set, ~5 minutes
 #   test/live.sh live_gate live_todo   # just these
-#   test/live.sh live_change_summary   # correcting what a change said, once it's out, ~2 minutes
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #
@@ -16,7 +15,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-tests=${*:-live_gate live_todo live_message live_note live_chat live_feedback live_background live_wait live_outputs live_verify live_changes live_revive}
+tests=${*:-live_gate live_todo live_message live_note live_chat live_feedback live_background live_wait live_outputs live_verify live_changes live_change_summary live_revive}
 logs=$(mktemp -d "${TMPDIR:-/tmp}/otto-live.XXXXXX")
 
 # Build once, then run the test binaries themselves. Not one `cargo test` each: every cargo that
