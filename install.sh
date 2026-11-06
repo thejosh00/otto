@@ -12,7 +12,8 @@
 #   otto service start # (re-)register and start the web UI as a launchd service
 #   otto service restart # serve the newly installed binary, on the port it already uses
 #
-# Pass --service to also install the web UI as a launchd service.
+# Pass --service to also install the web UI as a launchd service. Once it is installed, this script
+# and --rollback restart it, so it serves the binary they leave in place.
 #
 # otto compiles its harness in, so an install changes what every agent's next wake is told. The
 # binary it replaces is kept beside the new one, and `./install.sh --rollback` puts it back.
@@ -73,7 +74,9 @@ if [ "$with_service" = 1 ]; then
 	echo "==> otto service start (web UI)"
 	"$bin_dir/otto" service start
 elif [ -f "$HOME/Library/LaunchAgents/com.joshuahill.otto-serve.plist" ]; then
-	echo "note: the web UI service still runs the old binary — \`otto service restart\` to serve this one"
+	# It keeps running the binary it started from, so a landed web fix wouldn't be what it serves.
+	echo "==> otto service restart (web UI)"
+	"$bin_dir/otto" service restart
 fi
 
 echo "==> done"
