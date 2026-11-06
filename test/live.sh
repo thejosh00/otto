@@ -5,6 +5,7 @@
 #
 #   test/live.sh                       # the routine set, ~5 minutes
 #   test/live.sh live_gate live_todo   # just these
+#   test/live.sh live_change_summary   # correcting what a change said, once it's out, ~2 minutes
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #

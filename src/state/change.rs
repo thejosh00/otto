@@ -469,6 +469,12 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             );
         } else if out.summary_added {
             println!("change {r} v{}: the same commit, and its summary kept with it", out.version);
+        } else if out.summary_ignored {
+            println!(
+                "change {r} v{}: its summary kept as it was, not the one you gave — the person may already have read it. A new one \
+                 comes with a new commit; a correction that can't wait for one goes to them as a message",
+                out.version
+            );
         }
         if out.evidence_ignored {
             println!(
@@ -478,7 +484,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             );
         } else if !a.evidence.is_empty() {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
-        } else if !out.file_ignored && !out.summary_added {
+        } else if !out.file_ignored && !out.summary_added && !out.summary_ignored {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
         }
         return Ok(());

@@ -846,6 +846,8 @@ pub struct Submitted {
     pub summary_added: bool,
     /// The same commit again, with a different whole write-up: kept as it was.
     pub file_ignored: bool,
+    /// The same commit again, with a different summary and no write-up to go with it: kept as it was.
+    pub summary_ignored: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -975,6 +977,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 let new_file = if kept.is_none() { file } else { None };
                 let same_summary = std::fs::read_to_string(path.join(&latest.summary)).is_ok_and(|old| old.trim_end() == summary);
                 let new_summary = file.is_some() && !file_ignored && !same_summary;
+                let summary_ignored = file.is_none() && !same_summary;
                 let c = &mut index.changes[i];
                 c.title = title.clone();
                 c.worktree = worktree.clone().or(c.worktree.take());
@@ -1002,6 +1005,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 let mut out = submitted(c, true, None);
                 out.evidence_ignored = ignored;
                 out.file_ignored = file_ignored;
+                out.summary_ignored = summary_ignored;
                 out.summary_added = new_file.is_some() || new_summary;
                 write_index(path, &index)?;
                 return Ok(out);
@@ -1129,6 +1133,7 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         evidence_ignored: false,
         summary_added: false,
         file_ignored: false,
+        summary_ignored: false,
     }
 }
 
@@ -2799,6 +2804,21 @@ pub(crate) mod tests {
         assert_eq!((e.content_type(), &bytes[..4]), ("image/png", &b"\x89PNG"[..]));
         assert!(evidence_file(&r("c-ev", 1), 1, "../index.json").is_err(), "only names the version lists");
         assert!(evidence_file(&r("c-ev", 1), 2, "red-green.txt").is_err());
+    }
+
+    #[test]
+    fn a_different_summary_alone_for_the_same_commit_stays_as_it_was_and_says_so() {
+        let _h = TempHome::new();
+        test_init("c-kept", "a goal").unwrap();
+        let repo = repo();
+        submit("c-kept", &submit_fix(&repo, "t")).unwrap();
+
+        let same = submit("c-kept", &submit_fix(&repo, "t")).unwrap();
+        assert!(same.unchanged && !same.summary_ignored);
+
+        let other = submit("c-kept", &Submit { summary: "Corrected.", ..submit_fix(&repo, "t") }).unwrap();
+        assert!(other.unchanged && other.summary_ignored && !other.summary_added);
+        assert_eq!(read(&r("c-kept", 1), None).unwrap().summary, "Shouts the second line.\n");
     }
 
     #[test]
