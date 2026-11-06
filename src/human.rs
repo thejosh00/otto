@@ -640,6 +640,9 @@ pub struct ChangesShowArgs {
     /// Print the patch too
     #[arg(long)]
     pub patch: bool,
+    /// Print what changed since this earlier version, without what its base did, instead of the patch
+    #[arg(long, value_name = "N", conflicts_with_all = ["patch", "json"])]
+    pub since: Option<u32>,
     /// Print it as JSON
     #[arg(long)]
     pub json: bool,
@@ -953,13 +956,24 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     for m in &d.change.timeline {
         println!("  {:>8}  {:<6} {}", crate::clock::relative(m.at), m.by, m.what);
     }
-    if a.patch {
+    if let Some(since) = a.since {
+        let delta = crate::changes::delta(&crate::changes::ChangeRef::parse(&a.change)?, a.version, since)?;
+        match (&delta.patch, &delta.unavailable) {
+            (Some(p), _) if p.is_empty() && delta.rebased => println!("\nsince v{since}: nothing of its author's, only moved onto newer code on {}", d.change.base),
+            (Some(p), _) if p.is_empty() => println!("\nsince v{since}: no difference"),
+            (Some(p), _) => println!("\nsince v{since}{}:\n\n{p}", if delta.rebased { format!(", leaving out what {} did", d.change.base) } else { String::new() }),
+            (None, why) => println!("\nsince v{since}: {}", why.as_deref().unwrap_or("it can't be said")),
+        }
+    } else if a.patch {
         match &d.patch {
             Some(p) => println!("\n{p}"),
             None => println!("\nIts patch was too big to keep: {}", d.commands[0]),
         }
     } else {
         println!("\nthe patch: otto changes show {} --patch   (or {})", l.reference, d.commands[0]);
+        if v.k > 1 {
+            println!("what changed since v{p}: otto changes show {}{} --since {p}", l.reference, if v.k < d.change.latest().k { format!(" --version {}", v.k) } else { String::new() }, p = v.k - 1);
+        }
     }
     if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::ReadyToMerge {
         println!("\notto changes merge {}      merge its pull request", l.reference);

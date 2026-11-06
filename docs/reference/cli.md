@@ -309,6 +309,9 @@ Options:
       --patch
           Print the patch too
 
+      --since <N>
+          Print what changed since this earlier version, without what its base did, instead of the patch
+
       --json
           Print it as JSON
 

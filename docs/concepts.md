@@ -435,6 +435,9 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   (`otto changes answer`); the run doesn't.
 - **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
   or been sent back 3 times is listed as stuck, and you're told once.
+- **Every version stays.** With more than one, the page shows the whole of a version or what changed
+  since an earlier one (`otto changes show <change> --since 2`), leaving out what its base did in
+  between, so a rebase alone shows as nothing.
 - **A summary** works as it does for an output. Over a page (500 words), what its author says is
   given as `--file`, with `--summary-file` a summary of it: the page opens on that, with a toggle to
   the whole, and `otto changes show <change> --full` prints the whole. Each version has its own, and

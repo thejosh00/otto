@@ -1282,9 +1282,13 @@ function changeDetail(d, actions) {
       }, "Ask for changes")),
       d.lander ? null : h("p.hint", "No lander is set up. To land it yourself: ", h("code", d.commands[1] || d.commands[0]))));
   }
-  parts.push(h("p.label", "Files"), h("ul.files", v.stat.files.map((f) =>
-    h("li", f.add == null ? h("span.pm.faint", "binary") : lineCount(f), " ", h("code", f.path)))));
-  parts.push(d.patch != null ? patchView(d.patch) : h("p.faint", "Its patch was too big to keep here. To read it: ", h("code", d.commands[0])));
+  const whole = () => [
+    h("p.label", "Files"), h("ul.files", v.stat.files.map((f) =>
+      h("li", f.add == null ? h("span.pm.faint", "binary") : lineCount(f), " ", h("code", f.path)))),
+    d.patch != null ? patchView(d.patch) : h("p.faint", "Its patch was too big to keep here. To read it: ", h("code", d.commands[0])),
+  ];
+  if (v.k > 1) parts.push(...versionCompare(l, c, v, whole));
+  else parts.push(...whole());
   parts.push(h("p.label", "What happened"), h("ul.lately.timeline", [...c.timeline].reverse().map((m) =>
     h("li", { title: localTime(m.at) }, h("span.t", relative(m.at)), h("span", h("strong", m.by === "you" ? "You" : m.by === "author" ? "Its agent" : m.by === "lander" ? "The lander" : m.by === "babysitter" ? "The babysitter" : m.by === "reviewer" ? "On its PR" : "otto"), " ", m.what)))));
   return parts;
@@ -1345,6 +1349,35 @@ function patchView(patch) {
     else details.addEventListener("toggle", () => { if (details.open && details.children.length === 1) details.append(render(f)); });
     return details;
   }));
+}
+
+/** A version with others before it: the whole of it, or what changed since one of them. */
+function versionCompare(l, c, v, whole) {
+  const row = h("div.row.versions", h("span.label", "Show"));
+  const body = h("div.compare");
+  let asked = 0;
+  const pick = async (since, button) => {
+    const mine = ++asked;
+    row.querySelectorAll("button").forEach((b) => b.classList.toggle("primary", b === button));
+    if (since == null) { body.replaceChildren(...whole()); return; }
+    body.replaceChildren(h("p.faint", "Comparing…"));
+    let delta;
+    try {
+      delta = await api(`/changes/${enc(l.run)}/${l.n}/delta?v=${v.k}&since=${since}`);
+    } catch (err) {
+      if (mine === asked) body.replaceChildren(h("div.banner.bad", err.message));
+      return;
+    }
+    if (mine !== asked) return; // another was picked while this one loaded
+    if (delta.patch == null) body.replaceChildren(h("p.faint", delta.unavailable));
+    else if (!delta.patch) body.replaceChildren(h("p.faint", delta.rebased ? `Nothing of its author's changed since v${since}: it only moved onto newer code on ${c.base}.` : `No difference from v${since}.`));
+    else body.replaceChildren(...(delta.rebased ? [h("p.hint", `v${since} and v${v.k} sit on different commits of ${c.base}. What ${c.base} did is left out.`)] : []), patchView(delta.patch));
+  };
+  const button = (text, title, since) => h("button.small" + (since == null ? ".primary" : ""), { title, onclick: (e) => pick(since, e.currentTarget) }, text);
+  row.append(button(`Full v${v.k}`, "The whole of this version, against its base", null),
+    ...c.versions.filter((x) => x.k < v.k).reverse().map((x) => button(`Since v${x.k}`, `What changed from v${x.k} to v${v.k}`, x.k)));
+  body.replaceChildren(...whole());
+  return [row, body];
 }
 
 // ---------------------------------------------------------------------------

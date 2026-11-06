@@ -647,9 +647,17 @@ fn with_change<T>(r: &ChangeRef, f: impl FnOnce(&Path, &mut RunState, &mut Chang
 // ---------------------------------------------------------------------------
 
 fn git_raw(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    git_run(dir, args, input, None)
+}
+
+/// With `index`, git works on that index file rather than the repository's own.
+fn git_run(dir: &Path, args: &[&str], input: Option<&[u8]>, index: Option<&Path>) -> Result<Vec<u8>, String> {
     use std::io::Write as _;
     let mut cmd = std::process::Command::new("git");
     cmd.arg("-C").arg(dir).args(args);
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index);
+    }
     // A person's git config can page, colour or run an external diff; none of that belongs in a
     // patch someone reviews.
     cmd.env("GIT_PAGER", "cat").env("GIT_EXTERNAL_DIFF", "").env("GIT_TERMINAL_PROMPT", "0");
@@ -2683,6 +2691,72 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
     Ok(Detail { line, change, version: v, patch, summary, text, lander: lander_ref(), process, commands, evidence })
 }
 
+/// What changed from one version of a change to a later one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Delta {
+    pub since: u32,
+    pub version: u32,
+    /// Empty when the two say the same. `None` when it can't be said: `unavailable` says why.
+    pub patch: Option<String>,
+    /// They sit on different commits of the base, and what the base did is left out.
+    pub rebased: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+}
+
+pub fn delta(r: &ChangeRef, version: Option<u32>, since: u32) -> Result<Delta, OttoError> {
+    let state = crate::state::read_run(&r.run)?;
+    let dir = crate::paths::run_dir(&state.id)?;
+    let c = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
+    let to = match version {
+        Some(k) => c.version(k).ok_or_else(|| OttoError::not_found(format!("change {} has no version {k}", r.display())))?,
+        None => c.latest(),
+    };
+    let from = c.version(since).ok_or_else(|| OttoError::not_found(format!("change {} has no version {since}", r.display())))?;
+    if since >= to.k {
+        return Err(OttoError::usage(format!("v{since} isn't before v{}: say an earlier version to compare it with", to.k)));
+    }
+    let rebased = from.base_sha != to.base_sha;
+    let (patch, unavailable) = match delta_patch(Path::new(&c.repo), from, to) {
+        Ok(patch) if patch.len() > PATCH_MAX_BYTES => (None, Some(format!("What changed since v{since} is too big to show here."))),
+        Ok(patch) => (Some(String::from_utf8_lossy(&patch).into_owned()), None),
+        Err(why) => (None, Some(why)),
+    };
+    Ok(Delta { since, version: to.k, patch, rebased, unavailable })
+}
+
+/// The diff from `from` to `to`, without what their base did in between: on different commits of
+/// the base, `from`'s patch is first replayed onto `to`'s, in an index of its own so the repository
+/// and its checkouts aren't touched. `git merge-tree --write-tree` would do this, but is
+/// git 2.38, and macOS has older.
+fn delta_patch(repo: &Path, from: &ChangeVersion, to: &ChangeVersion) -> Result<Vec<u8>, String> {
+    for v in [from, to] {
+        for sha in [&v.sha, &v.base_sha] {
+            if !ok(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")]) {
+                return Err(format!("v{}'s commit {} is no longer in the repository, so it can't be compared.", v.k, short_sha(sha)));
+            }
+        }
+    }
+    let start = if from.base_sha == to.base_sha {
+        from.sha.clone()
+    } else {
+        let old = git_raw(repo, &["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", from.base_sha.as_str(), from.sha.as_str()], None)?;
+        let tmp = tempfile::tempdir().map_err(|e| format!("cannot make a temporary index: {e}"))?;
+        let index = tmp.path().join("index");
+        let replayed = (|| {
+            git_run(repo, &["read-tree", to.base_sha.as_str()], None, Some(&index))?;
+            git_run(repo, &["apply", "--cached", "--binary", "--whitespace=nowarn"], Some(&old), Some(&index))?;
+            git_run(repo, &["write-tree"], None, Some(&index))
+        })();
+        let tree = replayed.map_err(|_| {
+            format!("v{} moved onto newer code that touches the same lines as v{}, so what its author changed can't be told from what the base did.", to.k, from.k)
+        })?;
+        String::from_utf8_lossy(&tree).trim().to_string()
+    };
+    git_raw(repo, &["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", start.as_str(), to.sha.as_str()], None)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -3428,6 +3502,62 @@ pub(crate) mod tests {
         let c = change("c-rs", 1);
         assert_eq!((c.state, c.decision.as_ref().unwrap().version), (ChangeState::Approved, 2));
         assert_eq!(due().unwrap()[0].todo, "update its pull request");
+    }
+
+    #[test]
+    fn a_delta_says_what_its_author_changed_and_not_what_the_base_did() {
+        let _h = TempHome::new();
+        test_init("c-dl", "a goal").unwrap();
+        let repo = repo();
+        let at = r("c-dl", 1);
+        let next = |file: &str, text: &str, msg: &str| {
+            std::fs::write(repo.wt.join(file), text).unwrap();
+            sh(&repo.wt, &["commit", "--quiet", "-am", msg]);
+            submit("c-dl", &submit_fix(&repo, "Shout")).unwrap();
+        };
+        let move_base = |file: &str, text: &str| {
+            std::fs::write(repo.main.join(file), text).unwrap();
+            sh(&repo.main, &["commit", "--quiet", "-am", "the base moves"]);
+            sh(&repo.main, &["push", "--quiet", "origin", "main"]);
+            sh(&repo.wt, &["fetch", "--quiet", "origin"]);
+            sh(&repo.wt, &["rebase", "--quiet", "origin/main"]);
+        };
+        submit("c-dl", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(delta(&at, None, 1).unwrap_err().message.contains("isn't before"), "v1 has nothing before it");
+        assert!(delta(&at, None, 9).is_err(), "no such version");
+
+        // On the same base: what its author changed, and only that.
+        next("a.txt", "one\nTWO!\nthree\n", "louder");
+        let d = delta(&at, None, 1).unwrap();
+        let patch = d.patch.unwrap();
+        assert!(!d.rebased && patch.contains("-TWO\n+TWO!\n"), "{patch}");
+
+        // Only rebased, the base having changed another file: nothing of its author's.
+        move_base("b.txt", "alpha from the base\n");
+        submit("c-dl", &submit_fix(&repo, "Shout")).unwrap();
+        let d = delta(&at, None, 2).unwrap();
+        assert!(d.rebased);
+        assert_eq!(d.patch.as_deref(), Some(""), "{d:?}");
+
+        // Rebased and changed: its author's change, none of the base's.
+        move_base("b.txt", "alpha from the base again\n");
+        next("a.txt", "one\nTWO!!\nthree\n", "louder still");
+        let d = delta(&at, None, 2).unwrap();
+        let patch = d.patch.unwrap();
+        assert!(d.rebased && patch.contains("+TWO!!"), "{patch}");
+        assert!(!patch.contains("b.txt"), "what the base did isn't its author's: {patch}");
+        assert_eq!(delta(&at, Some(2), 1).unwrap().version, 2, "any version with one before it");
+
+        // The base moved over the same lines: said, rather than shown wrong.
+        std::fs::write(repo.main.join("a.txt"), "one\ntwo from the base\nthree\n").unwrap();
+        sh(&repo.main, &["commit", "--quiet", "-am", "the base moves over it"]);
+        sh(&repo.main, &["push", "--quiet", "origin", "main"]);
+        sh(&repo.wt, &["fetch", "--quiet", "origin"]);
+        sh(&repo.wt, &["reset", "--quiet", "--hard", "origin/main"]);
+        next("a.txt", "one\nTWO from the base\nthree\n", "louder over the base");
+        let d = delta(&at, None, 4).unwrap();
+        assert!(d.patch.is_none() && d.unavailable.as_deref().unwrap().contains("same lines"), "{d:?}");
+        assert_eq!(sh(&repo.main, &["status", "--porcelain"]), "", "nothing of this touches a checkout");
     }
 
     #[test]

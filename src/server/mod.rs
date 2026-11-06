@@ -104,6 +104,7 @@ pub fn router(state: AppState) -> Router {
         .route("/changes", get(handlers::changes))
         .route("/changes/approve", post(handlers::approve_changes))
         .route("/changes/{id}/{n}", get(handlers::change))
+        .route("/changes/{id}/{n}/delta", get(handlers::change_delta))
         .route("/changes/{id}/{n}/evidence/{k}/{*name}", get(handlers::change_evidence))
         .route("/changes/{id}/{n}/revise", post(handlers::revise_change))
         .route("/changes/{id}/{n}/drop", post(handlers::drop_change))
