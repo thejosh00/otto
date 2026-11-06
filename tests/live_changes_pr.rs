@@ -4,9 +4,10 @@
 //! What `cargo test` cannot reach: whether the lander, wrapping `workflows/land-flow.md`, opens the
 //! pull request; whether the babysitter otto makes, wrapping `workflows/babysit-flow.md`, reads a
 //! reviewer's ask off it and hands it to the change's author rather than fixing it itself; whether
-//! the author makes the change and hands it back, and the lander pushes that to the same pull
-//! request without asking the person; whether an approved, passing pull request comes back to the
-//! person to merge, and the lander merges it when they say.
+//! the author makes the change and hands it back, and, once the person approves that version, the
+//! lander pushes it to the same pull request; whether an approved, passing pull request comes back to the
+//! person to merge, and the lander merges it when they say; whether its description keeps the
+//! shape of the repository's template, without vouching for what nobody said.
 //!
 //! GitHub is `test/fixtures/gh-stub.py`, first on `PATH`: pull requests on the scratch repo's local
 //! bare remote, which the test edits to play the reviewer. Everything runs in an `OTTO_HOME` of its
@@ -124,6 +125,10 @@ fn live_changes_pr() {
     write_file(&repo.join("Makefile"), "test:\n\tfind . -name __pycache__ -prune -exec rm -rf {} +\n\tpython3 -m unittest discover -v\n\n.PHONY: test\n");
     write_file(&repo.join(".gitignore"), "__pycache__/\n");
     write_file(&repo.join("CLAUDE.md"), "# greeter\n\nChanges land as pull requests on github.com/test/greeter, squash-merged. Tests: `make test`.\n");
+    write_file(
+        &repo.join(".github/pull_request_template.md"),
+        "## What this changes\n\n<!-- Say what and why. -->\n\n## Checklist\n\n- [ ] Tried on the staging printer\n",
+    );
     git_ok(&repo, &["add", "-A"]);
     git_ok(&repo, &["-c", "user.email=otto@local", "-c", "user.name=otto", "commit", "--quiet", "-m", "greeter: hello"]);
     let github = "https://github.com/test/greeter.git";
@@ -199,6 +204,15 @@ fn live_changes_pr() {
     checks.check(prs == 1, "it opened one pull request", format!("{prs} pull requests for one change"));
     checks.check(hub.read()["prs"][0]["head"] == branch.as_str(), format!("from {branch}"), "from another branch");
     checks.check(c["pr"]["url"] == "https://github.com/test/greeter/pull/1", "the change knows its pull request", format!("pr: {}", c["pr"]));
+    let follows_the_template = |checks: &mut Checks, version: &str| {
+        let hub = hub.read();
+        let body = hub["prs"][0]["body"].as_str().unwrap_or("");
+        checks.check(body.contains("## What this changes") && body.contains("## Checklist"), format!("{version}'s description has the template's shape"), format!("{version}'s description: {body}"));
+        checks.check(body.to_lowercase().contains("farewell"), "and says what its author said", format!("{version}'s description: {body}"));
+        checks.check(!body.contains("<!--"), "without the template's notes", format!("{version}'s description: {body}"));
+        checks.check(body.contains("- [ ] Tried on the staging printer"), "and vouches for nothing nobody said", format!("{version}'s description: {body}"));
+    };
+    follows_the_template(&mut checks, "v1");
     let main_before = stdout(&git(&origin, &["rev-parse", "main"]));
 
     checks.step(&format!("5 - a reviewer asks for something; it reaches the author, who hands back v2 (up to {}min)", step_timeout.as_secs() / 60));
@@ -211,8 +225,12 @@ fn live_changes_pr() {
             "body": "Please make farewell's docstring read exactly: Wave goodbye to `name`."
         }]);
     });
+    // Nothing is allowed without the person here, so the next version comes back to them first.
     let pushed_v2 = poke_until(step_timeout * 2, || {
         let c = change(&author);
+        if c["state"] == "review" && c["versions"].as_array().is_some_and(|v| v.len() == 2) {
+            otto(&["changes", "approve", "author/1@v2", "--pr"]);
+        }
         c["versions"].as_array().is_some_and(|v| v.len() >= 2) && c["state"] == "pr-open" && c["pr"]["head"] == c["versions"][1]["sha"]
     });
     let c = change(&author);
@@ -231,6 +249,7 @@ fn live_changes_pr() {
     checks.check(v2_patch.contains("Wave goodbye to"), "v2 does what sam asked", "v2's patch doesn't have the docstring sam asked for");
     checks.check(stdout(&git(&origin, &["rev-parse", "main"])) == main_before, "nothing reached main meanwhile", "main moved before the merge");
     checks.check(hub.read()["prs"].as_array().map(Vec::len) == Some(1), "and no second pull request", "a second pull request was opened");
+    follows_the_template(&mut checks, "v2");
 
     checks.step(&format!("6 - approved and passing: it comes back to the person to merge (up to {}min)", step_timeout.as_secs() / 60));
     hub.update(|pr| {

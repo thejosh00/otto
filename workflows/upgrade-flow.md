@@ -179,6 +179,9 @@ for each approved repo:
   gh pr create …            # or record prNumber: null with the reason (see dev-flow)
 ```
 
+A repo with a pull request template (`.github/`, `docs/` or its root, on its base branch): `gh` won't
+apply it when given a body, so write the description in its shape, adding nothing the work didn't do.
+
 **One batch answer authorizes many pushes, and each still names its own commit.** That is the point
 of `--item`: the journal ends up with one `authorized` line per repo, each with the sha that was
 actually pushed. A reviewer's "publish all green" is not a blank cheque for whatever those branches
