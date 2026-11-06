@@ -154,11 +154,14 @@ impl KillOutcome {
 /// kill go through this now; they differ only in the bookkeeping layered on top (poke also
 /// records the wake incomplete, `otto stop` does not — a deliberate stop is not a failure).
 pub fn kill(state: &RunState, run_id: &str, exec: &mut dyn Exec) -> KillOutcome {
-    let killed_process = if let Some(pid) = state.wake.as_ref().and_then(|w| w.pid) {
+    // The pid stays on record after its wake ends, when the system may have reused the number for
+    // an unrelated process group. So a wake with an outcome gets no signal at all.
+    let running_pid = state.wake.as_ref().filter(|w| w.outcome.is_none()).and_then(|w| w.pid);
+    let killed_process = if let Some(pid) = running_pid {
         // Negative pid means "the whole process group", which is how the launcher and the model
         // under it go too. A wake is spawned into its own group for exactly this reason.
-        // The pid stays on record after its wake ends, so only a signal that landed counts: "and
-        // the wake running now" is otherwise said of one that finished an hour ago.
+        // A wake killed outright records no outcome and leaves its pid behind too, so only a
+        // signal that landed counts: "and the wake running now" is otherwise said of a dead one.
         exec.exec(&["kill", "-TERM", &format!("-{pid}")], None, Duration::from_secs(10)).code == 0
     } else {
         false
@@ -256,6 +259,50 @@ mod tests {
         assert!(!outcome.killed_session);
         let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
         assert!(calls.iter().any(|c| c.contains("kill -TERM -424242")), "got {calls:?}");
+    }
+
+    fn wake_that_finished_as(outcome: crate::state::WakeOutcome) -> crate::state::Wake {
+        crate::state::Wake {
+            n: 1,
+            started_at: crate::clock::Timestamp::now(),
+            deadline_at: crate::clock::Timestamp::now(),
+            launcher: "claude".into(),
+            pid: Some(424242),
+            session: None,
+            outcome: Some(outcome),
+        }
+    }
+
+    /// The pid of a finished wake is only a number: the process is gone, and the system may have
+    /// given it to an unrelated process group, which is who a signal would reach.
+    #[test]
+    fn kill_sends_no_signal_to_the_pid_of_a_finished_wake() {
+        use crate::state::WakeOutcome;
+        for outcome in [WakeOutcome::Complete, WakeOutcome::Incomplete] {
+            let mut state = crate::state::test_run_state("sp-finished");
+            state.wake = Some(wake_that_finished_as(outcome));
+            let mut exec = FakeExec::new();
+            exec.queue(Output { code: 1, ..Default::default() }); // has-session: no
+            let killed = kill(&state, "sp-finished", &mut exec);
+            let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
+            assert!(!calls.iter().any(|c| c.starts_with("kill ")), "{outcome:?}: got {calls:?}");
+            assert!(!killed.did_anything(), "{outcome:?}");
+        }
+    }
+
+    /// The tmux session is found by the run's name, not by the pid, so it is still looked for.
+    #[test]
+    fn kill_still_removes_the_session_of_a_finished_wake() {
+        let mut state = crate::state::test_run_state("sp-finished-tmux");
+        state.wake = Some(wake_that_finished_as(crate::state::WakeOutcome::Complete));
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 0, ..Default::default() }); // has-session: yes
+        exec.queue(Output { code: 0, ..Default::default() }); // kill-session
+        let killed = kill(&state, "sp-finished-tmux", &mut exec);
+        let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
+        assert!(!calls.iter().any(|c| c.starts_with("kill ")), "got {calls:?}");
+        assert!(calls.iter().any(|c| c.contains("kill-session")), "got {calls:?}");
+        assert_eq!(killed, KillOutcome { killed_process: false, killed_session: true });
     }
 
     #[test]

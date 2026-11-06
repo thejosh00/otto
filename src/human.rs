@@ -2951,6 +2951,33 @@ mod tests {
         assert!(calls.iter().any(|c| c.contains("kill -TERM -313131")), "got {calls:?}");
     }
 
+    /// Stopping a sleeping run is the everyday way to reach a finished wake's pid.
+    #[test]
+    fn stopping_a_sleeping_run_sends_no_signal_to_its_finished_wakes_pid() {
+        let _h = TempHome::new();
+        test_init("h-stop-sleeping", "a goal").unwrap();
+        transaction("h-stop-sleeping", |_p, state| {
+            state.status = Status::Sleeping;
+            state.wake = Some(crate::state::Wake {
+                n: 1,
+                started_at: crate::clock::Timestamp::now(),
+                deadline_at: crate::clock::Timestamp::in_minutes(30),
+                launcher: "claude".into(),
+                pid: Some(313131),
+                session: None,
+                outcome: Some(crate::state::WakeOutcome::Complete),
+            });
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = crate::exec::fake::FakeExec::new();
+        exec.queue(crate::exec::Output { code: 1, ..Default::default() }); // has-session: no tmux at all
+        stop_with(StopArgs { id: "h-stop-sleeping".into(), reason: None, failed: false }, &mut exec).unwrap();
+        assert_eq!(read_run("h-stop-sleeping").unwrap().status, Status::Stopped);
+        let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
+        assert!(!calls.iter().any(|c| c.starts_with("kill ")), "got {calls:?}");
+    }
+
     #[test]
     fn stopping_with_failed_says_so() {
         let _h = TempHome::new();
