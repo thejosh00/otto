@@ -36,7 +36,7 @@ pub fn workspace_dir() -> PathBuf {
     std::env::var_os("OTTO_WORKSPACE").map(PathBuf::from).unwrap_or_else(home_dir)
 }
 
-/// Give this test process an `OTTO_HOME` of its own, whatever the environment says. A live test
+/// Give this test process an `OTTO_HOME` and a tmux server of its own, whatever the environment says. A live test
 /// left in the real one files its wakes' feedback in your queue — the first three reports ever
 /// filed were `live_chat`'s — keeps its runs among yours, and its `otto poke` acts on every agent
 /// you have. So every way into otto here comes through this first, and a new test can't forget.
@@ -53,6 +53,13 @@ fn use_a_home_of_its_own() {
         std::fs::create_dir_all(&work).expect("create the test's otto home");
         let root = root.canonicalize().expect("the test's otto home exists");
         std::env::set_var("OTTO_HOME", root.join("home"));
+        // A tmux server of its own too. Runs here number from 1 like yours, so on your server a
+        // test's `otto-1` is your run 1's session. Short, for tmux's limit on a socket's path; and
+        // `TMUX` goes because, set, it says which server to use whatever `TMUX_TMPDIR` says.
+        let tmux_dir = PathBuf::from(format!("/tmp/otto-live-tmux-{}", std::process::id()));
+        std::fs::create_dir_all(&tmux_dir).expect("create the test's tmux directory");
+        std::env::set_var("TMUX_TMPDIR", tmux_dir);
+        std::env::remove_var("TMUX");
         std::fs::create_dir_all(root.join("home")).expect("create the test's otto home");
         // `otto run` asks where wakes run until the home's config says.
         let config = serde_json::json!({ "workdir": root.join("work") }).to_string();
@@ -63,19 +70,20 @@ fn use_a_home_of_its_own() {
 /// Back to the real `~/.otto` until this is dropped, for a test of what's installed: the launchd
 /// agent only ever looks there. Hold the test's own lock with it — the environment is the
 /// process's, and anything running beside it would be back in your home too.
-pub struct RealHome(Option<std::ffi::OsString>);
+pub struct RealHome(Vec<(&'static str, std::ffi::OsString)>);
 
 pub fn real_home() -> RealHome {
     use_a_home_of_its_own();
-    let own = std::env::var_os("OTTO_HOME");
+    let own = ["OTTO_HOME", "TMUX_TMPDIR"].into_iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))).collect();
     std::env::remove_var("OTTO_HOME");
+    std::env::remove_var("TMUX_TMPDIR");
     RealHome(own)
 }
 
 impl Drop for RealHome {
     fn drop(&mut self) {
-        if let Some(own) = self.0.take() {
-            std::env::set_var("OTTO_HOME", own);
+        for (key, value) in self.0.drain(..) {
+            std::env::set_var(key, value);
         }
     }
 }

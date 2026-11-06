@@ -38,23 +38,35 @@ pub fn session_name(run_id: &str) -> String {
     format!("otto-{run_id}")
 }
 
+/// A target that names this session and no other. Bare, tmux also matches a prefix: `-t otto-1`
+/// finds `otto-12` when there's no `otto-1`, which started no wake for run 1 while run 12 had one,
+/// and let stopping run 1 kill run 12's. Stopping one in a live test killed the wake running it.
+fn session_target(name: &str) -> String {
+    format!("={name}")
+}
+
+/// The same for what tmux looks up by pane or window, whose targets need the colon.
+fn pane_target(name: &str) -> String {
+    format!("={name}:")
+}
+
 fn tmux(exec: &mut dyn Exec, argv: &[&str]) -> Output {
     exec.exec(argv, None, TMUX_TIMEOUT)
 }
 
 pub fn session_exists(exec: &mut dyn Exec, name: &str) -> bool {
-    tmux(exec, &["tmux", "has-session", "-t", name]).code == 0
+    tmux(exec, &["tmux", "has-session", "-t", &session_target(name)]).code == 0
 }
 
 /// What a session's pane shows right now, colour escapes included — a read-only `attach` for a
 /// caller with no terminal to attach. `None` when there is no such session.
 pub fn capture_pane(exec: &mut dyn Exec, name: &str) -> Option<String> {
-    let out = tmux(exec, &["tmux", "capture-pane", "-p", "-e", "-J", "-t", name]);
+    let out = tmux(exec, &["tmux", "capture-pane", "-p", "-e", "-J", "-t", &pane_target(name)]);
     (out.code == 0).then_some(out.stdout)
 }
 
 pub fn kill_session(exec: &mut dyn Exec, name: &str) -> bool {
-    tmux(exec, &["tmux", "kill-session", "-t", name]).code == 0
+    tmux(exec, &["tmux", "kill-session", "-t", &session_target(name)]).code == 0
 }
 
 /// Environment a detached wake cannot do without.
@@ -86,6 +98,7 @@ pub fn spawn_detached(exec: &mut dyn Exec, run_id: &str, argv: &[&str], cwd: &st
             crate::paths::short_id(run_id)
         )));
     }
+    let target = pane_target(&name);
     let env = inherited_env();
     let pairs: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let mut call: Vec<&str> = vec!["tmux", "new-session", "-d", "-s", &name, "-c", cwd];
@@ -102,10 +115,10 @@ pub fn spawn_detached(exec: &mut dyn Exec, run_id: &str, argv: &[&str], cwd: &st
         )));
     }
     for (key, value) in TAGS {
-        tmux(exec, &["tmux", "set-option", "-t", &name, key, value]);
+        tmux(exec, &["tmux", "set-option", "-t", &target, key, value]);
     }
-    tmux(exec, &["tmux", "set-option", "-t", &name, "@otto_run", run_id]);
-    tmux(exec, &["tmux", "set-option", "-t", &name, "@cc_label", &format!("otto · {}", crate::paths::label_of(run_id))]);
+    tmux(exec, &["tmux", "set-option", "-t", &target, "@otto_run", run_id]);
+    tmux(exec, &["tmux", "set-option", "-t", &target, "@cc_label", &format!("otto · {}", crate::paths::label_of(run_id))]);
     Ok(name)
 }
 
@@ -123,7 +136,7 @@ pub fn attach(run_id: &str) -> Result<(), OttoError> {
              `otto show {short}` for where it stands, `otto logs {short}` for what it has done"
         )));
     }
-    let err = std::process::Command::new("tmux").args(["attach", "-t", &name]).exec();
+    let err = std::process::Command::new("tmux").args(["attach", "-t", &session_target(&name)]).exec();
     Err(OttoError::usage(format!("could not attach to {name}: {err}")))
 }
 
@@ -135,6 +148,23 @@ mod tests {
     #[test]
     fn the_session_name_is_derived_from_the_run_id() {
         assert_eq!(session_name("2026-09-12-thing"), "otto-2026-09-12-thing");
+    }
+
+    /// With only `otto-12` alive, a bare `otto-1` would find it. Every target names one session.
+    #[test]
+    fn every_tmux_target_names_one_session_exactly() {
+        let mut exec = FakeExec::new();
+        session_exists(&mut exec, "otto-1");
+        kill_session(&mut exec, "otto-1");
+        capture_pane(&mut exec, "otto-1");
+        exec.queue(Output { code: 1, ..Default::default() });
+        spawn_detached(&mut exec, "1", &["otto", "wake", "1"], "/tmp").unwrap();
+        let calls = exec.calls.borrow().clone();
+        let targets: Vec<&String> = calls.iter().filter_map(|c| c.iter().position(|a| a == "-t").map(|i| &c[i + 1])).collect();
+        assert!(targets.len() >= 5, "{calls:?}");
+        for target in targets {
+            assert!(target == "=otto-1" || target == "=otto-1:", "{target} could match another session: {calls:?}");
+        }
     }
 
     #[test]
@@ -219,9 +249,9 @@ mod tests {
         let mut exec = FakeExec::new();
         exec.queue(Output { code: 0, ..Default::default() });
         assert!(session_exists(&mut exec, "otto-r1"));
-        assert_eq!(exec.last_call(), vec!["tmux", "has-session", "-t", "otto-r1"]);
+        assert_eq!(exec.last_call(), vec!["tmux", "has-session", "-t", "=otto-r1"]);
         exec.queue(Output { code: 0, ..Default::default() });
         assert!(kill_session(&mut exec, "otto-r1"));
-        assert_eq!(exec.last_call(), vec!["tmux", "kill-session", "-t", "otto-r1"]);
+        assert_eq!(exec.last_call(), vec!["tmux", "kill-session", "-t", "=otto-r1"]);
     }
 }

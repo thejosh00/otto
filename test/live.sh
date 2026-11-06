@@ -8,14 +8,14 @@
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #
-# Each test binary gets an OTTO_HOME of its own (tests/support), so none of this touches your runs
+# Each test binary gets an OTTO_HOME and a tmux server of its own (tests/support), so none of this touches your runs
 # or your feedback. live_revive's launchd half (live_revive_launchd) is the exception: it needs the
 # installed agent, so it runs among your runs, and only by hand.
 
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
-tests=${*:-live_gate live_todo live_message live_note live_chat live_feedback live_background live_wait live_outputs live_verify live_changes live_change_summary live_revive}
+tests=${*:-live_tmux live_gate live_todo live_message live_note live_chat live_feedback live_background live_wait live_outputs live_verify live_changes live_change_summary live_revive}
 logs=$(mktemp -d "${TMPDIR:-/tmp}/otto-live.XXXXXX")
 
 # Build once, then run the test binaries themselves. Not one `cargo test` each: every cargo that
