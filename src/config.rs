@@ -127,7 +127,7 @@ impl Process {
             merge_when_ready: false,
             start: Some("A worktree of its own on a fresh branch from the base, made with the manage-pr skill.".to_string()),
             land: Some(
-                "Rebased onto the base if it moved, tested, and pushed to it — or the repository's own ship script, when its \
+                "Rebased onto the base if it moved, tested every time, and pushed to it — or the repository's own ship script, when its \
                  README or CLAUDE.md documents one."
                     .to_string(),
             ),

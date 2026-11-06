@@ -45,21 +45,31 @@ otto state change claim <id> <change>        # prints the repo, base, branch, wo
 git -C <repo> fetch origin
 ```
 
-1. **Where it lands.** If the base hasn't moved past where the change branched
-   (`git -C <repo> merge-base --is-ancestor origin/<base> <sha>`), what lands is the approved `sha`
-   itself. If it has, rebase — **in a worktree of your own**, never the author's:
+1. **What lands.** Always **in a worktree of your own**, never the author's:
 
    ```
    git -C <repo> worktree add --detach <repo>/../.work-trees/lander/<change-slug> <sha>
+   ```
+
+   If the base hasn't moved past where the change branched
+   (`git -C <repo> merge-base --is-ancestor origin/<base> <sha>`), what lands is the approved `sha`
+   itself. If it has, rebase there, and what lands is the rebased commit:
+
+   ```
    git -C <that worktree> rebase origin/<base>
    ```
 
-   - It conflicts: `git rebase --abort`, remove your worktree, and `otto state change bounce <id>
-     <change> --reason "<which files, against which commit on <base>>"`. Its author fixes it.
-   - It rebases cleanly: run the repo's tests there (the command its CLAUDE.md or README gives; else
-     the obvious one). Red: bounce it with what failed. Green: what lands is the rebased commit.
+   It conflicts: `git rebase --abort`, remove your worktree, and `otto state change bounce <id>
+   <change> --reason "<which files, against which commit on <base>>"`, and unlock. Its author fixes it.
 
-2. **Check it is what was approved**, immediately before acting, every time:
+2. **Test what lands, every time**, there, whether or not it rebased, with the command the repo's
+   CLAUDE.md or README gives (else the obvious one). The author's word that the tests pass is what
+   this checks, so it never stands in for running them. Red: remove your worktree, bounce it with
+   what failed, and unlock. Its author fixes it. A repo with no tests to run: say so in the landed note. A repo
+   whose ship script runs them itself (step 4): that run is this one, and it failing is red just the
+   same.
+
+3. **Check it is what was approved**, immediately before acting, every time:
 
    ```
    otto state change check <id> <change> --head <what lands>    # exit 2 → DO NOT ACT
@@ -70,7 +80,7 @@ git -C <repo> fetch origin
    front of the person as a new version. Nothing lands until they approve that. Never land on any
    other exit-2.
 
-3. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
+4. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
    approved under (`process`), kept from the moment it was approved. Then how the repository ships,
    read from **its base branch** — its CLAUDE.md, README or CONTRIBUTING, a `scripts/ship.sh` they
    document — never from the change's own branch, which is the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
@@ -82,13 +92,13 @@ git -C <repo> fetch origin
    ```
 
    Never force a push to the base branch. Rejected as non-fast-forward means it moved again: fetch,
-   and go back to step 1.
+   and go back to step 1, in the worktree you have.
 
-4. **Bring the main checkout along**, so what runs from it is what landed: if it is on `<base>` and
+5. **Bring the main checkout along**, so what runs from it is what landed: if it is on `<base>` and
    clean, `git -C <repo> merge --ff-only origin/<base>`. Dirty or elsewhere: leave it, and say so in
    the landed note — never stash or discard someone's uncommitted work.
 
-5. **Record it.** otto looks for itself: the base branch — the remote's, or the main checkout's for a
+6. **Record it.** otto looks for itself: the base branch — the remote's, or the main checkout's for a
    repo that ships from there — must contain the commit.
 
    ```
@@ -97,10 +107,10 @@ git -C <repo> fetch origin
 
    Its author is told, and woken to do whatever follows landing.
 
-6. **Clean up**, then `otto state unlock <id>`:
+7. **Clean up**, then `otto state unlock <id>`:
 
    ```
-   git -C <repo> worktree remove <the author's worktree>     # and yours, if you made one
+   git -C <repo> worktree remove <the author's worktree>     # and yours
    git -C <repo> branch -D <branch>
    otto state change cleaned <id> <change>
    ```
@@ -160,7 +170,7 @@ git -C <repo> fetch origin
 otto state change merged <id> <change> --sha <its merge commit>
 ```
 
-Then clean up as after landing one (step 6).
+Then clean up as after landing one (step 7).
 
 ## Posting replies
 
@@ -172,7 +182,7 @@ it as written, then `otto state change posted <id> <change> --comment <id>`.
 ## Cleaning up after one
 
 `due` also lists changes that are landed, merged, dropped or closed and still have a worktree or
-branch. Same as step 6: lock, remove them (never `--force`), `cleaned` (or `--left` with why),
+branch. Same as step 7: lock, remove them (never `--force`), `cleaned` (or `--left` with why),
 unlock. A dropped change with its pull request still open: close it first (`gh pr close <url>
 --delete-branch`) and `otto state change closed <id> <change> --reason "the person dropped it"`.
 
@@ -181,7 +191,7 @@ unlock. A dropped change with its pull request still open: close it first (`gh p
 A change listed as `finish landing` was claimed by a wake that didn't finish. Re-derive before
 acting — never land twice. If the base already has it (`git -C <repo> log origin/<base>` shows the
 change's commits, at the approved sha or rebased), it landed: record it with that commit and go on
-to step 4. Otherwise start again from step 1.
+to step 5. Otherwise start again from step 1.
 
 Approved as a pull request (`mode` is `pr` in what `claim` printed), the same question is about its
 pull request: `gh pr list --head <branch> --state all` shows whether one was opened. One was: record
