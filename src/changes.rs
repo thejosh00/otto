@@ -1303,7 +1303,19 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                 Some(k) => return Err(OttoError::usage(format!("{} has no v{k}: its latest is v{latest}", r.display()))),
             }
             let process = config.process_for(&c.repo);
-            let chosen = how.unwrap_or(How { mode: process.mode, merge_when_ready: process.merge_when_ready });
+            // A change with a pull request stays on it, whatever its process says: the lander can
+            // only update it, and the code would otherwise be on the base with the pull request open.
+            let chosen = match (&c.pr, how) {
+                (Some(_), Some(How { mode: LandMode::Push, .. })) => {
+                    return Err(OttoError::usage(format!(
+                        "{} is on its pull request, so approving updates that: merge it there, or drop it and start again to push it",
+                        r.display()
+                    )))
+                }
+                (Some(pr), _) => How { mode: LandMode::Pr, merge_when_ready: pr.auto_merge },
+                (None, Some(how)) => how,
+                (None, None) => How { mode: process.mode, merge_when_ready: process.merge_when_ready },
+            };
             if chosen.mode == LandMode::Pr && git(Path::new(&c.repo), &["remote"]).unwrap_or_default().trim().is_empty() {
                 return Err(OttoError::usage(format!(
                     "{} has no remote to open a pull request on — land it with --push, or have the repository push straight to \
@@ -1313,7 +1325,8 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                     crate::config::DIRECT_PROCESS
                 )));
             }
-            let overridden = chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready;
+            let updates_its_pr = c.pr.is_some();
+            let overridden = !updates_its_pr && (chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready);
             let v = c.latest().clone();
             c.decision = Some(Decision {
                 mode: chosen.mode,
@@ -1331,11 +1344,16 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
             });
             c.enter(ChangeState::Approved);
             let how = match (chosen.mode, chosen.merge_when_ready) {
+                _ if updates_its_pr => "to update its pull request".to_string(),
                 (LandMode::Push, _) => format!("to land on {}", c.base),
                 (LandMode::Pr, false) => format!("as a pull request onto {}", c.base),
                 (LandMode::Pr, true) => format!("as a pull request onto {}, merged once it is approved and passing", c.base),
             };
-            let by = if overridden { format!(" rather than as {} says", process.name) } else { format!(", as {} says", process.name) };
+            let by = match (updates_its_pr, overridden) {
+                (true, _) => String::new(),
+                (_, true) => format!(" rather than as {} says", process.name),
+                _ => format!(", as {} says", process.name),
+            };
             let what = format!("approved v{} {how}{by}{}", v.k, note.as_ref().map(|n| format!(": {n}")).unwrap_or_default());
             c.moment("you", &what);
             moved(path, c, "person", &what)?;
@@ -3410,6 +3428,35 @@ pub(crate) mod tests {
         let c = change("c-rs", 1);
         assert_eq!((c.state, c.decision.as_ref().unwrap().version), (ChangeState::Approved, 2));
         assert_eq!(due().unwrap()[0].todo, "update its pull request");
+    }
+
+    #[test]
+    fn a_change_on_a_pull_request_stays_on_it_whatever_its_process_says() {
+        let _h = TempHome::new();
+        test_init("c-st", "a goal").unwrap();
+        test_init("c-stl", "land changes").unwrap();
+        set_lander("c-stl");
+        let repo = repo();
+        opened_as_a_pull_request("c-st", "c-stl", &repo);
+        crate::config::save_project(repo.wt.to_str().unwrap(), Some(crate::config::DIRECT_PROCESS)).unwrap();
+        submit("c-st", &submit_fix(&repo, "Shout")).unwrap();
+
+        let v2 = || Looked { r: r("c-st", 1), version: Some(2) };
+        let refused = approve(&[v2()], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap_err();
+        assert!(refused.message.contains("on its pull request"), "{}", refused.message);
+        assert_eq!(change("c-st", 1).state, ChangeState::Review, "refused: nothing changed");
+
+        // Its process pushes, and it still goes to its pull request, as the lander will be told.
+        approve(&[v2()], None, None).unwrap();
+        let c = change("c-st", 1);
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((d.mode, d.overridden), (LandMode::Pr, false));
+        assert!(c.timeline.last().unwrap().what.contains("approved v2 to update its pull request"), "{}", c.timeline.last().unwrap().what);
+        assert_eq!(due().unwrap()[0].todo, "update its pull request");
+        claim("c-stl", &r("c-st", 1)).unwrap();
+        let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        pr_pushed("c-stl", &r("c-st", 1), &head, None, false).unwrap();
+        assert_eq!(change("c-st", 1).state, ChangeState::PrOpen);
     }
 
     #[test]

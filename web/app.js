@@ -1241,13 +1241,18 @@ function changeDetail(d, actions) {
     const p = d.process;
     const asPr = p.mode === "pr";
     const key = `${l.run}/${l.n}`;
+    const onItsPr = c.pr ? (c.pr.number ? `PR #${c.pr.number}` : "its PR") : null;
     parts.push(h("div.decide",
-      h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/settings/processes" }, p.name), ": ",
+      onItsPr ? h("p.hint", `Approving pushes v${v.k} to ${onItsPr} and updates its description.`) : h("p.hint", `${l.repo.split("/").pop()} follows `, h("a", { href: "#/settings/processes" }, p.name), ": ",
         asPr ? `approving opens a pull request${p.mergeWhenReady ? " that merges itself once approved and passing" : ""}` : `approving lands it on ${c.base}`,
         p.land ? ` — ${p.land.replace(/\.\s*$/, "")}` : "",
         asPr ? `. The babysitter changes ${p.allowChanges ? `what is ${p.allowChanges}` : "nothing"} on it without you.` : ""),
       h("div.row",
-        h("button.primary.land", {
+        onItsPr ? h("button.primary.land", {
+          disabled: !d.lander,
+          title: !d.lander ? "No lander is set up" : `The lander pushes this version to ${onItsPr} (a)`,
+          onclick: (e) => actions.land([`${key}@v${v.k}`], e.currentTarget),
+        }, `Update ${onItsPr}`) : [h("button.primary.land", {
           disabled: !d.lander,
           title: !d.lander ? "No lander is set up" : asPr ? "The lander opens a pull request and keeps it moving; what reviewers ask goes to its agent (a)" : `The lander puts it on ${c.base} and pushes it (a)`,
           onclick: (e) => actions.land([`${key}@v${v.k}`], e.currentTarget),
@@ -1256,7 +1261,7 @@ function changeDetail(d, actions) {
           disabled: !d.lander,
           title: `Not as ${p.name} says, this once`,
           onclick: (e) => actions.land([`${key}@v${v.k}`], e.currentTarget, asPr ? { push: true } : { pr: true }),
-        }, asPr ? `Land on ${c.base} instead` : "Open a PR instead"),
+        }, asPr ? `Land on ${c.base} instead` : "Open a PR instead")],
         h("button.danger", {
           onclick: async (e) => {
             const r = await busy(e.currentTarget, () => api(`/changes/${enc(l.run)}/${l.n}/drop`, { text: words.value.trim() || null }));

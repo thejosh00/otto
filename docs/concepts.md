@@ -421,7 +421,8 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   the author is told it landed, and woken to do it.
 - **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2@v1 --pr` for one
   change, has the lander open one, and the **babysitter** watch it until it merges or closes. What a reviewer asks, and CI failing, goes to the change's author as a note:
-  it changes the code and submits again, and that version comes back to you to approve — unless you
+  it changes the code and submits again, and that version comes back to you to approve, which can
+  only update its pull request, whatever its process says — unless you
   allow changes to it without you, when the lander pushes it to the pull request without asking. How much the babysitter may change itself is
   yours to say, in words, per process and per pull request (`allowChanges`: `trivial`, `small`,
   `anything but security`; nothing until you say): within them it fixes the code, and the lander

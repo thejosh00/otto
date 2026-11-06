@@ -964,6 +964,15 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
     if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::ReadyToMerge {
         println!("\notto changes merge {}      merge its pull request", l.reference);
     } else if l.whose == crate::changes::Move::You && d.change.state == crate::changes::ChangeState::Review {
+        if let Some(pr) = &d.change.pr {
+            println!(
+                "\nIt is on its pull request, {}.\notto changes approve {r}@v{k}   update its pull request\notto changes revise {r} --text \"…\"\notto changes drop {r}",
+                pr.url,
+                r = l.reference,
+                k = d.change.latest().k
+            );
+            return Ok(());
+        }
         let (as_said, other, other_words) = match d.process.mode {
             crate::changes::LandMode::Push => (format!("land it on {}", d.change.base), "--pr  ", "as a pull request instead".to_string()),
             crate::changes::LandMode::Pr => (
