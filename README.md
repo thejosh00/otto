@@ -152,7 +152,9 @@ instructions come with otto (`workflows/land-flow.md`), so upgrading otto upgrad
 you named with `otto config lander` before system agents existed is adopted as the system one.
 
 Each wake, for each approved change: in a worktree of its own, it rebases onto the base branch if
-that moved and runs the tests either way, sending the change back if they fail, checks the commit is what you approved, and lands it — the way its
+that moved and runs the tests either way, as the base branch's docs say, so a change can't rewrite
+its own check. Tests that fail send the change back to its author; tests that couldn't start, say a
+missing tool, come to you. Then it checks the commit is what you approved, and lands it — the way its
 process says, then the repository's own docs, a ship script if it has one, else a push to `main`. It brings the
 main checkout along when that's clean, tells the run that wrote the change (which then does whatever
 follows — installing it, closing a ticket), and removes the worktree and branch. It never writes code

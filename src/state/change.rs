@@ -30,7 +30,7 @@ pub enum ChangeCommand {
     Landed(LandedArgs),
     /// The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
     Rebased(RebasedArgs),
-    /// The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+    /// The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
     Bounce(BounceArgs),
     /// The lander: its worktree and branch are gone (otto looks), or say what was left and why
     Cleaned(CleanedArgs),

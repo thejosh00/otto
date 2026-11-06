@@ -1910,7 +1910,7 @@ Commands:
   check      The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
   landed     The lander: it is on its base branch now. otto looks, and tells its author
   rebased    The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
-  bounce     The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+  bounce     The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
   cleaned    The lander: its worktree and branch are gone (otto looks), or say what was left and why
   pr-pushed  The lander: it opened the change's pull request (--url), or pushed its next version to it
   pr-seen    The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
@@ -2200,7 +2200,7 @@ Options:
 ### `otto state change bounce`
 
 ```text
-The lander: it couldn't land — a conflict, tests red after a rebase — so it goes back to its author
+The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
 
 Usage: otto state change bounce --reason <REASON> <LANDER> <CHANGE>
 

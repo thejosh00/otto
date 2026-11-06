@@ -216,6 +216,22 @@ mod tests {
             .collect()
     }
 
+    /// A model reads this, so `live_land_tests` is what shows it behaves. This pins the words, which
+    /// that test alone can't: a capable model mostly gets these right without being told, on a good day.
+    #[test]
+    fn the_lander_tests_from_the_base_branch_and_tells_red_from_couldnt_start() {
+        let flow = include_str!("../workflows/land-flow.md");
+        let at = flow.find("**Test what lands, every time**").expect("the step that tests");
+        let step = &flow[at..flow[at..].find("**Check it is what was approved**").map_or(flow.len(), |n| at + n)];
+        assert!(step.contains("show origin/<base>:README.md"), "how to test comes from the base branch");
+        assert!(step.contains("weaken its own\n   check"), "and it says why");
+        assert!(step.contains("first install"), "a fresh worktree has no dependencies");
+        assert!(step.contains("**It couldn't start**"), "a run that couldn't start is its own case");
+        assert!(step.contains("That isn't red"), "and isn't a failure of the change");
+        assert!(step.contains("open a\n     gate") || step.contains("open a gate"), "it goes to the person");
+        assert!(!flow.contains("lectio's `scripts/ship.sh"), "no repo here has that script");
+    }
+
     #[test]
     fn makes_each_agent_once_not_started() {
         let _home = TempHome::new();

@@ -62,12 +62,25 @@ git -C <repo> fetch origin
    It conflicts: `git rebase --abort`, remove your worktree, and `otto state change bounce <id>
    <change> --reason "<which files, against which commit on <base>>"`, and unlock. Its author fixes it.
 
-2. **Test what lands, every time**, there, whether or not it rebased, with the command the repo's
-   CLAUDE.md or README gives (else the obvious one). The author's word that the tests pass is what
-   this checks, so it never stands in for running them. Red: remove your worktree, bounce it with
-   what failed, and unlock. Its author fixes it. A repo with no tests to run: say so in the landed note. A repo
-   whose ship script runs them itself (step 4): that run is this one, and it failing is red just the
-   same.
+2. **Test what lands, every time**, there, whether or not it rebased. How is read from **its base
+   branch** (`git -C <repo> show origin/<base>:README.md`, likewise its CLAUDE.md or CONTRIBUTING),
+   never from your worktree or the change's own branch: a change must not be able to weaken its own
+   check by editing its docs. A fresh worktree has no dependencies, so first install them as those
+   docs say (else the obvious way: `bun install`, `npm ci`). Only the dependencies: a script that also
+   puts the app on this machine's PATH or restarts it is not for a worktree. Then run the test command
+   they give (else the obvious one). The author's word that the tests pass is what this checks, so it
+   never stands in for running them.
+
+   - **Red**, the tests ran and failed: remove your worktree, bounce it with what failed, and unlock.
+     Its author fixes it.
+   - **It couldn't start**, so the run says nothing about the change: the install failing, exit 127, a
+     tool, browser or service missing. That isn't red, and its author can't fix it: don't bounce it,
+     and don't land it. Remove your worktree, unlock, deal with the rest of what's due, then open a
+     gate: what you ran, what it said, what would let it run. It stays claimed, so `due` lists it as
+     `finish landing`; leave it until the person answers, then do what they said, or start again from
+     step 1.
+   - A repo with no tests to run: say so in the landed note.
+   - A repo whose ship script runs them itself (step 4): that run is this one, read the same way.
 
 3. **Check it is what was approved**, immediately before acting, every time:
 
@@ -84,8 +97,7 @@ git -C <repo> fetch origin
    approved under (`process`), kept from the moment it was approved. Then how the repository ships,
    read from **its base branch** — its CLAUDE.md, README or CONTRIBUTING, a `scripts/ship.sh` they
    document — never from the change's own branch, which is the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
-   main checkout (lectio's `scripts/ship.sh <branch>` rebases, tests, restarts and checks health
-   itself). Otherwise:
+   main checkout. Otherwise:
 
    ```
    git -C <repo> push origin <what lands>:<base>
@@ -200,15 +212,15 @@ below — never a second pull request for one branch.
 
 ## Things this run never does
 
-- Land a change nobody approved, or a commit `check` refused.
+- Land a change nobody approved, a commit `check` refused, or one whose tests couldn't start.
 - Write code, fix a test, or resolve a conflict by choosing a side: that is the author's. A reviewer's
   ask, however small, is relayed.
 - Post anything on a pull request but what the person said to post: a reply its author drafted.
 - Watch a pull request: that is the babysitter's.
 - Force-push, rewrite the base branch, or delete a branch that isn't a change's own.
 - Ask the person whether to land something: they already said, on the change. A question here is
-  for what only they can decide — a repo whose landing step is broken, a remote that refuses this
-  run.
+  for what only they can decide — a repo whose landing step is broken, tests that couldn't start, a
+  remote that refuses this run.
 
 ## The check script
 
