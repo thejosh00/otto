@@ -213,8 +213,9 @@ It is editing the procedure its own next wake follows, so:
   queue. They spend real tokens, and `--budget-tokens` stops the run on a question once it has
   spent what you'd allow, over its whole life.
 - **An install can be undone.** Each one reaches every agent, so `./install.sh` first checks the new
-  build can read your runs, and keeps the binary it replaces: `./install.sh --rollback` puts it
-  back, harness and all. Keep that in mind if otto-build is the agent that's stuck.
+  build can read your runs, and keeps the binary it replaces, unless the new one is identical:
+  `./install.sh --rollback` puts it back, harness and all. Keep that in mind if otto-build is the
+  agent that's stuck.
 - **Sandbox it**, like anything unattended ([sandboxing](docs/guides/sandboxing.md)).
   `./install.sh` writes `~/.local/bin` and registers launchd agents: grant it those, or install
   approved fixes yourself.

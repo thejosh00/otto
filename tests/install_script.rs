@@ -1,4 +1,4 @@
-//! tests/install_script.rs — what `install.sh` does about the web UI service.
+//! tests/install_script.rs — what `install.sh` does about the web UI service and the rollback copy.
 //!
 //! A copy of the script runs against stand-ins for cargo, launchctl and otto, under a throwaway
 //! `HOME`, so nothing here builds, installs or touches launchd. Each stand-in logs which binary it is and how
@@ -72,6 +72,15 @@ impl Sandbox {
         assert!(output.status.success(), "install.sh failed: {}", String::from_utf8_lossy(&output.stderr));
         fs::read_to_string(self.root.join("calls.log")).unwrap()
     }
+
+    fn installed(&self, name: &str) -> String {
+        fs::read_to_string(self.root.join("bin").join(name)).unwrap()
+    }
+
+    /// What the stand-in for the binary on PATH says before any install replaces it.
+    fn installed_before(&self) -> String {
+        "#!/bin/sh\necho \"old $*\" >> \"$STUB_LOG\"\n".to_string()
+    }
 }
 
 /// A landed web fix was marked verified while the running service still served the old page, because
@@ -80,6 +89,30 @@ impl Sandbox {
 fn an_install_restarts_a_running_service_from_the_new_binary() {
     let calls = Sandbox::new(Service::Running).install(&[]);
     assert!(calls.lines().any(|c| c == "new service restart"), "{calls}");
+}
+
+/// A change that doesn't alter the binary used to overwrite the rollback copy with the bad build
+/// itself, so a rollback put back the same binary and said it had rolled back.
+#[test]
+fn an_install_of_the_same_build_keeps_what_a_rollback_puts_back() {
+    let sandbox = Sandbox::new(Service::NeverInstalled);
+    sandbox.install(&[]); // the bad build replaces "old"
+    sandbox.install(&[]); // a docs-only change: cargo leaves the same binary
+    assert_eq!(sandbox.installed("otto.previous"), sandbox.installed_before());
+    sandbox.install(&["--rollback"]);
+    assert_eq!(sandbox.installed("otto"), sandbox.installed_before());
+}
+
+/// A build that does differ moves the rollback copy on, as it always has.
+#[test]
+fn an_install_of_a_different_build_keeps_the_one_it_replaces() {
+    let sandbox = Sandbox::new(Service::NeverInstalled);
+    sandbox.install(&[]);
+    assert_eq!(sandbox.installed("otto.previous"), sandbox.installed_before());
+    otto_stand_in(&sandbox.root.join("repo/target/release/otto"), "newer");
+    let new = sandbox.installed("otto");
+    sandbox.install(&[]);
+    assert_eq!(sandbox.installed("otto.previous"), new);
 }
 
 /// The binary a rollback puts back is the one the service must serve.

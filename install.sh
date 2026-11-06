@@ -17,7 +17,8 @@
 # `otto service stop` stays stopped.
 #
 # otto compiles its harness in, so an install changes what every agent's next wake is told. The
-# binary it replaces is kept beside the new one, and `./install.sh --rollback` puts it back.
+# binary it replaces is kept beside the new one, unless the new one is identical, and
+# `./install.sh --rollback` puts it back.
 set -euo pipefail
 
 with_service=0
@@ -54,7 +55,8 @@ else
 
 	mkdir -p "$bin_dir"
 	# cp, not mv: its modified time is when it stopped being current, which scripts/check.sh reads.
-	if [ -x "$bin_dir/otto" ]; then
+	# The same build again replaces nothing, so what a rollback puts back stays the one before it.
+	if [ -x "$bin_dir/otto" ] && ! cmp -s target/release/otto "$bin_dir/otto"; then
 		cp "$bin_dir/otto" "$bin_dir/otto.previous"
 	fi
 	install -m 755 target/release/otto "$bin_dir/otto"
