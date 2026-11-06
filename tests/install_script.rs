@@ -1,7 +1,7 @@
 //! tests/install_script.rs — what `install.sh` does about the web UI service.
 //!
-//! A copy of the script runs against stand-ins for cargo and otto, under a throwaway `HOME`, so
-//! nothing here builds, installs or touches launchd. Each stand-in logs which binary it is and how
+//! A copy of the script runs against stand-ins for cargo, launchctl and otto, under a throwaway
+//! `HOME`, so nothing here builds, installs or touches launchd. Each stand-in logs which binary it is and how
 //! it was called, which says whether the service was restarted and from which binary.
 
 use std::fs;
@@ -10,6 +10,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const PLIST: &str = "Library/LaunchAgents/com.joshuahill.otto-serve.plist";
+
+/// Where the web UI service stands when the script runs: `otto service stop` leaves the plist
+/// behind, so a stopped service and a running one differ only in what launchd has loaded.
+#[derive(Clone, Copy)]
+enum Service {
+    NeverInstalled,
+    Stopped,
+    Running,
+}
 
 struct Sandbox {
     _dir: tempfile::TempDir,
@@ -27,17 +36,20 @@ fn otto_stand_in(path: &Path, which: &str) {
 }
 
 impl Sandbox {
-    fn new(service_installed: bool) -> Sandbox {
+    fn new(service: Service) -> Sandbox {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         fs::create_dir_all(root.join("repo")).unwrap();
         fs::copy(Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh"), root.join("repo/install.sh")).unwrap();
         stand_in(&root.join("stubs/cargo"), "exit 0");
+        // 113 is what launchctl print really exits with for a job that isn't loaded.
+        let loaded = if matches!(service, Service::Running) { 0 } else { 113 };
+        stand_in(&root.join("stubs/launchctl"), &format!("exit {loaded}"));
         otto_stand_in(&root.join("repo/target/release/otto"), "new");
         otto_stand_in(&root.join("bin/otto"), "old");
         otto_stand_in(&root.join("bin/otto.previous"), "previous");
         fs::create_dir_all(root.join("home")).unwrap();
-        if service_installed {
+        if !matches!(service, Service::NeverInstalled) {
             let plist = root.join("home").join(PLIST);
             fs::create_dir_all(plist.parent().unwrap()).unwrap();
             fs::write(plist, "").unwrap();
@@ -65,23 +77,40 @@ impl Sandbox {
 /// A landed web fix was marked verified while the running service still served the old page, because
 /// the script only printed a note: the service has to be restarted from the binary just installed.
 #[test]
-fn an_install_restarts_an_installed_service_from_the_new_binary() {
-    let calls = Sandbox::new(true).install(&[]);
+fn an_install_restarts_a_running_service_from_the_new_binary() {
+    let calls = Sandbox::new(Service::Running).install(&[]);
     assert!(calls.lines().any(|c| c == "new service restart"), "{calls}");
 }
 
 /// The binary a rollback puts back is the one the service must serve.
 #[test]
-fn a_rollback_restarts_an_installed_service_from_the_binary_it_put_back() {
-    let calls = Sandbox::new(true).install(&["--rollback"]);
+fn a_rollback_restarts_a_running_service_from_the_binary_it_put_back() {
+    let calls = Sandbox::new(Service::Running).install(&["--rollback"]);
     assert!(calls.lines().any(|c| c == "previous service restart"), "{calls}");
+}
+
+/// `otto service stop` is a decision, and this script runs after every landing: restarting whenever
+/// the plist exists undid that decision at the next install.
+#[test]
+fn a_stopped_service_stays_stopped() {
+    for args in [&[][..], &["--rollback"][..]] {
+        let calls = Sandbox::new(Service::Stopped).install(args);
+        assert!(!calls.contains("service"), "{args:?}: {calls}");
+    }
+}
+
+/// Asking for the service is how to bring a stopped one back through this script.
+#[test]
+fn asking_for_the_service_starts_a_stopped_one() {
+    let calls = Sandbox::new(Service::Stopped).install(&["--service"]);
+    assert!(calls.lines().any(|c| c == "new service start"), "{calls}");
 }
 
 /// A machine that never wanted the web UI doesn't get one, or an error for not having one.
 #[test]
 fn no_service_installed_means_no_service_calls() {
     for args in [&[][..], &["--rollback"][..]] {
-        let calls = Sandbox::new(false).install(args);
+        let calls = Sandbox::new(Service::NeverInstalled).install(args);
         assert!(!calls.contains("service"), "{args:?}: {calls}");
     }
 }

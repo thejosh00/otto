@@ -8,9 +8,9 @@ installed with one command and both safe to re-run.
 | **The reviver** — `otto agent` | Runs `otto poke` every ~5 minutes: starts wakes that are due, runs check scripts, kills stuck wakes, sends notifications | **Yes.** Without it a sleeping run never wakes |
 | **The web service** — `otto service` | Keeps `otto serve` (the web UI) running from login, restarting it if it exits | Optional — runs carry on without it |
 
-`./install.sh` installs the reviver; `./install.sh --service` installs the web service too. Once the
-web service is installed, `./install.sh` and `./install.sh --rollback` restart it, so it serves the
-binary they leave in place.
+`./install.sh` installs the reviver; `./install.sh --service` installs the web service too. While the
+web service is running, `./install.sh` and `./install.sh --rollback` restart it, so it serves the
+binary they leave in place. One you stopped stays stopped.
 
 ## The reviver
 
@@ -39,7 +39,7 @@ otto poke --dry-run --verbose
 otto service start               # install and start `otto serve` on 127.0.0.1:7878
 otto service start --port 7979   # on another port
 otto service status              # loaded? which URL? where are the plist and log?
-otto service stop                # stop it; it stays stopped until the next start or ./install.sh
+otto service stop                # stop it; it stays stopped until the next start, through ./install.sh too
 otto service restart             # serve the binary now installed, on the same port
 ```
 
