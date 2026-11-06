@@ -124,6 +124,15 @@ pub enum FeedbackCommand {
         /// What should change, and how you'd know it had
         text: String,
     },
+    /// Name the one run that may file work here with `otto state assign`, or show or clear it. A
+    /// person's to do: refused from a wake
+    Driver {
+        /// The run to name. With neither this nor --clear, shows which is named
+        run: Option<String>,
+        /// Name none: no run can assign
+        #[arg(long, conflicts_with = "run")]
+        clear: bool,
+    },
     /// What to build now: nothing while something is being built, else whatever was reopened, else
     /// the oldest
     Next {
@@ -191,6 +200,20 @@ fn feedback_command(command: FeedbackCommand) -> Result<(), OttoError> {
             }
             println!("filed as report {}", f::add(&text)?.id);
         }
+        FeedbackCommand::Driver { run, clear } => {
+            if std::env::var_os("OTTO_RUN_ID").is_some() || std::env::var_os(crate::chat::CHAT_ENV).is_some() {
+                return Err(OttoError::usage("which run may assign work is a person's to say, so this is refused from a wake or a chat"));
+            }
+            let label = crate::paths::label_of;
+            match (run, clear) {
+                (Some(run), _) => println!("{} may now assign work with `otto state assign`", label(&f::set_driver(&run)?)),
+                (None, true) => println!("{}", if f::clear_driver()? { "no run may assign work now" } else { "no run was named" }),
+                (None, false) => match f::driver() {
+                    Some(id) => println!("{} may assign work with `otto state assign`", label(&id)),
+                    None => println!("no run may assign work — `otto feedback driver <run>` names one"),
+                },
+            }
+        }
         FeedbackCommand::Next { json } => {
             let next = f::next();
             if json {
@@ -217,15 +240,19 @@ fn feedback_command(command: FeedbackCommand) -> Result<(), OttoError> {
 
 fn print_report(report: &crate::feedback::Report) {
     let harness = crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes());
-    let who = match report.source {
-        crate::feedback::Source::Person => "you".to_string(),
-        crate::feedback::Source::Wake => {
+    let who = match (&report.assigned_by, report.source) {
+        (Some(run), _) => format!("from {}", crate::paths::label_of(run)),
+        (None, crate::feedback::Source::Person) => "you".to_string(),
+        (None, crate::feedback::Source::Wake) => {
             let wake = report.wake.map(|n| format!(", wake {n}")).unwrap_or_default();
             format!("{}{wake}", crate::paths::label_of(&report.run))
         }
     };
+    // What the wake was running, and on which harness, says how to read a report of friction. A
+    // driver's item is work passed along.
+    let a_wake_s_report = report.source == crate::feedback::Source::Wake && report.assigned_by.is_none();
     let mut about = vec![report.status.as_str().to_string()];
-    if !report.wraps.is_empty() {
+    if a_wake_s_report && !report.wraps.is_empty() {
         about.push(report.wraps.clone());
     }
     if let Some(parent) = report.parent {
@@ -234,7 +261,7 @@ fn print_report(report: &crate::feedback::Report) {
     if let Some(change) = &report.change {
         about.push(format!("change {change}"));
     }
-    if report.source == crate::feedback::Source::Wake && report.harness != harness {
+    if a_wake_s_report && report.harness != harness {
         about.push("an older harness".to_string());
     }
     if let Some(at) = report.handled_at {

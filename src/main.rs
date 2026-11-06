@@ -122,6 +122,7 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::ArmTimer(a) => commands::arm_timer(a),
         StateCommand::Tick(a) => commands::tick(a),
         StateCommand::Feedback(a) => commands::feedback(a),
+        StateCommand::Assign(a) => commands::assign(a),
         StateCommand::Due => commands::due(),
         StateCommand::Authorize(a) => authorize::authorize(a),
         StateCommand::CheckAuthorized(a) => authorize::check_authorized(a),

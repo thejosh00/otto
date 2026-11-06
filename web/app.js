@@ -2840,7 +2840,7 @@ function feedbackView() {
   }
 
   function card(r, next) {
-    const who = r.source === "person" ? "you" : `${r.run}${r.wake ? `, wake ${r.wake}` : ""}`;
+    const who = r.from ? `from ${r.from}` : r.source === "person" ? "you" : `${r.run}${r.wake ? `, wake ${r.wake}` : ""}`;
     const facts = [
       r.parent && `part of ${r.parent}`,
       r.change && `change ${r.change}`,

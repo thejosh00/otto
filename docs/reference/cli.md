@@ -645,6 +645,7 @@ Usage: otto feedback [OPTIONS] [COMMAND]
 
 Commands:
   add       File something you want built in otto. A wake reports with `otto state feedback` instead
+  driver    Name the one run that may file work here with `otto state assign`, or show or clear it. A person's to do: refused from a wake
   next      What to build now: nothing while something is being built, else whatever was reopened, else the oldest
   due       Whether a run building from this should wake, and why: what its check script asks
   building  Its change is out: `otto feedback building 12 --change 7/7`
@@ -681,6 +682,25 @@ Arguments:
           What should change, and how you'd know it had
 
 Options:
+  -h, --help
+          Print help
+```
+
+### `otto feedback driver`
+
+```text
+Name the one run that may file work here with `otto state assign`, or show or clear it. A person's to do: refused from a wake
+
+Usage: otto feedback driver [OPTIONS] [RUN]
+
+Arguments:
+  [RUN]
+          The run to name. With neither this nor --clear, shows which is named
+
+Options:
+      --clear
+          Name none: no run can assign
+
   -h, --help
           Print help
 ```
@@ -1407,6 +1427,7 @@ Commands:
   set-check         Give the run a standing check script, or remove the one a wake gave it
   tick              Account for one timer tick
   feedback          Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
+  assign            File work for the run building otto. Only the run a person named may: `otto feedback driver`
   due               Runs whose nextWakeAt has passed
   authorize         Record that a specific commit may go outward
   check-authorized  Refuse an outward action that nobody approved
@@ -2509,6 +2530,25 @@ Options:
 
       --stdin
           Read it from stdin
+
+  -h, --help
+          Print help
+```
+
+### `otto state assign`
+
+```text
+File work for the run building otto. Only the run a person named may: `otto feedback driver`
+
+Usage: otto state assign --file <FILE> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --file <FILE>
+          The file saying what to build: what should change, and how you'd know it had
 
   -h, --help
           Print help

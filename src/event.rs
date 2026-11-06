@@ -32,7 +32,7 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
     "check-set", "renamed", "renumbered", "period-set", "policy-set", "check-cleared", "notified", "message-sent",
     "message-done", "paused", "unpaused", "start-failed", "handoff-refused", "output-published", "output-state",
-    "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "waiting",
+    "stages-set", "done-claimed", "done-verified", "done-reopened", "feedback-sent", "feedback-assigned", "waiting",
     "wait-overdue", "chat-started", "chat-ended", "change-submitted", "change-moved",
 ];
 
@@ -271,6 +271,13 @@ pub enum Event {
     /// A wake told otto's maker what got in its way (`feedback`). The report is in
     /// `$OTTO_HOME/feedback.jsonl`, not here: it is about otto, not the run.
     FeedbackSent {
+        report: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wake: Option<u32>,
+    },
+    /// The driver run filed work in the queue (`feedback::assign`). The item is in
+    /// `$OTTO_HOME/feedback.jsonl`, not here.
+    FeedbackAssigned {
         report: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
         wake: Option<u32>,

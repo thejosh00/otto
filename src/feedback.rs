@@ -15,6 +15,12 @@
 //!   a wake that read something hostile can be steered, so a fix starts from reproducing it. Only a
 //!   person's way in stamps `person`. That refuses a wake by its `OTTO_RUN_ID`, which is a guard
 //!   against a mistake, not a lock: the lock is that a person approves whatever gets built.
+//! - **One run a person names can pass work along.** A driver run hands plan items to the run that
+//!   builds from here (`otto state assign`). Its items are queued like any other and marked as
+//!   its own (`assignedBy`), never as the person's. It is the only new thing the driver can do:
+//!   approving, landing and closing are where they were. The name is kept in its own file, and
+//!   `source` stays `wake` with the mark beside it, so that a rolled-back binary still reads
+//!   `config.json` (which refuses unknown keys) and this file, taking the item for a wake's report.
 //! - **One at a time.** `next` offers nothing while an item is being built, so a run can't stack up
 //!   work faster than a person reviews it. Reopened items go first (a fix that didn't hold), then
 //!   the oldest; the parts of a split item take its place in the queue, in order, so the slices of
@@ -38,6 +44,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const FILE: &str = "feedback.jsonl";
+/// Which run may assign work here, in a file of its own under `$OTTO_HOME`, by id. Absent: none.
+pub const DRIVER_FILE: &str = "feedback-driver";
 const LOCK: &str = ".feedback.lock";
 /// One problem, said plainly, fits.
 pub const MAX_BYTES: usize = 2048;
@@ -98,6 +106,10 @@ pub struct Report {
     /// The run a wake's report came from; empty for a person's.
     #[serde(default)]
     pub run: String,
+    /// The driver run that assigned this. Its `source` stays `Wake` for an older binary's sake, so
+    /// this is what tells it apart from a wake's report.
+    #[serde(rename = "assignedBy", default, skip_serializing_if = "Option::is_none")]
+    pub assigned_by: Option<String>,
     /// The wake that sent it; `None` when no wake was running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<u32>,
@@ -219,6 +231,7 @@ pub fn add(text: &str) -> Result<Report, OttoError> {
         source: Source::Person,
         status: Status::Open,
         run: String::new(),
+        assigned_by: None,
         wake: None,
         wraps: String::new(),
         harness: crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes()),
@@ -465,42 +478,117 @@ pub fn send(run: &str, text: &str) -> Result<Report, OttoError> {
     }
     let id = crate::paths::resolve_run_id(run)?;
     let state = crate::state::read_run(&id)?;
-    let wake = state.wake.as_ref().filter(|w| w.outcome.is_none()).map(|w| w.n);
-    let wraps = match &state.wraps.reference {
-        Some(reference) => format!("{} {reference}", crate::state::commands::kind_str(state.wraps.kind)),
-        None => crate::state::commands::kind_str(state.wraps.kind).to_string(),
-    };
-
     let report = {
         let _lock = Lock::take()?;
         let reports = all();
-        if wake.is_some() && reports.iter().filter(|r| r.run == id && r.wake == wake && r.parent.is_none()).count() >= PER_WAKE {
+        let report = stamped(&reports, &id, &state, text);
+        let sent = reports.iter().filter(|r| r.run == id && r.wake == report.wake && r.parent.is_none() && r.assigned_by.is_none());
+        if report.wake.is_some() && sent.count() >= PER_WAKE {
             return Err(OttoError::conflict(format!(
                 "this wake has sent {PER_WAKE} already — that is the most a wake sends; carry on with the work"
             )));
         }
-        let report = Report {
-            id: next_id(&reports),
-            at: Timestamp::now(),
-            source: Source::Wake,
-            status: Status::Open,
-            run: id.clone(),
-            wake,
-            wraps,
-            harness: crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes()),
-            text: text.to_string(),
-            handled_at: None,
-            change: None,
-            why: None,
-            duplicate_of: None,
-            parent: None,
-            reopened_at: None,
-        };
         append(&report)?;
         report
     };
     crate::state::transaction(&id, |dir, _state| {
         crate::event::record(dir, &Event::FeedbackSent { report: report.id, wake: report.wake })
+    })?;
+    Ok(report)
+}
+
+/// An item from a run, with what otto stamps on it: the wake, what the run wraps, which harness.
+fn stamped(reports: &[Report], id: &str, state: &crate::state::RunState, text: &str) -> Report {
+    let wraps = match &state.wraps.reference {
+        Some(reference) => format!("{} {reference}", crate::state::commands::kind_str(state.wraps.kind)),
+        None => crate::state::commands::kind_str(state.wraps.kind).to_string(),
+    };
+    Report {
+        id: next_id(reports),
+        at: Timestamp::now(),
+        source: Source::Wake,
+        status: Status::Open,
+        run: id.to_string(),
+        assigned_by: None,
+        wake: state.wake.as_ref().filter(|w| w.outcome.is_none()).map(|w| w.n),
+        wraps,
+        harness: crate::fnv::hex(crate::wake::prompt::HARNESS.as_bytes()),
+        text: text.to_string(),
+        handled_at: None,
+        change: None,
+        why: None,
+        duplicate_of: None,
+        parent: None,
+        reopened_at: None,
+    }
+}
+
+/// The run a person has named as the driver, if any.
+pub fn driver() -> Option<String> {
+    let name = std::fs::read_to_string(crate::paths::otto_home().join(DRIVER_FILE)).ok()?;
+    Some(name.trim().to_string()).filter(|name| !name.is_empty())
+}
+
+/// A person names the driver. The run has to exist; its id is what's kept, so a rename changes nothing.
+pub fn set_driver(run: &str) -> Result<String, OttoError> {
+    let id = crate::paths::resolve_run_id(run)?;
+    let home = crate::paths::otto_home();
+    std::fs::create_dir_all(&home)?;
+    crate::state::write_atomic(&home.join(DRIVER_FILE), &format!("{id}\n"))?;
+    Ok(id)
+}
+
+/// Whether there was one to clear.
+pub fn clear_driver() -> Result<bool, OttoError> {
+    match std::fs::remove_file(crate::paths::otto_home().join(DRIVER_FILE)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `run` is the driver, and whoever is calling is that run: a wake of another run can't get in by
+/// giving the driver's id. Its `OTTO_RUN_ID` is `caller`, a guard against a mistake like the one on
+/// a person's way in.
+fn require_driver(run: &str, caller: Option<&str>) -> Result<(), OttoError> {
+    let Some(driver) = driver() else {
+        return Err(OttoError::conflict(
+            "no run is named to assign work, so nothing can be; that is a person's to name, with `otto feedback driver <run>`. \
+             Ask them, if this work needs to reach the queue",
+        ));
+    };
+    let driver = crate::paths::resolve_run_id(&driver).unwrap_or(driver);
+    let caller = caller.map(|c| crate::paths::resolve_run_id(c).unwrap_or_else(|_| c.to_string()));
+    let who = caller.as_deref().unwrap_or(run);
+    if run != driver || who != driver {
+        return Err(OttoError::conflict(format!(
+            "only {} may assign work, and this is {}. Ask the person, if this work needs to reach the queue",
+            crate::paths::label_of(&driver),
+            crate::paths::label_of(who),
+        )));
+    }
+    Ok(())
+}
+
+/// The driver files an open item. Unlike `send` it fails loudly and has no limit per wake: this is
+/// the run's work, not a side channel. An item can be as long as a person's, since it is usually a
+/// person's plan passed along.
+pub fn assign(run: &str, caller: Option<&str>, text: &str) -> Result<Report, OttoError> {
+    let id = crate::paths::resolve_run_id(run)?;
+    require_driver(&id, caller)?;
+    let text = said(text, "say what to build: what should change, and how you'd know it had")?;
+    if text.len() > PERSON_MAX_BYTES {
+        return Err(OttoError::usage(format!("at most {PERSON_MAX_BYTES} bytes (this is {})", text.len())));
+    }
+    let state = crate::state::read_run(&id)?;
+    let report = {
+        let _lock = Lock::take()?;
+        let report = Report { assigned_by: Some(id.clone()), ..stamped(&all(), &id, &state, &text) };
+        append(&report)?;
+        report
+    };
+    crate::state::transaction(&id, |dir, _state| {
+        crate::event::record(dir, &Event::FeedbackAssigned { report: report.id, wake: report.wake })
     })?;
     Ok(report)
 }
@@ -823,6 +911,103 @@ mod tests {
         add("a thing").unwrap();
         building(1, &change).unwrap();
         assert!(due().unwrap().contains("wants its author"));
+    }
+
+    const PLAN: &str = "Build item 3 of plans/v3.md";
+
+    #[test]
+    fn the_named_run_can_assign_and_it_is_told_apart_from_a_person_s_item() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        set_driver("f-driver").unwrap();
+        wake_running("f-driver", 4);
+        let item = assign("f-driver", Some("f-driver"), &format!("  {PLAN}\n")).unwrap();
+        assert_eq!(item.text, PLAN);
+        assert_eq!((item.assigned_by.as_deref(), item.source, item.status), (Some("f-driver"), Source::Wake, Status::Open));
+        assert_eq!((item.run.as_str(), item.wake), ("f-driver", Some(4)));
+        assert_eq!(next().unwrap().id, item.id, "queued like any other");
+        add("mine").unwrap();
+        assert_eq!(next().unwrap().id, item.id, "in its turn: the oldest");
+        assert_eq!(all()[1].assigned_by, None, "a person's says nothing of the sort");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("f-driver").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("\"event\":\"feedback-assigned\""), "{journal}");
+        assert!(!journal.contains(PLAN), "the text stays out of the run's journal");
+    }
+
+    #[test]
+    fn another_run_is_refused_and_told_who_the_driver_is() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        test_init("f-other", "a goal").unwrap();
+        set_driver("f-driver").unwrap();
+        let err = assign("f-other", Some("f-other"), PLAN).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("only f-driver may"), "{}", err.message);
+        let err = assign("f-driver", Some("f-other"), PLAN).unwrap_err();
+        assert_eq!(err.code, 2, "giving the driver's id doesn't make a wake the driver");
+        assert!(err.message.contains("this is f-other"), "{}", err.message);
+        assert!(all().is_empty(), "refused means nothing was filed");
+    }
+
+    #[test]
+    fn with_nothing_named_no_run_can_assign() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        let err = assign("f-driver", Some("f-driver"), PLAN).unwrap_err();
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains("otto feedback driver"), "{}", err.message);
+        set_driver("f-driver").unwrap();
+        assert_eq!(driver().as_deref(), Some("f-driver"));
+        assert!(clear_driver().unwrap());
+        assert_eq!(driver(), None);
+        assert!(!clear_driver().unwrap(), "nothing left to clear");
+        assert_eq!(assign("f-driver", None, PLAN).unwrap_err().code, 2, "and clearing it takes the power away");
+        assert_eq!(set_driver("no-such-run").unwrap_err().code, 3);
+    }
+
+    /// Fails loudly, and isn't a report: as many as the plan has, as long as a person's.
+    #[test]
+    fn assigning_has_no_limit_per_wake_and_doesn_t_use_up_the_wake_s_reports() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        set_driver("f-driver").unwrap();
+        wake_running("f-driver", 1);
+        for _ in 0..PER_WAKE + 1 {
+            assign("f-driver", None, PLAN).unwrap();
+        }
+        send("f-driver", "one").unwrap();
+        send("f-driver", "two").unwrap();
+        assert!(send("f-driver", "three").is_err(), "reports still have theirs");
+        assert!(assign("f-driver", None, " ").is_err());
+        assert!(assign("f-driver", None, &"x".repeat(PERSON_MAX_BYTES + 1)).is_err());
+        assign("f-driver", None, &"x".repeat(MAX_BYTES + 1)).unwrap();
+    }
+
+    /// Dividing it doesn't make it anyone else's.
+    #[test]
+    fn the_parts_of_an_assigned_item_are_still_from_the_driver() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        set_driver("f-driver").unwrap();
+        assign("f-driver", None, PLAN).unwrap();
+        let parts = split(1, &["a".to_string(), "b".to_string()]).unwrap();
+        assert!(parts.iter().all(|p| p.assigned_by.as_deref() == Some("f-driver")));
+    }
+
+    /// What a rolled-back binary depends on: it knows nothing of the mark, and takes this for a
+    /// wake's report. The whole-binary version of this is in the change's evidence.
+    #[test]
+    fn an_assigned_item_keeps_a_source_an_older_binary_knows() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        set_driver("f-driver").unwrap();
+        assign("f-driver", None, PLAN).unwrap();
+        let line = std::fs::read_to_string(crate::paths::otto_home().join(FILE)).unwrap();
+        let item: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!((item["source"].as_str(), item["assignedBy"].as_str()), (Some("wake"), Some("f-driver")));
+        add("mine").unwrap();
+        let line = std::fs::read_to_string(crate::paths::otto_home().join(FILE)).unwrap();
+        assert!(!line.lines().nth(1).unwrap().contains("assignedBy"), "absent from everything else");
     }
 
     #[test]

@@ -320,14 +320,27 @@ pub async fn logs(State(state): State<Arc<AppState>>, Path(id): Path<String>, Qu
 /// The backlog, newest first, as `otto feedback` lists it — with what's next marked on the page.
 #[derive(Serialize)]
 struct Feedback {
-    reports: Vec<crate::feedback::Report>,
+    reports: Vec<ShownReport>,
     next: Option<u32>,
+}
+
+/// A report, with the driver that assigned it as a person reads its name.
+#[derive(Serialize)]
+struct ShownReport {
+    #[serde(flatten)]
+    report: crate::feedback::Report,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from: Option<String>,
 }
 
 pub async fn feedback() -> Response {
     blocking(|| {
         let mut reports = crate::feedback::all();
         reports.reverse();
+        let reports = reports
+            .into_iter()
+            .map(|report| ShownReport { from: report.assigned_by.as_deref().map(crate::paths::label_of), report })
+            .collect();
         Ok(Feedback { reports, next: crate::feedback::next().map(|r| r.id) })
     })
     .await

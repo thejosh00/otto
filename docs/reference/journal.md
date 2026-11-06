@@ -68,6 +68,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `note-added` | `note`, `file`, `standing` | A person left a note |
 | `notes-delivered` | `notes`, `wake` | A completed wake carried these one-off notes |
 | `feedback-sent` | `report`, `wake` | The wake told otto's maker what got in its way; the report is number `report` in `$OTTO_HOME/feedback.jsonl` (`otto feedback`) |
+| `feedback-assigned` | `report`, `wake` | The driver run filed work in the queue (`otto state assign`); the item is number `report` in `$OTTO_HOME/feedback.jsonl` |
 | `notes-given-late` | `notes`, `wake`, `before` | The wake was about to ask (`gate`), claim done (`done`) or confirm a claim (`confirm`) without these notes, added while it ran: refused once, and given them |
 | `note-dropped` | `note`, `standing` | A person withdrew a note |
 | `notified` | `key`, `title`, `message` | Poke sent a desktop notification |

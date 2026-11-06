@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
+    AssignArgs,
     ArmTimerArgs, CloseGateArgs, FeedbackArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
     OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
     TickArgs, VerifyArgs,
@@ -190,6 +191,8 @@ pub enum StateCommand {
     Tick(TickArgs),
     /// Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
     Feedback(FeedbackArgs),
+    /// File work for the run building otto. Only the run a person named may: `otto feedback driver`
+    Assign(AssignArgs),
     /// Runs whose nextWakeAt has passed
     Due,
     /// Record that a specific commit may go outward
@@ -220,7 +223,7 @@ impl StateCommand {
             Change { command } => command.writes(),
             Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | OpenGate(_) | CloseGate(_)
             | Message(_) | Publish(_) | Stages(_) | OutputState(_) | ArmTimer(_) | SetCheck(_) | Tick(_)
-            | Feedback(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,
+            | Feedback(_) | Assign(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,
         }
     }
 }

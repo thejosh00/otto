@@ -239,6 +239,22 @@ mod tests {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
     }
 
+    /// The page says "from <run>" from this, and a person's and a wake's have none.
+    #[test]
+    fn the_feedback_page_is_told_who_assigned_an_item_by_name() {
+        let _h = TempHome::new();
+        test_init("f-driver", "a goal").unwrap();
+        crate::feedback::set_driver("f-driver").unwrap();
+        crate::feedback::assign("f-driver", None, "build this").unwrap();
+        crate::feedback::add("mine").unwrap();
+        crate::feedback::send("f-driver", "friction").unwrap();
+        let (status, body) = rt().block_on(send(get_req("/api/feedback")));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let reports = body["data"]["reports"].as_array().or(body["reports"].as_array()).unwrap().clone();
+        let from: Vec<(&str, Option<&str>)> = reports.iter().map(|r| (r["text"].as_str().unwrap(), r["from"].as_str())).collect();
+        assert_eq!(from, vec![("friction", None), ("mine", None), ("build this", Some("f-driver"))]);
+    }
+
     #[test]
     fn listing_runs_answers_json() {
         let _h = TempHome::new();

@@ -1477,6 +1477,25 @@ pub fn feedback(args: FeedbackArgs) -> Result<(), OttoError> {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct AssignArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// The file saying what to build: what should change, and how you'd know it had
+    #[arg(long)]
+    pub file: String,
+}
+
+/// The run a person named as the driver files work for the run building otto (`crate::feedback`).
+/// Unlike `feedback`, every refusal is a real failure: this is the run's work, not a side channel.
+pub fn assign(args: AssignArgs) -> Result<(), OttoError> {
+    let text = read_text_arg(None, Some(&args.file), false, "file")?;
+    let caller = std::env::var("OTTO_RUN_ID").ok();
+    let report = crate::feedback::assign(&args.id, caller.as_deref(), &text)?;
+    println!("filed as report {}, marked as from {}", report.id, crate::paths::label_of(&report.run));
+    Ok(())
+}
+
+#[derive(clap::Args, Debug)]
 pub struct TickArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,

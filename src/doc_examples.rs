@@ -240,6 +240,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         NotesDelivered { notes: vec![], wake: 1 },
         NotesGivenLate { notes: vec![], wake: 1, before: String::new() },
         FeedbackSent { report: 1, wake: Some(1) },
+        FeedbackAssigned { report: 1, wake: Some(1) },
         Waiting { what: s(), give_up_at: Some(at) },
         WaitOverdue { what: s(), since: at, give_up_at: at },
         NoteDropped { note: s(), standing: false },
@@ -282,7 +283,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | WakeComplete { .. } | WakeIncomplete { .. } | UsageLimited { .. } | BudgetExhausted { .. }
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
-            | NoteAdded { .. } | NotesDelivered { .. } | NotesGivenLate { .. } | FeedbackSent { .. } | Waiting { .. } | WaitOverdue { .. } | NoteDropped { .. } | CheckSet { .. }
+            | NoteAdded { .. } | NotesDelivered { .. } | NotesGivenLate { .. } | FeedbackSent { .. } | FeedbackAssigned { .. } | Waiting { .. } | WaitOverdue { .. } | NoteDropped { .. } | CheckSet { .. }
             | PeriodSet { .. } | PolicySet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }

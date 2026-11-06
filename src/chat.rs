@@ -373,6 +373,7 @@ mod tests {
             &["handoff", "7", "--stdin"],
             &["log", "7", "--event", "cycle", "--message", "x"],
             &["message", "7", "--kind", "update", "--title", "x", "--body", "x"],
+            &["assign", "7", "--file", "x"],
         ] {
             let err = refuse_state_write(&state_command(write), Some("7")).expect_err(&format!("{write:?} is a write"));
             assert_eq!(err.code, 2);

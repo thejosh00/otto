@@ -588,6 +588,22 @@ Each report is stamped by otto with the run, the wake, what the run wraps and wh
 given (one from before the current harness says so). They're about otto, not the run's work, so they
 stay out of the inbox and nothing notifies you; the run's journal only notes that one was sent
 (`feedback-sent`). A wake sends two at most, in its own words, and the command never fails.
+
+A run can also pass work along, if you name it. A driver run feeding plan items to the run building
+otto can't honestly use `otto feedback add`, which would stamp its words as yours, or
+`otto state feedback`, which would make them evidence to reproduce. So you name one run, and only
+that run can assign:
+
+```bash
+otto feedback driver otto-driver    # name it; with no run, shows which it is
+otto feedback driver --clear        # name none, and no run can assign
+otto state assign otto-driver --file artifacts/next-item.md   # what its wake runs
+```
+
+Naming it is yours alone: it is refused from a wake. Any other run is refused with exit 2 and told
+which run is named. Unlike a report, assigning fails loudly and has no limit per wake. The item is
+queued and built like any other, and shown as "from <run>", so it can't be mistaken for yours or
+for a wake's report. That's all the driver gets: it can't approve, land or close anything by this.
 [The README](../README.md#otto-improving-itself) sets up a run that works through them.
 
 ## Where everything lives
@@ -611,6 +627,7 @@ stay out of the inbox and nothing notifies you; the run's journal only notes tha
   runs/.locks/                   repo locks
   archive/<id>/                  a deleted run's directory, kept until `otto cleanup`
   feedback.jsonl                 what wakes have said about otto itself — `otto feedback`
+  feedback-driver                the one run that may assign work there — `otto feedback driver`
   logs/poke.log, serve.log       the launchd jobs' output
 ```
 
