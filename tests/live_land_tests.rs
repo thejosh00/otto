@@ -231,7 +231,7 @@ fn live_land_tests() {
     let outcome = await_question(&author, &lander, 3);
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.check(main_now == main_before, "origin/main hasn't moved: nothing untested landed", format!("origin/main moved to {main_now}: it landed without its tests having run"));
-    checks.check(outcome == "asked", "the lander asked the person", format!("the change is {outcome}, with no question: a run that couldn't start was blamed on the change"));
+    checks.check(outcome == "asked", "the lander asked the person", format!("the change is {outcome}, with no question"));
     checks.check(change(&author, 3)["state"] != "revising", "it didn't go back to its author", "it went back to its author");
     checks.check(locks_held() == 0, "no repo lock is held across the question", "a repo lock is held across the question");
     if outcome != "asked" {
