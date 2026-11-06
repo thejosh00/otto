@@ -609,8 +609,6 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
-    /// The reason the guard exists: another site in the same browser must not be able to stop,
-    /// wake or start anything.
     /// On a phone the top nav used to scroll inside itself, hiding items (the current page's among them)
     /// with nothing to say they were there. Every item has to stay in view instead, however narrow.
     #[test]
@@ -626,6 +624,8 @@ mod tests {
         }
     }
 
+    /// The reason the guard exists: another site in the same browser must not be able to stop,
+    /// wake or start anything.
     #[test]
     fn other_websites_are_refused() {
         let _h = TempHome::new();
