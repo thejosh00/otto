@@ -119,6 +119,11 @@ pub fn decide(
 
     if liveness.probe(&run_id).is_busy() {
         if let Some(wake) = &state.wake {
+            // The wake on record has finished, so its deadline says nothing about whoever holds
+            // the lock: a new wake takes it before recording itself. Killing now would kill that.
+            if wake.outcome.is_some() {
+                return Decision::base(&run_id, Action::Skip, "a wake is starting".to_string());
+            }
             let over = now - wake.deadline_at.dt();
             // `deadline_grace` covers a wake that is still wrapping up just past its deadline;
             // beyond that it's stuck, not finishing.
@@ -670,7 +675,7 @@ mod tests {
     use crate::exec::fake::FakeExec;
     use crate::exec::Output;
     use crate::liveness::fake::FakeLiveness;
-    use crate::state::{test_run_state, Check, Gate, Status, Wake};
+    use crate::state::{test_run_state, Check, Gate, Status, Wake, WakeOutcome};
     use time::macros::datetime;
 
     fn now() -> OffsetDateTime {
@@ -826,6 +831,21 @@ mod tests {
         let decision = decide_with(&state, &FakeLiveness::with_running(&["r"]));
         assert_eq!(decision.action, Action::Kill);
         assert!(decision.reason.contains("past its deadline"));
+    }
+
+    /// The lock is held but the wake on record has finished, so the holder is a new wake that
+    /// hasn't recorded itself yet, whatever the old wake's deadline says. Killing it would kill a
+    /// healthy wake.
+    #[test]
+    fn a_finished_wake_past_its_deadline_is_not_killed() {
+        let mut state = base_state("r");
+        let mut wake = wake_with(44, at(now() - Duration::minutes(1170)), 4242);
+        for outcome in [WakeOutcome::Complete, WakeOutcome::Incomplete] {
+            wake.outcome = Some(outcome);
+            state.wake = Some(wake.clone());
+            let decision = decide_with(&state, &FakeLiveness::with_running(&["r"]));
+            assert_eq!((decision.action, decision.reason.as_str()), (Action::Skip, "a wake is starting"), "{outcome:?}");
+        }
     }
 
     /// A wake finishing up must not be killed out from under itself.
