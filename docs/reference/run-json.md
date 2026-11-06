@@ -54,6 +54,7 @@ what the ideas mean.
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
 | `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |
 | `unheardAnswer` | A person's answer that no wake has been given and completed with yet: `{gate, slug, answer, answeredAt, givenToWake}`. Every wake is given it until one that carried it completes |
+| `wakeAgain` | Something was asked of the run while a wake held it (`ifItsCheckAgrees` or `regardless`): the wake completing makes the run due, past its check if `regardless` |
 | `messages` | Messages the run has sent that the person has not marked done: `{id, kind, title, file, sentAt}`, `file` the message's `messages/NNN-<slug>.json` |
 
 ### `check`

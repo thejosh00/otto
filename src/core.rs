@@ -2019,14 +2019,17 @@ pub struct ChangeOutcome {
 
 /// Wake `id` in the background to act on what just changed, unless it can't take a wake now. A
 /// run already working hears a note before it stops; one waiting on a question hears it after.
-fn wake_to_act(id: &str) -> (Option<String>, Option<String>) {
+/// Working and past its last look, it is due again when that wake completes (`state::ask_again`).
+pub(crate) fn wake_to_act(id: &str, look: crate::state::Look) -> (Option<String>, Option<String>) {
     let label = crate::paths::label_of(id);
     let Ok(state) = read_run(id) else { return (None, Some(format!("{label} can't be read"))) };
     if state.status.is_terminal() {
         return (None, Some(format!("{label} is {}", crate::state::commands::status_str(state.status))));
     }
-    if let Some(why) = why_not_wake_for_note(&state, LockLiveness.probe(id).is_busy()) {
-        return (None, Some(format!("{label}: {why}")));
+    let busy = LockLiveness.probe(id).is_busy();
+    if let Some(why) = why_not_wake_for_note(&state, busy) {
+        let again = busy && crate::state::ask_again(id, look).is_ok();
+        return (None, Some(format!("{label}: {why}{}", if again { "; it looks again when that one finishes" } else { "" })));
     }
     match start_wake(id, Caller::Background.strategy(state.launcher.detach), None) {
         Ok(_) => (Some(label), None),
@@ -2043,7 +2046,7 @@ pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: 
     let refs = refs.iter().map(|r| crate::changes::Looked::parse(r)).collect::<Result<Vec<_>, _>>()?;
     let decided = crate::changes::approve(&refs, how, note)?;
     let lander = crate::config::lander()?.expect("approve refuses without a lander");
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees) };
     Ok(ChangeOutcome { decided, woke, not_woken })
 }
 
@@ -2051,14 +2054,14 @@ pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: 
 pub fn revise_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::revise(&r, text)?;
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run, crate::state::Look::Regardless) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }
 
 fn lander_acts(decided: Vec<crate::changes::Decided>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let lander = crate::config::lander()?;
     let (woke, not_woken) = match lander {
-        Some(lander) if !no_wake => wake_to_act(&lander),
+        Some(lander) if !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees),
         Some(_) => (None, None),
         None => (None, Some("no lander is set up".to_string())),
     };
@@ -2082,7 +2085,7 @@ pub fn answer_change(reference: &str, text: &str, no_wake: bool) -> Result<Chang
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::answer(&r, text)?;
     let told = decided.wake.clone().unwrap_or_else(|| r.run.clone());
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&told) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&told, crate::state::Look::Regardless) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }
 
@@ -2093,7 +2096,7 @@ pub fn drop_change(reference: &str, text: Option<&str>, no_wake: bool) -> Result
     let cleanup = crate::changes::due()?.iter().any(|d| d.run == r.run && d.n == r.n);
     let lander = crate::config::lander()?;
     let (woke, not_woken) = match lander {
-        Some(lander) if cleanup && !no_wake => wake_to_act(&lander),
+        Some(lander) if cleanup && !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees),
         _ => (None, None),
     };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })

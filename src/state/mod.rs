@@ -352,6 +352,44 @@ impl UnheardAnswer {
     }
 }
 
+/// How a run asked for something mid-wake comes back once that wake has finished.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Look {
+    /// What was asked is in the world, so a check script can tell whether the wake that just
+    /// finished dealt with it: a lander that saw the second approval in its `due` needs no wake.
+    IfItsCheckAgrees,
+    /// What was asked is a note, which no check script can see.
+    Regardless,
+}
+
+/// A wake is holding `id`, so nothing can be started for what was just asked of it. A wake already
+/// past its last look would finish without seeing it and sleep a whole period: an approval waited
+/// on the lander, a request for changes waited an hour on its author. So the wake completing makes
+/// the run due. One that has completed but not yet let go has nothing left to do that, so it is
+/// done here.
+pub fn ask_again(id: &str, look: Look) -> Result<(), OttoError> {
+    transaction(id, |path, state| {
+        if state.status == Status::Sleeping {
+            state.wake_due_now(path, look)
+        } else {
+            state.wake_again = Some(look);
+            Ok(())
+        }
+    })
+}
+
+impl RunState {
+    /// Due at poke's next pass, and journalled as such. A timer armed for `Regardless`, as a wake's
+    /// own would be, so a check doesn't stand in front of it.
+    pub fn wake_due_now(&mut self, path: &std::path::Path, look: Look) -> Result<(), OttoError> {
+        let now = crate::clock::Timestamp::now();
+        self.next_wake_at = Some(now);
+        self.armed_wake_at = (look == Look::Regardless).then_some(now);
+        crate::event::record(path, &crate::event::Event::TimerArmed { next_wake_at: now, note: Some("asked for mid-wake".to_string()) })
+    }
+}
+
 /// A message the run has sent a person and that is still waiting for them (see `messages`). The
 /// message itself — its body, any draft, what it attached — lives in `messages/NNN-<slug>.*`; this
 /// is the index the inbox reads, so listing what needs a person never scans a run's history. A
@@ -792,6 +830,10 @@ pub struct RunState {
     /// A person's answer no wake has been given and completed with yet (`UnheardAnswer`).
     #[serde(rename = "unheardAnswer", default, skip_serializing_if = "Option::is_none")]
     pub unheard_answer: Option<UnheardAnswer>,
+    /// Something was asked of the run while a wake held it, so no wake could be started for it
+    /// (`ask_again`). The wake completing makes the run due; until then, this says how.
+    #[serde(rename = "wakeAgain", default, skip_serializing_if = "Option::is_none")]
+    pub wake_again: Option<Look>,
     /// Messages the run has sent that the person has not yet marked done.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages: Vec<OpenMessage>,
@@ -1265,6 +1307,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         notified: BTreeMap::new(),
         notes: Vec::new(),
         unheard_answer: None,
+        wake_again: None,
         messages: Vec::new(),
         paused: None,
         wait: None,

@@ -465,6 +465,13 @@ fn finish_wake(
                     crate::notes::deliver(path, state, n)?;
                     hear_answer(path, state, n)?;
                 }
+                // Asked for while this wake ran. Only a sleep is overridden: a gate it opened, a
+                // block or a pause has its own way back, and that wake reads the world anyway.
+                if let Some(look) = state.wake_again.take() {
+                    if state.status == Status::Sleeping && state.gate.is_none() && !state.is_paused() {
+                        state.wake_due_now(path, look)?;
+                    }
+                }
                 let progress = crate::progress::account(state, mark.clone(), n);
                 if crate::progress::stalled(state) {
                     stalled = Some(state.ticks_without_progress);
@@ -1617,6 +1624,86 @@ mod tests {
         // Due now, so poke would have started it had this process ended first.
         let journal = std::fs::read_to_string(crate::paths::run_dir("w-mid").unwrap().join("journal.jsonl")).unwrap();
         assert!(journal.contains("gate 001 answered mid-wake"));
+    }
+
+    #[test]
+    fn something_asked_of_a_run_mid_wake_makes_it_due_when_that_wake_completes() {
+        let _h = TempHome::new();
+        test_init("w-asked", "a goal").unwrap();
+        let (mut exec, wakes) = script("w-asked", |_| {
+            // Starting another here would be a real wake, so the lock must already say no.
+            assert!(LockLiveness.probe("w-asked").is_busy());
+            let (woke, not_woken) = crate::core::wake_to_act("w-asked", crate::state::Look::IfItsCheckAgrees);
+            assert!(woke.is_none());
+            assert!(not_woken.unwrap().contains("when that one finishes"), "and the person is told so");
+        });
+        run_wake(&args("w-asked"), &mut exec).unwrap();
+
+        assert_eq!(wakes.get(), 1, "poke starts it, so its check can say there is nothing to do");
+        let state = read_run("w-asked").unwrap();
+        assert_eq!(state.status, Status::Sleeping);
+        assert!(state.next_wake_at.unwrap().is_past(), "due now, not a period on");
+        assert!(!state.wake_armed_timer(), "the check still stands in front of it");
+        assert!(state.wake_again.is_none(), "asked once, and that is it answered");
+        let journal = std::fs::read_to_string(crate::paths::run_dir("w-asked").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains("asked for mid-wake"));
+    }
+
+    #[test]
+    fn a_note_left_for_a_run_mid_wake_comes_past_its_check() {
+        let _h = TempHome::new();
+        test_init("w-told", "a goal").unwrap();
+        let (mut exec, _) = script("w-told", |_| {
+            assert!(LockLiveness.probe("w-told").is_busy());
+            crate::core::wake_to_act("w-told", crate::state::Look::Regardless);
+        });
+        run_wake(&args("w-told"), &mut exec).unwrap();
+
+        let state = read_run("w-told").unwrap();
+        assert!(state.next_wake_at.unwrap().is_past());
+        assert!(state.wake_armed_timer(), "a check can't know about a note, so it doesn't get a say");
+    }
+
+    #[test]
+    fn asking_after_the_wake_completed_but_before_it_let_go_still_counts() {
+        let _h = TempHome::new();
+        test_init("w-late", "a goal").unwrap();
+        transaction("w-late", |_p, state| {
+            state.status = Status::Sleeping;
+            state.next_wake_at = Some(Timestamp::in_minutes(60));
+            Ok(())
+        })
+        .unwrap();
+        crate::state::ask_again("w-late", crate::state::Look::IfItsCheckAgrees).unwrap();
+
+        let state = read_run("w-late").unwrap();
+        assert!(state.next_wake_at.unwrap().is_past());
+        assert!(state.wake_again.is_none(), "nothing is left for a completion that already happened");
+    }
+
+    #[test]
+    fn a_wake_nobody_asked_anything_of_sleeps_its_period() {
+        let _h = TempHome::new();
+        test_init("w-unasked", "a goal").unwrap();
+        let (mut exec, _) = script("w-unasked", |_| {});
+        run_wake(&args("w-unasked"), &mut exec).unwrap();
+        assert!(!read_run("w-unasked").unwrap().next_wake_at.unwrap().is_past());
+    }
+
+    #[test]
+    fn being_asked_mid_wake_does_not_override_a_gate_it_opened() {
+        let _h = TempHome::new();
+        test_init("w-gated", "a goal").unwrap();
+        let (mut exec, _) = script("w-gated", |_| {
+            crate::state::ops::open_gate("w-gated", "ship", "Ship it?", None).unwrap();
+            crate::state::ask_again("w-gated", crate::state::Look::Regardless).unwrap();
+        });
+        run_wake(&args("w-gated"), &mut exec).unwrap();
+
+        let state = read_run("w-gated").unwrap();
+        assert!(state.gate.is_some());
+        assert!(state.next_wake_at.is_none(), "the person's answer brings it back");
+        assert!(state.wake_again.is_none());
     }
 
     #[test]
