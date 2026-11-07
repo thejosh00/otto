@@ -2,15 +2,15 @@
 //! so otto's skills are discoverable by any Claude Code session — not only one
 //! running inside a particular sandbox/launcher.
 //!
-//! Skills installed: `manage-pr`. (v1 also installed an `otto` skill — the conductor's
-//! operating procedure — which v2 replaced with the embedded harness prompt.)
-//! (the worktree/PR-prep skill `dev-flow` delegates to) — both live under `<repo>/skills/`
-//! in the otto checkout this is run from.
+//! Skills installed: `manage-pr` (the worktree/PR-prep skill `dev-flow` delegates to) and
+//! `witness` (an independent check of a change's evidence, on trial). Both live under
+//! `<repo>/skills/` in the otto checkout this is run from. (v1 also installed an `otto` skill —
+//! the conductor's operating procedure — which v2 replaced with the embedded harness prompt.)
 
 use crate::error::OttoError;
 use std::path::{Path, PathBuf};
 
-const SKILLS: &[&str] = &["manage-pr"];
+const SKILLS: &[&str] = &["manage-pr", "witness"];
 
 /// Where the otto checkout is, so `otto install` can symlink `skills/<name>` even though
 /// the `otto` binary itself may be installed somewhere else entirely (e.g.
