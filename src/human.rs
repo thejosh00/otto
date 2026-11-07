@@ -13,6 +13,7 @@
 
 use crate::core::{Caller, DataChoice, LogQuery};
 use crate::error::OttoError;
+use crate::event::WakeCause;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::commands::InitArgs;
 use crate::state::{read_run, CheckResult, Detach};
@@ -60,7 +61,7 @@ pub fn run(mut args: RunArgs) -> Result<(), OttoError> {
     }
     let id = crate::core::create_run(args.init)?;
     println!("{}", crate::paths::label_of(&id));
-    start_wake(&id, detach, None)
+    start_wake(&id, detach, None, WakeCause::Person)
 }
 
 /// A run needs somewhere to run. With no `--workdir` and no default in `config.json`, ask once —
@@ -432,6 +433,8 @@ pub fn wake_command(mut args: crate::wake::WakeArgs) -> Result<(), OttoError> {
     // through `paths::run_dir`, so an unresolved abbreviation would silently name the wrong
     // session.
     args.id = crate::paths::resolve_run_id(&args.id)?;
+    // Without one, nothing internal started this: a person typed it.
+    let cause = *args.cause.get_or_insert(WakeCause::Person);
     // Read the run before deciding, so an unknown id says so straight away rather than starting a
     // tmux session whose child dies and reporting it fifteen seconds later as a timeout.
     let state = read_run(&args.id)?;
@@ -441,7 +444,7 @@ pub fn wake_command(mut args: crate::wake::WakeArgs) -> Result<(), OttoError> {
         Detach::None => crate::wake::wake(args),
         Detach::Tmux => {
             crate::core::refuse_if_busy(&args.id)?;
-            start_wake(&args.id, Detach::Tmux, args.answer)
+            start_wake(&args.id, Detach::Tmux, args.answer, cause)
         }
     }
 }
@@ -473,8 +476,8 @@ fn wake_destination(args: &crate::wake::WakeArgs, state: &crate::state::RunState
 /// cannot tell which was used. `Detach::None` from a human command means *watch it here* —
 /// `spawner::Strategy::Foreground` — never the detached-background strategy poke uses for the
 /// same preference; see `spawner`'s module doc for why those used to be conflated.
-fn start_wake(id: &str, detach: Detach, answer: Option<String>) -> Result<(), OttoError> {
-    let started = crate::core::start_wake(id, Caller::Terminal.strategy(detach), answer.as_deref())?;
+fn start_wake(id: &str, detach: Detach, answer: Option<String>, cause: WakeCause) -> Result<(), OttoError> {
+    let started = crate::core::start_wake(id, Caller::Terminal.strategy(detach), answer.as_deref(), cause)?;
     if let Some(note) = started.note {
         println!("{note}");
     }
@@ -1497,7 +1500,7 @@ fn inbox_done(args: InboxDoneArgs) -> Result<(), OttoError> {
         let state = read_run(&outcome.id)?;
         match crate::core::why_not_wake_for_note(&state, LockLiveness.probe(&outcome.id).is_busy()) {
             Some(why) => println!("not waking {label}: {why}"),
-            None => return start_wake(&outcome.id, state.launcher.detach, None),
+            None => return start_wake(&outcome.id, state.launcher.detach, None, WakeCause::Note),
         }
     }
     Ok(())
@@ -1868,7 +1871,7 @@ pub fn answer(args: AnswerArgs) -> Result<(), OttoError> {
     }
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
-    match start_wake(id, detach_of(id), Some(answer)) {
+    match start_wake(id, detach_of(id), Some(answer), WakeCause::GateAnswered) {
         Err(e) if crate::core::lost_to_follow_on(id, &e) => {
             println!("the wake after the last one has started, given your answer — `otto ls` to watch");
             Ok(())
@@ -1940,7 +1943,7 @@ pub fn note(args: NoteArgs) -> Result<(), OttoError> {
             println!("not waking it: {why}");
             Ok(())
         }
-        None => start_wake(&outcome.id, state.launcher.detach, None),
+        None => start_wake(&outcome.id, state.launcher.detach, None, WakeCause::Note),
     }
 }
 
@@ -2626,6 +2629,7 @@ mod tests {
             watch: false,
             detach: None,
             foreground: false,
+            cause: None,
         }
     }
 
@@ -3299,6 +3303,17 @@ mod tests {
         })));
         assert!(shown.contains("cacheRead=359k cacheCreation=51k"), "got: {shown}");
         assert!(shown.contains("turns=16 spentWakes=35"), "counters that are not tokens stay exact: {shown}");
+    }
+
+    #[test]
+    fn a_wake_with_no_cause_on_record_says_so_and_one_with_a_cause_says_it() {
+        let mut r = Renderer::new(time::UtcOffset::UTC);
+        let old = r.render(&line(serde_json::json!({"ts": "2026-09-15T05:00:00Z", "event": "wake-started", "wake": 1})));
+        assert!(old.contains("cause=not recorded"), "got: {old}");
+        let new = r.render(&line(serde_json::json!({"ts": "2026-09-15T05:00:00Z", "event": "wake-started", "wake": 2, "cause": "period"})));
+        assert!(new.contains("cause=period") && !new.contains("not recorded"), "got: {new}");
+        let other = r.render(&line(serde_json::json!({"ts": "2026-09-15T05:00:00Z", "event": "wake-complete"})));
+        assert!(!other.contains("cause"), "only a wake starting has one: {other}");
     }
 
     #[test]

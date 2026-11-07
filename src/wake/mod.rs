@@ -62,6 +62,11 @@ pub struct WakeArgs {
     /// where a wake runs, while this is the harness telling a child it is already in place.
     #[arg(long, hide = true)]
     pub foreground: bool,
+    /// What started this wake, for its `wake-started` line. Internal, like `--foreground`: whoever
+    /// starts a wake says why, and this is how that reaches the child that records it. `otto wake`
+    /// without it is a person asking.
+    #[arg(long, hide = true, value_enum)]
+    pub cause: Option<crate::event::WakeCause>,
 }
 
 /// What a wake used, and whether that could be found out at all.
@@ -160,11 +165,13 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     if args.dry_run {
         return Ok(());
     }
-    let next = WakeArgs { answer: None, ..args.clone() };
     for _ in 0..MAX_FOLLOW_ONS {
-        if !follows_on(&crate::state::read_run(&args.id)?) {
+        // Its own cause, not the one that started the first wake: that is what brought that wake,
+        // and this one is here because of how that wake ended.
+        let Some(cause) = follows_on(&crate::state::read_run(&args.id)?) else {
             break;
-        }
+        };
+        let next = WakeArgs { answer: None, cause: Some(cause), ..args.clone() };
         // Someone else started the next wake first — the person whose answer brought it, most
         // likely, handing it over themselves. That wake is the follow-on; there is nothing to add.
         if LockLiveness.probe(&args.id).is_busy() {
@@ -182,19 +189,24 @@ pub fn run_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
 /// Whether the wake that just finished leaves one that should start now: it completed, and either
 /// claimed done (a check is next), was a check that reopened the run (the fix is next), or a person
 /// answered its gate while it was still running (a wake given the answer is next — it never saw
-/// it). Not when anything else holds the run — a gate, a pause, a block.
-fn follows_on(state: &RunState) -> bool {
-    let Some(wake) = &state.wake else { return false };
+/// it). Not when anything else holds the run — a gate, a pause, a block. Which of them it is, is that
+/// wake's cause, and poke's too when this process died before starting it.
+pub(crate) fn follows_on(state: &RunState) -> Option<crate::event::WakeCause> {
+    use crate::event::WakeCause;
+    let wake = state.wake.as_ref()?;
     if wake.outcome != Some(WakeOutcome::Complete) || state.gate.is_some() || state.is_paused() {
-        return false;
+        return None;
     }
     if state.status != Status::Sleeping {
-        return false;
+        return None;
     }
-    let claimed = state.done_claim.as_ref().is_some_and(|c| c.by_wake == wake.n);
-    let reopened = state.last_verdict.as_ref().is_some_and(|v| !v.confirmed && v.wake == wake.n);
-    let answered = state.unheard_answer.as_ref().is_some_and(|a| a.given_to_wake != Some(wake.n));
-    claimed || reopened || answered
+    if state.done_claim.as_ref().is_some_and(|c| c.by_wake == wake.n) {
+        return Some(WakeCause::FollowOnClaim);
+    }
+    if state.last_verdict.as_ref().is_some_and(|v| !v.confirmed && v.wake == wake.n) {
+        return Some(WakeCause::FollowOnReopen);
+    }
+    state.unheard_answer.as_ref().is_some_and(|a| a.given_to_wake != Some(wake.n)).then_some(WakeCause::FollowOnAnswer)
 }
 
 /// One wake, with the spawner injected so the whole path is testable without spending money.
@@ -316,6 +328,7 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
                 deadline_at: deadline,
                 launcher: launcher_name.clone(),
                 session: Some(session.clone()),
+                cause: args.cause,
             },
         )
     })?;
@@ -423,7 +436,7 @@ fn finish_wake(
                 state.next_wake_at = Some(next);
                 crate::event::record(
                     path,
-                    &Event::TimerArmed { next_wake_at: next, note: Some("period".to_string()) },
+                    &Event::TimerArmed { next_wake_at: next, note: Some("period".to_string()), cause: None },
                 )?;
             }
             Ok(())
@@ -559,7 +572,7 @@ fn hear_answer(path: &std::path::Path, state: &mut RunState, n: u32) -> Result<(
         state.next_wake_at = Some(now);
         crate::event::record(
             path,
-            &Event::TimerArmed { next_wake_at: now, note: Some(format!("gate {} answered mid-wake", unheard.gate)) },
+            &Event::TimerArmed { next_wake_at: now, note: Some(format!("gate {} answered mid-wake", unheard.gate)), cause: None },
         )?;
     }
     Ok(())
@@ -588,7 +601,7 @@ pub fn record_usage_limited(id: &str, limit: &transcript::UsageLimit) -> Result<
         state.next_wake_at = Some(next);
         state.limited_until = Some(next);
         crate::event::record(path, &Event::UsageLimited { limit: limit.kind.clone(), resets_at: limit.resets_at })?;
-        crate::event::record(path, &Event::TimerArmed { next_wake_at: next, note: Some("usage limit".to_string()) })
+        crate::event::record(path, &Event::TimerArmed { next_wake_at: next, note: Some("usage limit".to_string()), cause: None })
     })?;
     Ok(next)
 }
@@ -651,7 +664,7 @@ pub fn record_start_failure(id: &str, why: &str) -> Result<Timestamp, OttoError>
         state.next_wake_at = Some(next);
         crate::event::record(
             path,
-            &Event::TimerArmed { next_wake_at: next, note: Some("couldn't start; retrying".to_string()) },
+            &Event::TimerArmed { next_wake_at: next, note: Some("couldn't start; retrying".to_string()), cause: None },
         )
     })?;
     Ok(next)
@@ -691,7 +704,7 @@ pub fn record_incomplete(id: &str, why: &str) -> Result<(), OttoError> {
             state.next_wake_at = Some(next);
             crate::event::record(
                 path,
-                &Event::TimerArmed { next_wake_at: next, note: Some("wake-incomplete backoff".to_string()) },
+                &Event::TimerArmed { next_wake_at: next, note: Some("wake-incomplete backoff".to_string()), cause: None },
             )?;
         }
         Ok(())
@@ -866,6 +879,7 @@ mod tests {
             watch: false,
             detach: None,
             foreground: true,
+            cause: None,
         }
     }
 
@@ -1562,6 +1576,7 @@ mod tests {
                 watch: false,
                 detach: None,
                 foreground: true,
+                cause: None,
             },
             &mut exec,
         )
@@ -1585,6 +1600,7 @@ mod tests {
                 watch: false,
                 detach: None,
                 foreground: true,
+                cause: None,
             },
             &mut exec,
         )
@@ -1633,7 +1649,7 @@ mod tests {
         let (mut exec, wakes) = script("w-asked", |_| {
             // Starting another here would be a real wake, so the lock must already say no.
             assert!(LockLiveness.probe("w-asked").is_busy());
-            let (woke, not_woken) = crate::core::wake_to_act("w-asked", crate::state::Look::IfItsCheckAgrees);
+            let (woke, not_woken) = crate::core::wake_to_act("w-asked", crate::state::Look::IfItsCheckAgrees, crate::event::WakeCause::ChangeApproved);
             assert!(woke.is_none());
             assert!(not_woken.unwrap().contains("when that one finishes"), "and the person is told so");
         });
@@ -1655,7 +1671,7 @@ mod tests {
         test_init("w-told", "a goal").unwrap();
         let (mut exec, _) = script("w-told", |_| {
             assert!(LockLiveness.probe("w-told").is_busy());
-            crate::core::wake_to_act("w-told", crate::state::Look::Regardless);
+            crate::core::wake_to_act("w-told", crate::state::Look::Regardless, crate::event::WakeCause::Note);
         });
         run_wake(&args("w-told"), &mut exec).unwrap();
 
@@ -1838,6 +1854,84 @@ mod tests {
             step(seen.get());
         });
         (exec, count)
+    }
+
+    /// The causes on this run's `wake-started` lines, in order. `None` for a line with none.
+    fn causes(id: &str) -> Vec<Option<String>> {
+        std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|line| line["event"] == "wake-started")
+            .map(|line| line["cause"].as_str().map(str::to_string))
+            .collect()
+    }
+
+    /// The child's half of poke's argv: the flag as the command line parses it, through to the line.
+    #[test]
+    fn the_cause_on_the_command_line_is_the_one_on_the_journal_line() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Line {
+            #[command(flatten)]
+            wake: WakeArgs,
+        }
+        let _h = TempHome::new();
+        test_init("w-cause", "a goal").unwrap();
+        let (mut exec, _) = script("w-cause", |_| {});
+        let parsed = Line::parse_from(["wake", "w-cause", "--foreground", "--cause", "check-changed"]);
+        run_wake(&parsed.wake, &mut exec).unwrap();
+        assert_eq!(causes("w-cause"), [Some("check-changed".to_string())]);
+    }
+
+    /// Nothing is guessed when nobody said.
+    #[test]
+    fn a_wake_nobody_gave_a_cause_records_none() {
+        let _h = TempHome::new();
+        test_init("w-none", "a goal").unwrap();
+        let (mut exec, _) = script("w-none", |_| {});
+        run_wake(&args("w-none"), &mut exec).unwrap();
+        assert_eq!(causes("w-none"), [None]);
+    }
+
+    /// The first wake keeps what started it; each one after says why it followed.
+    #[test]
+    fn a_follow_on_says_it_is_one_rather_than_repeating_the_first_wake_s_cause() {
+        let _h = TempHome::new();
+        test_init("w-chain", "a goal").unwrap();
+        let (mut exec, _) = script("w-chain", |n| match n {
+            1 => claim_done("w-chain"),
+            2 => {
+                crate::state::commands::verify(crate::state::commands::VerifyArgs {
+                    id: "w-chain".into(),
+                    confirm: false,
+                    reopen: true,
+                    reason: "the report is missing".into(),
+                })
+                .unwrap();
+            }
+            _ => {}
+        });
+        run_wake(&WakeArgs { cause: Some(crate::event::WakeCause::Period), ..args("w-chain") }, &mut exec).unwrap();
+        let said: Vec<_> = causes("w-chain").into_iter().map(Option::unwrap).collect();
+        assert_eq!(said, ["period", "follow-on-claim", "follow-on-reopen"]);
+    }
+
+    #[test]
+    fn an_answer_too_late_for_its_wake_brings_a_follow_on_called_that() {
+        let _h = TempHome::new();
+        test_init("w-late-answer", "a goal").unwrap();
+        let (mut exec, _) = script("w-late-answer", |n| {
+            if n == 1 {
+                crate::state::ops::open_gate("w-late-answer", "ship", "Ship it?", None).unwrap();
+                answer_gate("w-late-answer", "Ship it.");
+            } else {
+                behave_well("w-late-answer");
+            }
+        });
+        run_wake(&WakeArgs { cause: Some(crate::event::WakeCause::Person), ..args("w-late-answer") }, &mut exec).unwrap();
+        let said: Vec<_> = causes("w-late-answer").into_iter().map(Option::unwrap).collect();
+        assert_eq!(said, ["person", "follow-on-answer"]);
     }
 
     fn claim_done(id: &str) {

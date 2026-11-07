@@ -36,6 +36,55 @@ pub const OTTO_EVENTS: &[&str] = &[
     "wait-overdue", "chat-started", "chat-ended", "change-submitted", "change-moved",
 ];
 
+/// What started a wake, as `wake-started` records it. It crosses a process boundary: whoever starts
+/// a wake knows why, and the wake that records it is a child, told with a hidden `--cause`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum WakeCause {
+    /// The run's period came round, with no check in front of it.
+    Period,
+    /// A timer the last wake armed for itself came due.
+    Timer,
+    /// A check script in front of a due wake said something changed.
+    CheckChanged,
+    /// A check script failed or timed out, and poke woke the run to look.
+    CheckError,
+    /// A check said "nothing new" enough times in a row that poke woke the run anyway.
+    CheckSafetyNet,
+    /// A person answered its gate.
+    GateAnswered,
+    /// Its gate's time ran out, and a wake has to record the silence.
+    GateExpired,
+    /// Something was said for it to read: a person's note, a reply to its message, or word about a
+    /// change of its that wants more work.
+    Note,
+    /// A person started it: `otto run`, `otto wake`, `otto resume`, the web page's buttons.
+    Person,
+    /// A person approved a change, and this is the lander being started to land it.
+    ChangeApproved,
+    /// A change of this run's landed.
+    ChangeLanded,
+    /// Again, after a wake that didn't finish or a start that produced no wake.
+    Retry,
+    /// Something was asked of the run while its last wake was running, too late for that wake.
+    AskedMidWake,
+    /// Poke found nothing running, no gate and no wake time.
+    Stranded,
+    /// Straight after the wake that claimed done: this one checks the claim.
+    FollowOnClaim,
+    /// Straight after the check that sent a done claim back: this one does the fix.
+    FollowOnReopen,
+    /// Straight after a wake that a person's answer arrived too late for: this one is given it.
+    FollowOnAnswer,
+}
+
+impl WakeCause {
+    /// As the journal and `--cause` both spell it.
+    pub fn label(self) -> String {
+        clap::ValueEnum::to_possible_value(&self).expect("none is skipped").get_name().to_string()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
 pub enum Event {
@@ -126,6 +175,11 @@ pub enum Event {
         next_wake_at: Timestamp,
         #[serde(skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+        /// What the wake this brings is for, when that is more than a time coming round. Poke reads
+        /// it when it starts that wake: `run.json` can't carry it, because an older binary drops
+        /// fields it doesn't know, and a rollback must not lose more than a label.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cause: Option<WakeCause>,
     },
     Tick {
         #[serde(rename = "ticksWithoutProgress")]
@@ -148,6 +202,10 @@ pub enum Event {
         /// has replaced `wake.session` in `run.json` — `otto chat` lists them. Absent before 2026-10.
         #[serde(skip_serializing_if = "Option::is_none")]
         session: Option<String>,
+        /// What started it. Absent before it was recorded: read that as "not recorded", never as a
+        /// guess.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cause: Option<WakeCause>,
     },
     WakeSpent {
         turns: u64,
@@ -488,5 +546,27 @@ mod tests {
         .unwrap();
         assert!(value.get("reason").is_none(), "a None field must not appear, not appear as null");
         assert!(value.get("leftOpen").is_none(), "nor an empty list");
+    }
+
+    /// Three things have to spell a cause the same: the journal, the flag it crosses processes on,
+    /// and what is read back.
+    #[test]
+    fn a_cause_is_spelled_the_same_in_the_journal_and_on_the_command_line() {
+        for cause in <WakeCause as clap::ValueEnum>::value_variants() {
+            let journal = serde_json::to_value(cause).unwrap();
+            assert_eq!(journal, cause.label().as_str());
+            assert_eq!(<WakeCause as clap::ValueEnum>::from_str(&cause.label(), false).as_ref(), Ok(cause));
+        }
+    }
+
+    /// Every line written before causes were recorded has to go on reading.
+    #[test]
+    fn a_wake_started_line_with_no_cause_reads_and_stays_without_one() {
+        let old = serde_json::json!({
+            "event": "wake-started", "wake": 3, "deadlineAt": "2026-09-12T12:00:00Z", "launcher": "claude"
+        });
+        let event: Event = serde_json::from_value(old).unwrap();
+        assert!(matches!(event, Event::WakeStarted { cause: None, .. }));
+        assert!(serde_json::to_value(&event).unwrap().get("cause").is_none(), "nothing is made up on the way back");
     }
 }

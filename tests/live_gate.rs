@@ -125,5 +125,21 @@ fn live_gate() {
         checks.note(format!("{incomplete} wake(s) failed the contract — see the journal"));
     }
 
+    // What started each of these wakes, as a real wake's line records it: the person's `otto run`,
+    // their answer, and the check of the done claim the second wake made.
+    checks.step("8 - each wake says what started it");
+    let journal = std::fs::read_to_string(run.dir.join("journal.jsonl")).unwrap_or_default();
+    let causes: Vec<String> = journal
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|line| line["event"] == "wake-started")
+        .map(|line| line["cause"].as_str().unwrap_or("not recorded").to_string())
+        .collect();
+    checks.check(
+        causes.iter().map(String::as_str).take(3).eq(["person", "gate-answered", "follow-on-claim"]),
+        format!("wake-started says: {causes:?}"),
+        format!("expected person, gate-answered, follow-on-claim; got {causes:?}"),
+    );
+
     finish_run(checks, &run, "done", None, None);
 }

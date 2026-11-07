@@ -32,7 +32,7 @@ the budget events, the wake failures, and `usage-limited`.
 
 | Event | Fields | When |
 |---|---|---|
-| `wake-started` | `wake`, `deadlineAt`, `launcher`, `session` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under `~/.claude/projects/`); absent on wakes from before it was recorded |
+| `wake-started` | `wake`, `deadlineAt`, `launcher`, `session`, `cause` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under `~/.claude/projects/`); absent on wakes from before it was recorded. `cause` is [what started it](#why-a-wake-started); absent on wakes from before it was recorded, which `otto logs` shows as `not recorded` |
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
@@ -48,7 +48,7 @@ the budget events, the wake failures, and `usage-limited`.
 
 | Event | Fields | When |
 |---|---|---|
-| `timer-armed` | `nextWakeAt`, `note` | A sleep was scheduled — by a wake, the period (`note: period`), or a retry backoff |
+| `timer-armed` | `nextWakeAt`, `note`, `cause` | A sleep was scheduled — by a wake, the period (`note: period`), a retry backoff, or something that wants the run back soon. `cause` is what the wake it brings will say it was for, when that is more than a time coming round: `change-landed`, `note` or `asked-mid-wake` |
 | `waiting` | `for`, `giveUpAt` | A wake started waiting on something, with a limit (`arm-timer --waiting-for --give-up-after`) |
 | `wait-overdue` | `for`, `since`, `giveUpAt` | A wake tried to sleep again for a wait whose limit had passed; otto refused, and armed nothing |
 | `tick` / `noop-tick` | `ticksWithoutProgress`, `note` | A wake said it moved the run where otto can't see (`--progress`) / said what a look found. otto counts wakes that change nothing itself, so a plain tick adds nothing to the count |
@@ -94,3 +94,27 @@ the budget events, the wake failures, and `usage-limited`.
 | `lock-broken` | `repo`, `previousOwner`, `reason` | A dead run's lock was broken |
 | `lock-lost` | `repo`, `takenBy`, `reason` | This run's lock was broken by another |
 | `authorized` | `action`, `item`, `head`, `by`, `source` | An outward action was authorized for one commit |
+
+## Why a wake started
+
+`cause` on `wake-started` says what brought it. A line with no `cause` is from before it was recorded.
+
+| `cause` | What brought the wake |
+|---|---|
+| `period` | The run's period came round, with no check in front of it |
+| `timer` | A timer the last wake armed for itself came due |
+| `check-changed` | A check script in front of a due wake reported a change |
+| `check-error` | A check script failed or timed out, and poke woke the run to look |
+| `check-safety-net` | A check said "nothing new" `wakeAfter` times in a row, and poke woke the run anyway |
+| `gate-answered` | A person answered its gate |
+| `gate-expired` | Its gate's time ran out, and a wake has to record the silence |
+| `note` | Something was said for it to read: a note, a reply to its message, or word about a change of its that wants more work |
+| `person` | A person started it: `otto run`, `otto wake`, `otto resume`, the web page |
+| `change-approved` | A person approved a change, and this is the lander being started to land it |
+| `change-landed` | A change of this run's landed |
+| `retry` | Again, after a wake that didn't finish, a usage limit, or a start that produced no wake |
+| `asked-mid-wake` | Something was asked of the run while its last wake was running, too late for that wake |
+| `stranded` | Poke found nothing running, no gate and no wake time |
+| `follow-on-claim` | Straight after the wake that claimed done: this one checks the claim |
+| `follow-on-reopen` | Straight after the check that sent a claim back: this one does the fix |
+| `follow-on-answer` | Straight after a wake that a person's answer arrived too late for: this one is given it |

@@ -3,7 +3,7 @@
 
 use crate::clock::Timestamp;
 use serde::Serialize;
-use crate::event::Event;
+use crate::event::{Event, WakeCause};
 use crate::exec::{Exec, RealExec};
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::{CheckResult, RunEntry, RunState};
@@ -63,6 +63,8 @@ pub struct Decision {
     pub reason: String,
     pub attempts: u32,
     pub escalate: bool,
+    /// Why, when the action is to start a wake: what its `wake-started` line says.
+    pub cause: Option<WakeCause>,
 }
 
 impl Decision {
@@ -73,6 +75,7 @@ impl Decision {
             reason,
             attempts: 1,
             escalate: false,
+            cause: None,
         }
     }
 
@@ -188,6 +191,8 @@ pub fn decide(
             return spawn_or_back_off(
                 &run_id,
                 "stranded: nothing running, no gate, no wake time".to_string(),
+                // `otto answer --no-wake` leaves a run just like this, and what it left is why.
+                if state.unheard_answer.is_some() { WakeCause::GateAnswered } else { WakeCause::Stranded },
                 attempts_now,
                 last_at,
                 now,
@@ -199,11 +204,50 @@ pub fn decide(
     spawn_or_back_off(
         &run_id,
         format!("missed its wake at {}", state.next_wake_at.expect("Some checked above")),
+        due_cause(state),
         attempts_now,
         last_at,
         now,
         max_attempts,
     )
+}
+
+/// Why a due wake with no check deciding it is due, as far as `run.json` can say. `asked_for` adds
+/// what only the journal knows, when poke actually starts it.
+fn due_cause(state: &RunState) -> WakeCause {
+    // `decide` only gets here past an open gate if that gate has expired.
+    if state.gate.is_some() {
+        WakeCause::GateExpired
+    } else if state.incomplete_wakes > 0 || state.start_failures > 0 || state.usage_limited() {
+        WakeCause::Retry
+    } else if let Some(cause) = crate::wake::follows_on(state) {
+        // The process that would have started it straight away ended first.
+        cause
+    } else if state.wake_armed_timer() {
+        WakeCause::Timer
+    } else {
+        WakeCause::Period
+    }
+}
+
+/// A wake that looks like a timer or the period may be neither: a change landing or something asked
+/// mid-wake arms the same sleep, and says what for on its `timer-armed` line. Only the line that
+/// armed this very sleep counts. A run with no readable journal keeps what `run.json` said.
+fn asked_for(run_id: &str, state: &RunState, decided: WakeCause) -> WakeCause {
+    if !matches!(decided, WakeCause::Period | WakeCause::Timer) {
+        return decided;
+    }
+    let Some(due) = state.next_wake_at else { return decided };
+    let Ok(dir) = crate::paths::run_dir(run_id) else { return decided };
+    let Ok(journal) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return decided };
+    journal
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|line| line["event"] == "timer-armed")
+        .filter(|line| line["nextWakeAt"] == due.to_string().as_str())
+        .and_then(|line| serde_json::from_value(line["cause"].clone()).ok())
+        .unwrap_or(decided)
 }
 
 /// Spawn, unless our own last spawn produced nothing and it's too soon to try again.
@@ -212,23 +256,19 @@ pub fn decide(
 fn spawn_or_back_off(
     run_id: &str,
     reason: String,
+    cause: WakeCause,
     attempts: u32,
     last_at: Option<OffsetDateTime>,
     now: OffsetDateTime,
     max_attempts: u32,
 ) -> Decision {
+    let spawn = Decision { cause: Some(cause), ..Decision::base(run_id, Action::Spawn, reason) };
     let Some(last_at) = last_at else {
-        return Decision {
-            attempts: 1,
-            ..Decision::base(run_id, Action::Spawn, reason)
-        };
+        return spawn;
     };
     if attempts == 0 {
         // A wake ran since the last spawn, so the count was cleared: start over.
-        return Decision {
-            attempts: 1,
-            ..Decision::base(run_id, Action::Spawn, reason)
-        };
+        return spawn;
     }
     if attempts > max_attempts {
         return Decision::base(run_id, Action::Defer, format!("gave up after {max_attempts} spawns"));
@@ -252,10 +292,8 @@ fn spawn_or_back_off(
             format!("backing off {wait}m after {attempts} spawn(s) that produced no wake"),
         );
     }
-    Decision {
-        attempts: attempts + 1,
-        ..Decision::base(run_id, Action::Spawn, reason)
-    }
+    // Whatever made it due, what brings this wake is that the last spawn produced none.
+    Decision { attempts: attempts + 1, cause: Some(WakeCause::Retry), ..spawn }
 }
 
 /// What one run of a check script said, and what it printed.
@@ -378,6 +416,7 @@ fn run_check(
         CheckResult::NoChange if safety_net => spawn_or_back_off(
             &run_id,
             format!("check found nothing {streak} times in a row — waking anyway, in case the check is wrong"),
+            WakeCause::CheckSafetyNet,
             state.spawn_attempts,
             state.last_spawned_at.map(Timestamp::dt),
             now,
@@ -387,6 +426,7 @@ fn run_check(
         CheckResult::Changed => spawn_or_back_off(
             &run_id,
             "check script reported a change".to_string(),
+            WakeCause::CheckChanged,
             state.spawn_attempts,
             state.last_spawned_at.map(Timestamp::dt),
             now,
@@ -399,6 +439,7 @@ fn run_check(
                 code,
                 if timed_out { ", timed out" } else { "" }
             ),
+            WakeCause::CheckError,
             state.spawn_attempts,
             state.last_spawned_at.map(Timestamp::dt),
             now,
@@ -510,7 +551,8 @@ pub fn pass_once(
                         unreachable!("decide() never returns Spawn for an unreadable run")
                     };
                     let strategy = crate::spawner::Strategy::for_poke(state.launcher.detach);
-                    match crate::spawner::start(&run_id, strategy, None, exec) {
+                    let cause = asked_for(&run_id, state, decision.cause.expect("every spawn decided says why"));
+                    match crate::spawner::start(&run_id, strategy, None, cause, exec) {
                         Ok(handle) => {
                             decision.reason =
                                 format!("{} → {}", decision.reason, handle.description.unwrap_or_default())
@@ -1142,6 +1184,156 @@ mod tests {
         assert_eq!(decisions[0].action, Action::Check);
         assert!(decisions[0].reason.starts_with("[dry-run]"));
         assert!(exec.calls.borrow().is_empty(), "a dry run must not shell out, same as every other action");
+    }
+
+    // --- why it started (`wake-started`'s `cause`) ---
+
+    /// A run on disk that `shape` left as poke will find it. One pass through to the spawned argv,
+    /// and what that argv tells the child to record.
+    fn cause_of_the_spawn(id: &str, results: &[i32], at: OffsetDateTime, shape: impl Fn(&mut RunState, &std::path::Path)) -> String {
+        crate::state::commands::test_init(id, "a goal").unwrap();
+        crate::state::transaction(id, |path, state| {
+            state.status = Status::Sleeping;
+            state.next_wake_at = Some(Timestamp::at(now() - Duration::minutes(1)));
+            shape(state, path);
+            Ok(())
+        })
+        .unwrap();
+        let entry = RunEntry::Readable(crate::state::read_run(id).unwrap());
+        let mut exec = FakeExec::new();
+        for code in results {
+            exec.queue(Output { code: *code, ..Default::default() }); // the check script
+        }
+        exec.queue(Output { code: 1, ..Default::default() }); // has-session: no
+        let decisions =
+            pass_once(&[entry], at, &idle(), &mut exec, MAX_STARTS, GRACE_MINUTES, false, MAX_SPAWN_ATTEMPTS, DEADLINE_GRACE_MINUTES);
+        assert_eq!(decisions[0].action, Action::Spawn, "{id}: {}", decisions[0].reason);
+        let calls = exec.calls.borrow();
+        let call = calls.iter().find(|c| c.contains(&"new-session".to_string())).expect("a session is made");
+        let flag = call.iter().position(|a| a == "--cause").expect("the child is told why");
+        call[flag + 1].clone()
+    }
+
+    #[test]
+    fn a_wake_that_just_came_due_is_the_period_and_one_it_armed_is_its_timer() {
+        let _h = crate::paths::test_support::TempHome::new();
+        assert_eq!(cause_of_the_spawn("c-period", &[], now(), |_, _| {}), "period");
+        assert_eq!(cause_of_the_spawn("c-timer", &[], now(), |s, _| s.armed_wake_at = s.next_wake_at), "timer");
+    }
+
+    #[test]
+    fn a_check_in_front_of_the_wake_is_what_started_it() {
+        let _h = crate::paths::test_support::TempHome::new();
+        assert_eq!(cause_of_the_spawn("c-changed", &[1], now(), |s, _| s.check = Some(a_check(24))), "check-changed");
+        assert_eq!(cause_of_the_spawn("c-error", &[17], now(), |s, _| s.check = Some(a_check(24))), "check-error");
+        let two_already = |s: &mut RunState, _: &std::path::Path| {
+            let mut check = a_check(3);
+            check.consecutive_no_change = 2;
+            s.check = Some(check);
+        };
+        assert_eq!(cause_of_the_spawn("c-net", &[0], now(), two_already), "check-safety-net");
+    }
+
+    #[test]
+    fn an_earlier_start_that_produced_no_wake_makes_this_a_retry_whatever_made_it_due() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let failed_start = |s: &mut RunState| {
+            s.spawn_attempts = 1;
+            s.last_spawned_at = Some(Timestamp::at(now() - Duration::minutes(20)));
+        };
+        assert_eq!(cause_of_the_spawn("c-respawn", &[], now(), |s, _| failed_start(s)), "retry");
+        let checked = |s: &mut RunState, _: &std::path::Path| {
+            failed_start(s);
+            s.check = Some(a_check(24));
+        };
+        assert_eq!(cause_of_the_spawn("c-rechecked", &[1], now(), checked), "retry");
+    }
+
+    #[test]
+    fn a_wake_that_did_not_finish_is_retried_and_says_so() {
+        let _h = crate::paths::test_support::TempHome::new();
+        assert_eq!(cause_of_the_spawn("c-incomplete", &[], now(), |s, _| s.incomplete_wakes = 1), "retry");
+        assert_eq!(cause_of_the_spawn("c-limited", &[], now(), |s, _| s.limited_until = s.next_wake_at), "retry");
+    }
+
+    #[test]
+    fn a_gate_that_ran_out_and_a_run_left_with_nothing_are_named() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let expired = |s: &mut RunState, _: &std::path::Path| {
+            s.status = Status::AwaitingHuman;
+            s.gate = Some(gate("001", "proposal", Some(at(now() - Duration::hours(1)))));
+        };
+        assert_eq!(cause_of_the_spawn("c-expired", &[], now(), expired), "gate-expired");
+        assert_eq!(cause_of_the_spawn("c-stranded", &[], now(), |s, _| s.next_wake_at = None), "stranded");
+    }
+
+    fn answer_not_heard() -> crate::state::UnheardAnswer {
+        crate::state::UnheardAnswer {
+            gate: "001".into(),
+            slug: "q".into(),
+            answer: "yes".into(),
+            answered_at: at(now()),
+            given_to_wake: None,
+        }
+    }
+
+    /// `otto answer --no-wake` leaves no wake time, and the answer is what the wake is for.
+    #[test]
+    fn an_answer_left_without_a_wake_is_why_poke_starts_one() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let left = |s: &mut RunState, _: &std::path::Path| {
+            s.next_wake_at = None;
+            s.unheard_answer = Some(answer_not_heard());
+        };
+        assert_eq!(cause_of_the_spawn("c-no-wake", &[], now(), left), "gate-answered");
+    }
+
+    /// The process that should have started the follow-on ended first, so poke does. It is the same
+    /// wake for the same reason.
+    #[test]
+    fn poke_starting_a_follow_on_calls_it_one() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let finished = |s: &mut RunState, _: &std::path::Path| {
+            let mut wake = wake_with(3, at(now()), 4242);
+            wake.outcome = Some(WakeOutcome::Complete);
+            s.wake = Some(wake);
+            s.unheard_answer = Some(answer_not_heard());
+        };
+        assert_eq!(cause_of_the_spawn("c-follow", &[], now(), finished), "follow-on-answer");
+    }
+
+    /// Asked mid-wake arms the same sleep a period or a timer would, so only its journal line tells
+    /// it apart. `at` is the real clock's: that sleep is due at the real now.
+    #[test]
+    fn what_was_asked_mid_wake_is_read_from_the_line_that_armed_the_sleep() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let later = crate::clock::now() + Duration::seconds(5);
+        let asked = |look| {
+            move |s: &mut RunState, path: &std::path::Path| s.wake_due_now(path, look).unwrap()
+        };
+        assert_eq!(cause_of_the_spawn("c-asked", &[], later, asked(crate::state::Look::Regardless)), "asked-mid-wake");
+        assert_eq!(cause_of_the_spawn("c-asked2", &[], later, asked(crate::state::Look::IfItsCheckAgrees)), "asked-mid-wake");
+    }
+
+    /// The journal's word is only for the sleep it armed: a later sleep is whatever it is.
+    #[test]
+    fn a_cause_on_an_earlier_sleep_says_nothing_about_this_one() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let armed_again = |s: &mut RunState, path: &std::path::Path| {
+            s.wake_due_now(path, crate::state::Look::Regardless).unwrap();
+            let due = at(now() - Duration::minutes(1));
+            s.next_wake_at = Some(due);
+            s.armed_wake_at = None;
+            crate::event::record(path, &Event::TimerArmed { next_wake_at: due, note: Some("period".into()), cause: None }).unwrap();
+        };
+        assert_eq!(cause_of_the_spawn("c-stale", &[], now(), armed_again), "period");
+        // Nor does a line about some other time, should the sleep have moved without one.
+        let moved = |s: &mut RunState, path: &std::path::Path| {
+            s.wake_due_now(path, crate::state::Look::Regardless).unwrap();
+            s.next_wake_at = Some(at(now() - Duration::minutes(1)));
+            s.armed_wake_at = None;
+        };
+        assert_eq!(cause_of_the_spawn("c-moved", &[], now(), moved), "period");
     }
 
     // --- the pass ---

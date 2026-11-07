@@ -1090,7 +1090,7 @@ pub fn arm_timer(args: ArmTimerArgs) -> Result<(), OttoError> {
         if !pinned {
             state.check = check.clone();
         }
-        crate::event::record(path, &Event::TimerArmed { next_wake_at: wake, note: args.note.clone() })?;
+        crate::event::record(path, &Event::TimerArmed { next_wake_at: wake, note: args.note.clone(), cause: None })?;
         Ok(pinned)
     })?;
     if let Some(wait) = overdue {

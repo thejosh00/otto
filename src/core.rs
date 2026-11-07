@@ -11,6 +11,7 @@
 
 use crate::clock::relative;
 use crate::error::OttoError;
+use crate::event::WakeCause;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::paths::{short_id, short_id_among};
 use crate::spawner::Strategy;
@@ -56,14 +57,14 @@ pub struct WakeStart {
 /// its tmux session with it and writes nothing anywhere, so "wake started" would be a lie nobody
 /// could check. Waiting for the wake number to move is definitive: `otto wake` records it before
 /// spawning.
-pub fn start_wake(id: &str, strategy: Strategy, answer: Option<&str>) -> Result<WakeStart, OttoError> {
+pub fn start_wake(id: &str, strategy: Strategy, answer: Option<&str>, cause: WakeCause) -> Result<WakeStart, OttoError> {
     let mut exec = crate::exec::RealExec;
     if strategy == Strategy::Foreground {
-        crate::spawner::start(id, strategy, answer, &mut exec)?;
+        crate::spawner::start(id, strategy, answer, cause, &mut exec)?;
         return Ok(WakeStart::default());
     }
     let before = crate::spawner::wake_number(id);
-    let handle = crate::spawner::start(id, strategy, answer, &mut exec)?;
+    let handle = crate::spawner::start(id, strategy, answer, cause, &mut exec)?;
     if !crate::spawner::wait_for_hold(id, before) {
         let container = match &handle.session {
             Some(session) => format!("started tmux session {session}"),
@@ -942,7 +943,7 @@ pub fn answer_in_background(id: &str, choice: Option<&str>, text: Option<&str>, 
     // Hand the answer to the wake as well as recording it: the wake must see the person's own
     // words, not a summary of them.
     let strategy = Caller::Background.strategy(detach_of(&pending.id));
-    match start_wake(&pending.id, strategy, Some(&answer)) {
+    match start_wake(&pending.id, strategy, Some(&answer), WakeCause::GateAnswered) {
         Ok(started) => outcome.wake = Some(started),
         Err(e) if lost_to_follow_on(&pending.id, &e) => {
             outcome.note = Some("the wake after the last one has started, given your answer".to_string());
@@ -1621,7 +1622,7 @@ pub fn note_in_background(id: &str, text: &str, standing: bool, now: bool) -> Re
         outcome.not_woken = Some(why);
         return Ok(outcome);
     }
-    match start_wake(&outcome.id, Caller::Background.strategy(state.launcher.detach), None) {
+    match start_wake(&outcome.id, Caller::Background.strategy(state.launcher.detach), None, WakeCause::Note) {
         Ok(wake) => outcome.wake = Some(wake),
         // The note stands either way; it is on disk for whichever wake comes next.
         Err(err) => outcome.not_woken = Some(format!("the wake did not start: {}", err.message)),
@@ -1659,7 +1660,7 @@ pub fn wake_in_background(id: &str, detach: Option<Detach>) -> Result<WakeStart,
     }
     refuse_if_busy(&id)?;
     let strategy = Caller::Background.strategy(detach.unwrap_or(state.launcher.detach));
-    start_wake(&id, strategy, None)
+    start_wake(&id, strategy, None, WakeCause::Person)
 }
 
 // ---------------------------------------------------------------------------
@@ -1891,7 +1892,7 @@ pub fn resume_run(id: &str, reason: Option<String>, no_wake: bool) -> Result<Res
         outcome.note = Some(format!("not waking it now — next wake {at}"));
         return Ok(outcome);
     }
-    match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None) {
+    match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None, WakeCause::Person) {
         Ok(wake) => outcome.wake = Some(wake),
         // The resume itself stands: the run is due, so the next poke tries again.
         Err(err) => outcome.note = Some(format!("resumed, but it didn't start: {} — it's tried again within a few minutes", err.message)),
@@ -1993,7 +1994,7 @@ pub fn message_done(id: &str, which: Option<&str>, reply: Option<&str>, now: boo
     if now && outcome.done.note.is_some() {
         match why_not_wake_for_note(&state, running) {
             Some(why) => outcome.not_woken = Some(why),
-            None => match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None) {
+            None => match start_wake(&id, Caller::Background.strategy(state.launcher.detach), None, WakeCause::Note) {
                 Ok(wake) => outcome.wake = Some(wake),
                 Err(err) => outcome.not_woken = Some(format!("the run did not start: {}", err.message)),
             },
@@ -2020,7 +2021,7 @@ pub struct ChangeOutcome {
 /// Wake `id` in the background to act on what just changed, unless it can't take a wake now. A
 /// run already working hears a note before it stops; one waiting on a question hears it after.
 /// Working and past its last look, it is due again when that wake completes (`state::ask_again`).
-pub(crate) fn wake_to_act(id: &str, look: crate::state::Look) -> (Option<String>, Option<String>) {
+pub(crate) fn wake_to_act(id: &str, look: crate::state::Look, cause: WakeCause) -> (Option<String>, Option<String>) {
     let label = crate::paths::label_of(id);
     let Ok(state) = read_run(id) else { return (None, Some(format!("{label} can't be read"))) };
     if state.status.is_terminal() {
@@ -2031,7 +2032,7 @@ pub(crate) fn wake_to_act(id: &str, look: crate::state::Look) -> (Option<String>
         let again = busy && crate::state::ask_again(id, look).is_ok();
         return (None, Some(format!("{label}: {why}{}", if again { "; it looks again when that one finishes" } else { "" })));
     }
-    match start_wake(id, Caller::Background.strategy(state.launcher.detach), None) {
+    match start_wake(id, Caller::Background.strategy(state.launcher.detach), None, cause) {
         Ok(_) => (Some(label), None),
         Err(err) => (None, Some(format!("{label} did not start: {}", err.message))),
     }
@@ -2046,7 +2047,7 @@ pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: 
     let refs = refs.iter().map(|r| crate::changes::Looked::parse(r)).collect::<Result<Vec<_>, _>>()?;
     let decided = crate::changes::approve(&refs, how, note)?;
     let lander = crate::config::lander()?.expect("approve refuses without a lander");
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees, WakeCause::ChangeApproved) };
     Ok(ChangeOutcome { decided, woke, not_woken })
 }
 
@@ -2054,14 +2055,14 @@ pub fn approve_changes(refs: &[String], how: Option<crate::changes::How>, note: 
 pub fn revise_change(reference: &str, text: &str, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::revise(&r, text)?;
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run, crate::state::Look::Regardless) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&r.run, crate::state::Look::Regardless, WakeCause::Note) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }
 
 fn lander_acts(decided: Vec<crate::changes::Decided>, no_wake: bool) -> Result<ChangeOutcome, OttoError> {
     let lander = crate::config::lander()?;
     let (woke, not_woken) = match lander {
-        Some(lander) if !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees),
+        Some(lander) if !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees, WakeCause::Person),
         Some(_) => (None, None),
         None => (None, Some("no lander is set up".to_string())),
     };
@@ -2085,7 +2086,7 @@ pub fn answer_change(reference: &str, text: &str, no_wake: bool) -> Result<Chang
     let r = crate::changes::ChangeRef::parse(reference)?;
     let decided = crate::changes::answer(&r, text)?;
     let told = decided.wake.clone().unwrap_or_else(|| r.run.clone());
-    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&told, crate::state::Look::Regardless) };
+    let (woke, not_woken) = if no_wake { (None, None) } else { wake_to_act(&told, crate::state::Look::Regardless, WakeCause::Note) };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
 }
 
@@ -2096,7 +2097,7 @@ pub fn drop_change(reference: &str, text: Option<&str>, no_wake: bool) -> Result
     let cleanup = crate::changes::due()?.iter().any(|d| d.run == r.run && d.n == r.n);
     let lander = crate::config::lander()?;
     let (woke, not_woken) = match lander {
-        Some(lander) if cleanup && !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees),
+        Some(lander) if cleanup && !no_wake => wake_to_act(&lander, crate::state::Look::IfItsCheckAgrees, WakeCause::Person),
         _ => (None, None),
     };
     Ok(ChangeOutcome { decided: vec![decided], woke, not_woken })
@@ -2511,6 +2512,11 @@ impl Renderer {
                     continue;
                 }
                 rest.push(format!("{key}={}", self.shown(key, val, day)));
+            }
+            // A line from before causes were recorded says so, rather than leaving a reader to
+            // wonder whether this one had none.
+            if event == "wake-started" && !map.contains_key("cause") {
+                rest.push("cause=not recorded".to_string());
             }
         }
         out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));

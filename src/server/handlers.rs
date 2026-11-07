@@ -83,7 +83,7 @@ pub async fn start_run(Query(q): Query<StartQuery>, Json(init): Json<InitArgs>) 
         let detach = init.detach;
         let id = crate::core::create_run(init)?;
         let mut started = Started { id: Some(id.clone()), ..Default::default() };
-        match crate::core::start_wake(&id, Caller::Background.strategy(detach), None) {
+        match crate::core::start_wake(&id, Caller::Background.strategy(detach), None, crate::event::WakeCause::Person) {
             Ok(wake) => started.wake = Some(wake),
             Err(err) => started.wake_error = Some(err.message),
         }

@@ -26,7 +26,7 @@
 
 use crate::clock::Timestamp;
 use crate::error::OttoError;
-use crate::event::Event;
+use crate::event::{Event, WakeCause};
 use crate::state::RunState;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -1749,7 +1749,7 @@ pub fn landed(lander: &str, r: &ChangeRef, sha: &str, note: Option<&str>) -> Res
             note.as_ref().map(|n| format!(" The lander says: {n}")).unwrap_or_default()
         );
         tell_author(path, state, c, &body)?;
-        wake_soon(state);
+        wake_soon(path, state, WakeCause::ChangeLanded)?;
         moved(path, c, &lander, &what)?;
         Ok(c.clone())
     })
@@ -1771,7 +1771,7 @@ pub fn bounce(lander: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoE
             c.base
         );
         tell_author(path, state, c, &body)?;
-        wake_soon(state);
+        wake_soon(path, state, WakeCause::Note)?;
         moved(path, c, &lander, &format!("couldn't land it: {reason}"))?;
         Ok(c.clone())
     })
@@ -2128,7 +2128,7 @@ pub fn relay(by: &str, r: &ChangeRef, who: &str, text: &str) -> Result<Change, O
              with `otto state change reply`. If it needs the person's judgement, `otto state change ask`."
         );
         tell_author(path, state, c, &body)?;
-        wake_soon(state);
+        wake_soon(path, state, WakeCause::Note)?;
         moved(path, c, &babysitter, &format!("{who}: {}", first_line(&text)))?;
         Ok(c.clone())
     })
@@ -2160,7 +2160,7 @@ pub fn merged(by: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
         let checkout = if local_base { String::new() } else { format!(" The main checkout's own {} doesn't have it yet.", c.base) };
         let body = format!("{what}.{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing more to the change itself.");
         tell_author(path, state, c, &body)?;
-        wake_soon(state);
+        wake_soon(path, state, WakeCause::ChangeLanded)?;
         moved(path, c, &by, &what)?;
         Ok(c.clone())
     })
@@ -2325,10 +2325,11 @@ pub fn ask_as(by: Option<&str>, r: &ChangeRef, question: &str) -> Result<Change,
 }
 
 /// Bring a sleeping run back at the next poke, the way a timer its own wake armed would: a check
-/// script doesn't stand in front of it, since what it is woken for is a note, not the world.
-fn wake_soon(state: &mut RunState) {
+/// script doesn't stand in front of it, since what it is woken for is a note, not the world. Journalled
+/// with why, which is how poke knows what to call the wake it starts.
+fn wake_soon(path: &std::path::Path, state: &mut RunState, cause: WakeCause) -> Result<(), OttoError> {
     if state.status != crate::state::Status::Sleeping {
-        return;
+        return Ok(());
     }
     let now = Timestamp::now();
     state.next_wake_at = Some(now);
@@ -2336,6 +2337,7 @@ fn wake_soon(state: &mut RunState) {
     if state.check.as_ref().is_some_and(|c| !c.pinned) {
         state.check = None;
     }
+    crate::event::record(path, &crate::event::Event::TimerArmed { next_wake_at: now, note: Some(cause.label()), cause: Some(cause) })
 }
 
 // ---------------------------------------------------------------------------

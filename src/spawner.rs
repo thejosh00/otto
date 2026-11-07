@@ -14,6 +14,7 @@
 //! path back, used by both `otto stop` and poke's deadline kill.
 
 use crate::error::OttoError;
+use crate::event::WakeCause;
 use crate::exec::Exec;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::RunState;
@@ -55,12 +56,12 @@ pub struct Handle {
     pub session: Option<String>,
 }
 
-fn wake_argv(id: &str, answer: Option<&str>) -> Result<Vec<String>, OttoError> {
+fn wake_argv(id: &str, answer: Option<&str>, cause: WakeCause) -> Result<Vec<String>, OttoError> {
     let exe = crate::paths::current_exe()?;
     // `--foreground` is not optional. The child is the wake; the container it needs was created
     // here. Without it the child resolves the run's `detach` preference itself, decides it should
     // be backgrounded, and spawns another container — which spawns another. See `wake::WakeArgs`.
-    let mut argv: Vec<String> = vec![exe.display().to_string(), "wake".to_string(), id.to_string(), "--foreground".to_string()];
+    let mut argv: Vec<String> = vec![exe.display().to_string(), "wake".to_string(), id.to_string(), "--foreground".to_string(), "--cause".to_string(), cause.label()];
     if let Some(answer) = answer {
         argv.push("--answer".to_string());
         argv.push(answer.to_string());
@@ -81,7 +82,7 @@ fn cwd(id: &str) -> String {
 }
 
 /// Start one wake under the given strategy.
-pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn Exec) -> Result<Handle, OttoError> {
+pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, cause: WakeCause, exec: &mut dyn Exec) -> Result<Handle, OttoError> {
     match strategy {
         Strategy::Foreground => {
             wake(WakeArgs {
@@ -93,11 +94,12 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn 
                 // The caller *is* where this wake runs, so the destination resolution must not
                 // happen again inside `wake::run_wake`.
                 foreground: true,
+                cause: Some(cause),
             })?;
             Ok(Handle { description: None, session: None })
         }
         Strategy::Tmux => {
-            let argv = wake_argv(id, answer)?;
+            let argv = wake_argv(id, answer, cause)?;
             let refs: Vec<&str> = argv.iter().map(String::as_str).collect();
             let session = crate::detach::spawn_detached(exec, id, &refs, &cwd(id))?;
             Ok(Handle {
@@ -109,7 +111,7 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, exec: &mut dyn 
             })
         }
         Strategy::Detached => {
-            let argv = wake_argv(id, answer)?;
+            let argv = wake_argv(id, answer, cause)?;
             // `process_group(0)` detaches it from this process group, so the wake survives poke
             // exiting seconds later. Output goes to the run directory rather than being discarded:
             // a wake that dies before it can journal anything leaves its reason only here.
@@ -215,7 +217,7 @@ mod tests {
         test_init("sp-bg", "a goal").unwrap();
         let mut exec = FakeExec::new();
         exec.queue(Output { code: 1, ..Default::default() }); // has-session: nothing there yet
-        let handle = start("sp-bg", Strategy::Tmux, Some("go ahead"), &mut exec).unwrap();
+        let handle = start("sp-bg", Strategy::Tmux, Some("go ahead"), WakeCause::GateAnswered, &mut exec).unwrap();
         assert!(handle.session.is_some());
 
         let call = exec
@@ -233,6 +235,8 @@ mod tests {
         assert_eq!(call[wake + 1], "sp-bg");
         let answer = call.iter().position(|a| a == "--answer").expect("the answer must survive");
         assert_eq!(call[answer + 1], "go ahead");
+        let cause = call.iter().position(|a| a == "--cause").expect("nor can the child say why it started unless told");
+        assert_eq!(call[cause + 1], "gate-answered");
     }
 
     /// `otto stop` used to only know how to kill a tmux session — a run backgrounded without

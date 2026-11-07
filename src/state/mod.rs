@@ -386,7 +386,7 @@ impl RunState {
         let now = crate::clock::Timestamp::now();
         self.next_wake_at = Some(now);
         self.armed_wake_at = (look == Look::Regardless).then_some(now);
-        crate::event::record(path, &crate::event::Event::TimerArmed { next_wake_at: now, note: Some("asked for mid-wake".to_string()) })
+        crate::event::record(path, &crate::event::Event::TimerArmed { next_wake_at: now, note: Some("asked for mid-wake".to_string()), cause: Some(crate::event::WakeCause::AskedMidWake) })
     }
 }
 
