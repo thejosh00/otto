@@ -182,7 +182,7 @@ fn live_land_tests() {
     for (branch, title) in [("author/warmer", "A warmer greeting"), ("author/casual", "A casual greeting, and a quicker way to test"), ("author/farewell", "A farewell")] {
         let out = otto(&[
             "state", "change", "submit", &author.id, "--repo", repo.to_str().unwrap(), "--branch", branch, "--title", title,
-            "--summary-file", summary.to_str().unwrap(), "--tests", "the tests pass",
+            "--summary-file", summary.to_str().unwrap(), "--tests", "the tests pass", "--no-evidence", "a stand-in: the test's own commit",
         ]);
         checks.check(out.status.success(), format!("{branch} handed back"), format!("submit failed: {}", String::from_utf8_lossy(&out.stderr)));
     }

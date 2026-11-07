@@ -178,7 +178,7 @@ fn a_change_approved_starts_the_lander_and_a_change_landed_brings_its_author_bac
     s.next_wake_does(
         &author,
         &format!(
-            "'{OTTO}' state change submit \"$OTTO_RUN_ID\" --repo '{}' --branch demo/one --title One --summary-file '{}' --tests none\n",
+            "'{OTTO}' state change submit \"$OTTO_RUN_ID\" --repo '{}' --branch demo/one --title One --summary-file '{}' --tests none --no-evidence 'a stub wake'\n",
             repo.display(),
             s.root.join("summary.md").display()
         ),

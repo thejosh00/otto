@@ -2829,7 +2829,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn submit_fix<'a>(r: &'a Repo, title: &'a str) -> Submit<'a> {
-        Submit { repo: r.main.to_str().unwrap(), branch: "fix", title, summary: "Shouts the second line.", tests: Some("1 passed"), ..Default::default() }
+        Submit { repo: r.main.to_str().unwrap(), branch: "fix", title, summary: "Shouts the second line.", tests: Some("1 passed"), no_evidence: Some("a test of the plumbing"), ..Default::default() }
     }
 
     pub(crate) fn change(run: &str, n: u32) -> Change {
@@ -2898,7 +2898,7 @@ pub(crate) mod tests {
         let repo = repo();
         let ev = evidence_dir();
         let found = find_evidence(&[ev.path().to_path_buf()]).unwrap();
-        let out = submit("c-ev", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        let out = submit("c-ev", &Submit { evidence: found, no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
         assert_eq!(out.evidence, 2, "dotfiles are skipped");
 
         let v1 = change("c-ev", 1).latest().evidence.clone();
@@ -2945,13 +2945,13 @@ pub(crate) mod tests {
 
         // Forgotten, then given with the same commit: it joins v1.
         let found = find_evidence(&[ev.path().join("red-green.txt")]).unwrap();
-        let again = submit("c-ev2", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        let again = submit("c-ev2", &Submit { evidence: found, no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
         assert!(again.unchanged && !again.evidence_ignored && again.evidence == 1);
         assert_eq!(change("c-ev2", 1).latest().evidence[0].name, "red-green.txt");
 
         // Once there, the same commit can't swap it for something else.
         let found = find_evidence(&[ev.path().to_path_buf()]).unwrap();
-        let swap = submit("c-ev2", &Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        let swap = submit("c-ev2", &Submit { evidence: found, no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
         assert!(swap.unchanged && swap.evidence_ignored);
         assert_eq!(change("c-ev2", 1).latest().evidence.len(), 1);
 
@@ -3079,7 +3079,7 @@ pub(crate) mod tests {
         set_lander("c-evrl");
         let repo = repo();
         let ev = evidence_dir();
-        submit("c-evr", &Submit { evidence: find_evidence(&[ev.path().to_path_buf()]).unwrap(), ..submit_fix(&repo, "t") }).unwrap();
+        submit("c-evr", &Submit { evidence: find_evidence(&[ev.path().to_path_buf()]).unwrap(), no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
         approve(&[seen(r("c-evr", 1))], None, None).unwrap();
         claim("c-evrl", &r("c-evr", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);

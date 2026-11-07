@@ -327,7 +327,7 @@ mod tests {
         let ev = tempfile::tempdir().unwrap();
         std::fs::write(ev.path().join("after.png"), b"\x89PNGbytes").unwrap();
         let found = crate::changes::find_evidence(&[ev.path().to_path_buf()]).unwrap();
-        crate::changes::submit("2026-09-21-we", &crate::changes::Submit { evidence: found, ..submit_fix(&repo, "t") }).unwrap();
+        crate::changes::submit("2026-09-21-we", &crate::changes::Submit { evidence: found, no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
 
         let response = rt().block_on(app().oneshot(get_req("/api/changes/we/1/evidence/1/after.png"))).unwrap();
         assert_eq!(response.status(), StatusCode::OK);

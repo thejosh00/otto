@@ -77,7 +77,7 @@ fn live_land_override() {
     let approved = stdout(&git(&worktree, &["rev-parse", "HEAD"]));
     let summary = scratch.path().join("summary.md");
     write_file(&summary, "A farewell, beside the greeting.\n");
-    let out = otto(&["state", "change", "submit", &author.id, "--repo", repo.to_str().unwrap(), "--branch", "author/farewell", "--title", "A farewell", "--summary-file", summary.to_str().unwrap(), "--tests", "no tests touch it"]);
+    let out = otto(&["state", "change", "submit", &author.id, "--repo", repo.to_str().unwrap(), "--branch", "author/farewell", "--title", "A farewell", "--summary-file", summary.to_str().unwrap(), "--tests", "no tests touch it", "--no-evidence", "a stand-in: the test's own commit"]);
     checks.check(out.status.success(), "handed back", format!("submit failed: {}", String::from_utf8_lossy(&out.stderr)));
     let _ = otto(&["stop", &author.id, "--reason", "a stand-in: it writes nothing"]);
 
