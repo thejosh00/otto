@@ -111,8 +111,9 @@ reading**. Prefer running. Only a real gap on a reachable path of behaviour the 
 Each is **proven**, **contradicted** or **not checked**, with the command that shows it. Run it yourself. A
 contradicted one is a `[criterion contradicted]` finding.
 
-Criteria come from the spec when one exists: the file in `~/workspace/ideas/specs/` or
-`~/workspace/architecture/specs/` whose `branch:` matches the change's, read only above its `## Log`.
+Criteria come from the spec when one exists: a spec the goal names, or else the file in
+`~/workspace/ideas/specs/` or `~/workspace/architecture/specs/` whose `branch:` matches the change's, read only
+above its `## Log`.
 Otherwise from the plan item or the summary, and the report says **the source is the author**. Reading the
 summary for this is allowed now, because step 4 is done.
 
