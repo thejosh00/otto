@@ -969,6 +969,8 @@ fn changes_show(a: ChangesShowArgs) -> Result<(), OttoError> {
         for e in &d.evidence {
             println!("  {}", crate::changes::home_relative(&e.file));
         }
+    } else if let Some(why) = &v.no_evidence {
+        println!("no evidence: {why}");
     }
     println!(
         "{} commit{}, {} file{}, +{} −{}",

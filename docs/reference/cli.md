@@ -2001,6 +2001,9 @@ Options:
       --evidence <PATH>
           What shows it works — a screenshot, a transcript, tests failing before and passing after: a file, or a folder of them. Again for more. Pictures (png, jpg, gif, webp) and text (txt, log, md, json); copied, so the person sees what you saw
 
+      --no-evidence <WHY>
+          Why there is nothing to show, when there isn't: "plan only, no code". The person reads it on the change. A new commit needs this or --evidence, not both; the same commit again needs neither
+
       --base <BASE>
           The branch it lands on. Omitted, the remote's default branch
 

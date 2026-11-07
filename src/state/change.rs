@@ -196,6 +196,10 @@ pub struct SubmitArgs {
     /// md, json); copied, so the person sees what you saw
     #[arg(long, value_name = "PATH")]
     pub evidence: Vec<String>,
+    /// Why there is nothing to show, when there isn't: "plan only, no code". The person reads it on
+    /// the change. A new commit needs this or --evidence, not both; the same commit again needs neither
+    #[arg(long = "no-evidence", value_name = "WHY")]
+    pub no_evidence: Option<String>,
     /// The branch it lands on. Omitted, the remote's default branch
     #[arg(long)]
     pub base: Option<String>,
@@ -458,6 +462,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             file: file.as_deref(),
             tests: a.tests.as_deref(),
             evidence,
+            no_evidence: a.no_evidence.as_deref(),
         },
     )?;
     let r = format!("{}/{}", crate::paths::short_id(&id), out.n);
@@ -486,6 +491,9 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
         } else if !out.file_ignored && !out.summary_added && !out.summary_ignored {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
+        }
+        if a.no_evidence.is_some() {
+            println!("change {r} v{}: what it says about its evidence kept as it was. A new reason comes with a new commit", out.version);
         }
         return Ok(());
     }

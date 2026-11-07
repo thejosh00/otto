@@ -1235,6 +1235,7 @@ function changeDetail(d, actions) {
   } else parts.push(md(d.summary));
   if (v.tests) parts.push(h("p.tests", h("span.label", "Tests "), v.tests));
   if (d.evidence.length) parts.push(evidenceSection(l, v, d.evidence));
+  else if (v.noEvidence) parts.push(h("p.hint.no-evidence", "No evidence with this version — its agent says: ", v.noEvidence));
   else if (v.by === "author") parts.push(h("p.hint.no-evidence", "No evidence with this version — only its summary says it works."));
   if (yours) {
     const words = h("textarea.revise", { rows: 3, placeholder: "What to change — its agent reads your words (r)" });

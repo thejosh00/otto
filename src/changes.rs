@@ -228,6 +228,10 @@ pub struct ChangeVersion {
     /// What its author showed it works with: copies, so what the person saw stays with the version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<Evidence>,
+    /// Why its author has none to show, in their words. Versions from before this have neither, and
+    /// neither does a babysitter's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_evidence: Option<String>,
 }
 
 /// One file of evidence: a screenshot, a transcript, tests failing before and passing after.
@@ -829,6 +833,8 @@ pub struct Submit<'a> {
     pub tests: Option<&'a str>,
     /// What shows it works, found and checked (`find_evidence`).
     pub evidence: Vec<Found>,
+    /// Why there is nothing to show, when there isn't.
+    pub no_evidence: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -900,6 +906,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
     if tests.as_ref().is_some_and(|t| t.chars().count() > TESTS_MAX_CHARS) {
         return Err(OttoError::usage(format!("--tests is what the tests said, in at most {TESTS_MAX_CHARS} characters")));
     }
+    let no_evidence = check_say(s.no_evidence, "--no-evidence")?;
     let repo = main_repo(Path::new(s.repo))?;
     let branch = s.branch.trim().trim_start_matches("refs/heads/").to_string();
     if !branch_exists(&repo, &branch) {
@@ -995,7 +1002,10 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                     let k = c.latest().k;
                     let kept = keep_evidence(path, &dir, k, &s.evidence)?;
                     c.moment("author", format!("v{k}: added {} file{} of evidence", kept.len(), if kept.len() == 1 { "" } else { "s" }));
-                    c.versions.last_mut().expect("has a latest").evidence = kept;
+                    let v = c.versions.last_mut().expect("has a latest");
+                    v.evidence = kept;
+                    // There is some now, so its word for why there wasn't no longer holds.
+                    v.no_evidence = None;
                 }
                 if new_file.is_some() || new_summary {
                     let dir = c.dir();
@@ -1055,6 +1065,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             tests: tests.clone(),
             why: None,
             evidence,
+            no_evidence,
         };
         let lines = version.stat.add + version.stat.del;
         let (c, was) = match existing {
@@ -1806,6 +1817,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
         let tests = c.latest().tests.clone();
         // The same work on a newer base: what showed it working is still the author's word for it.
         let evidence = c.latest().evidence.clone();
+        let no_evidence = c.latest().no_evidence.clone();
         c.versions.push(ChangeVersion {
             k,
             sha: sha.clone(),
@@ -1824,6 +1836,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             tests,
             why: None,
             evidence,
+            no_evidence,
         });
         c.decision = None;
         c.enter(ChangeState::Review);
@@ -2090,6 +2103,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             tests,
             why: Some(why.clone()),
             evidence: Vec::new(),
+            no_evidence: None,
         });
         let d = c.decision.as_mut().expect("checked");
         d.version = k;
