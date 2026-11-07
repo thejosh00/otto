@@ -250,11 +250,12 @@ to abandon.
 | **durableOutput** | `facts.change`; `artifacts/change.md` |
 | **exitCondition** | `otto changes show <id>/<change> --json` has a version at the branch's head |
 | **gate** | `continue` → `review` |
-| **idempotency** | Submitting the same commit again is not a new version — otto says it is unchanged — so re-entering this phase after a crash is safe. With `facts.change` set, submit the same `--branch`: a new head is its next version, never a second change |
+| **idempotency** | Submitting the same commit again is not a new version — otto says it is unchanged, and it needs neither evidence flag — so re-entering this phase after a crash is safe. With `facts.change` set, submit the same `--branch`: a new head is its next version, never a second change |
 
 ```
 otto state change submit <id> --repo <mainRepo> --branch <branch> --title "<key>: <what it does>" \
-     --summary-file artifacts/change.md --tests "<what the suite said, in a line>"
+     --summary-file artifacts/change.md --tests "<what the suite said, in a line>" \
+     --evidence artifacts/test-report.md      # and whatever else shows it; or --no-evidence "<why there is none>"
 otto state record-fact <id> change=<n>       # the number submit printed
 ```
 

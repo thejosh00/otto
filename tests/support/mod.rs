@@ -361,6 +361,14 @@ impl Run {
         all[start..].join("\n")
     }
 
+    /// What its latest wake's session said, from the transcript claude leaves behind: `None` when
+    /// it can't be read, which says nothing either way.
+    pub fn wake_transcript(&self) -> Option<String> {
+        let file = format!("{}.jsonl", self.field_str("wake.session"));
+        let projects = std::fs::read_dir(home_dir().join(".claude/projects")).ok()?;
+        projects.flatten().find_map(|p| std::fs::read_to_string(p.path().join(&file)).ok())
+    }
+
     pub fn journal_dump(&self) {
         println!("\njournal");
         let Ok(text) = std::fs::read_to_string(self.dir.join("journal.jsonl")) else {

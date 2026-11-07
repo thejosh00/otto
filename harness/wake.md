@@ -395,7 +395,8 @@ otto state lock <id> --repo <repo>       # then make the worktree and branch; un
 … do the work in the worktree, commit it, run its tests …
 write what you'd tell the person reviewing it → artifacts/change-<slug>.md
 otto state change submit <id> --repo <repo> --branch <branch> --title "<what it does>" \
-     --summary-file artifacts/change-<slug>.md --tests "<what the tests said>"
+     --summary-file artifacts/change-<slug>.md --tests "<what the tests said>" \
+     --evidence <what shows it works: a file or a folder>   # or: --no-evidence "<why there is none>"
      [--file <the whole of it, when that is over a page — then --summary-file is its summary>]
 → then carry on with the rest of the work
 ```
@@ -417,6 +418,11 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
   thing.
 - **The summary is the review.** What it does and why, first; then what could go wrong, and what
   you checked. Written for someone who wasn't here, like a gate's question.
+- **It shows it works, or says why it can't.** A new commit takes `--evidence` or `--no-evidence
+  "<why>"`, one of them, and is refused with neither. Evidence is a screenshot, a transcript, tests
+  failing before and passing after: what lets the person see it works without reading the code.
+  Proof left in `artifacts/` doesn't reach them unless you name it here. The reason is for when there
+  truly is nothing to show, and they read it on the change. The same commit again needs neither.
 - **Over a page, a summary too**, as for an output. What you'd tell them runs over 500 words? It is
   `--file`, and `--summary-file` is a summary of it they can read in a minute: the decision to make
   and what could go wrong, standing alone. The page opens on that, with the whole a click away. Each

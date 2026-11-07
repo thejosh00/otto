@@ -175,7 +175,7 @@ the person as a change, and takes effect only if they approve it.**
 2. Edit the plan on a branch of its own, in its own worktree, and submit it:
 
    ```
-   otto state change submit <id> --repo ~/workspace/otto --branch otto-driver/<slug> --title "plan: <what changes>" --summary-file artifacts/change-<slug>.md --tests "no code changed"
+   otto state change submit <id> --repo ~/workspace/otto --branch otto-driver/<slug> --title "plan: <what changes>" --summary-file artifacts/change-<slug>.md --tests "no code changed" --no-evidence "plan only, no code"
    ```
 
    The summary says what changes, what you saw that made you want it, and what happens to the items it

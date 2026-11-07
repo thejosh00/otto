@@ -387,9 +387,12 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **A change shows it works.** `--evidence` hands over what proves it without reading the code —
   screenshots, transcripts, tests failing before and passing after: a file, or a folder of them
   (pictures and text only; no links). otto keeps a copy with the version, so what you look at is what
-  its author saw, and the change's page shows the pictures and the transcripts above the files. A
-  version submitted without any says so. Forgot it? The same commit again with `--evidence` adds it,
-  once; after that, new evidence comes with a new commit. A rebase by the lander keeps it.
+  its author saw, and the change's page shows the pictures and the transcripts above the files. With
+  nothing to show, `--no-evidence "<why>"` says why, and the page shows that instead: a new commit
+  with neither flag, or both, is refused. It doesn't judge the evidence or check the reason; you do.
+  Forgot it? The same commit again needs neither flag, and with `--evidence` adds it, once, in place of
+  any reason; after that, new evidence comes with a new commit. A rebase by the lander keeps either. A
+  fix by the babysitter has neither.
 - **A change doesn't stop its run.** Submitting isn't a question: the run goes on with its next piece
   of work, and what happens to the change reaches it as a note — you asked for changes, it landed, it
   was dropped. A run that hands back a lot of code doesn't wait on you between pieces.

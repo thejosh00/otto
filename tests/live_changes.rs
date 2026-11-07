@@ -125,6 +125,26 @@ fn live_changes() {
     checks.check(!pushed.contains(&branch), "it pushed nothing", format!("the remote has its branch: {pushed}"));
     let patch = c["versions"][0]["patch"].as_str().map(|p| std::fs::read_to_string(author.dir.join(p)).unwrap_or_default()).unwrap_or_default();
     checks.check(patch.contains("Goodbye"), "the kept patch is the farewell", "the patch doesn't say Goodbye");
+    let v = &c["versions"][0];
+    println!("what it gave: evidence {} / no evidence {}", v["evidence"], v["noEvidence"]);
+    let shows = v["evidence"].as_array().is_some_and(|e| !e.is_empty());
+    let says = v["noEvidence"].as_str().is_some_and(|w| !w.trim().is_empty());
+    checks.check(shows || says, "it shows it works, or says why not", "a version with neither");
+    // otto refuses a version with neither, so that alone proves little: the instructions did their
+    // job only if it knew before being told.
+    match author.wake_transcript() {
+        Some(said) => {
+            for line in said.lines().filter(|l| l.contains("\"tool_use\"") && l.contains("state change submit")) {
+                let line: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+                let blocks = line["message"]["content"].as_array().cloned().unwrap_or_default();
+                for b in blocks.iter().filter(|b| b["type"] == "tool_use") {
+                    println!("it ran: {}", b["input"]["command"].as_str().unwrap_or_default());
+                }
+            }
+            checks.check(!said.contains("a new commit needs what shows it works"), "and it wasn't refused first: the instructions named the flag", "it was refused first: the instructions didn't reach it");
+        }
+        None => checks.note("its transcript couldn't be read, so whether it was refused first is unknown"),
+    }
     let listed = stdout(&otto(&["changes", "--json"]));
     checks.check(listed.contains("\"yours\": 1"), "otto changes says one waits on you", "otto changes doesn't count it");
 
