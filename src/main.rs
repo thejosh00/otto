@@ -22,6 +22,7 @@ mod install;
 mod launchd;
 mod liveness;
 mod messages;
+mod logs;
 mod notes;
 mod notify;
 mod outputs;
@@ -47,6 +48,7 @@ fn main() {
     let cli = Cli::parse();
     if let Err(err) = run(cli.command) {
         eprintln!("otto: {err}");
+        logs::finish_stamping();
         std::process::exit(err.code);
     }
 }

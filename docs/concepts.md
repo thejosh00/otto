@@ -632,7 +632,7 @@ for a wake's report. That's all the driver gets: it can't approve, land or close
   archive/<id>/                  a deleted run's directory, kept until `otto cleanup`
   feedback.jsonl                 what wakes have said about otto itself — `otto feedback`
   feedback-driver                the one run that may assign work there — `otto feedback driver`
-  logs/poke.log, serve.log       the launchd jobs' output
+  logs/poke.log, serve.log       the launchd jobs' output; poke.log rolls to poke.log.1 to .3
 ```
 
 Never edit `run.json` by hand: every write goes through `otto state` (atomic, journaled, locked),

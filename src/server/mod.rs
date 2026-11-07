@@ -45,6 +45,7 @@ pub struct AppState {
 }
 
 pub fn serve(args: ServeArgs) -> Result<(), OttoError> {
+    crate::logs::stamp_output();
     let offset = crate::clock::local_offset();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

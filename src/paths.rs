@@ -10,8 +10,8 @@
 //!   archive/<run-id>/          a deleted run's directory, kept (`otto delete --data keep`)
 //!   deleting/<run-id>-<secs>/  a deleted run on its way out (`otto delete`); empty but for a failure
 //!   locks/poke.lock            the reviver's whole-pass advisory lock (not run state)
-//!   logs/poke.log              the reviver's launchd stdout/stderr
-//!   logs/serve.log             the web service's launchd stdout/stderr
+//!   logs/poke.log              the reviver's launchd stdout/stderr; rolled at 1MB, to poke.log.1 to .3
+//!   logs/serve.log             the web service's launchd stdout/stderr; every line stamped
 //! ```
 
 use crate::error::OttoError;

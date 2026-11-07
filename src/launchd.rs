@@ -206,15 +206,10 @@ pub fn is_loaded() -> Option<bool> {
     is_loaded_label(LABEL)
 }
 
-/// The timestamp leading the last non-empty line of `poke.log` — every line poke prints starts
-/// with one (`poke::poke_run`'s `stamp`). `None` with no log yet, or a log poke has never
-/// written a normal line to.
+/// The timestamp on the last stamped line poke wrote to its log. `None` with no log yet, or a log
+/// poke has never written a normal line to.
 fn last_poke() -> Option<crate::clock::Timestamp> {
-    let path = crate::paths::poke_log_path().ok()?;
-    let text = std::fs::read_to_string(path).ok()?;
-    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
-    let stamp = last.split_whitespace().next()?;
-    crate::clock::Timestamp::parse(stamp).ok()
+    crate::logs::last_pass().ok().flatten()
 }
 
 /// Whether the reviver is loaded and when it last actually ran.

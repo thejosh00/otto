@@ -25,7 +25,9 @@ otto agent stop      # stop it
 or after changing `OTTO_HOME` — it rewrites the plist every time.
 
 Its output goes to `~/.otto/logs/poke.log`: one line per pass, saying what it did (or "nothing
-due"). To see what it *would* do and why, for every run:
+due"), and a line saying so when a pass comes more than 30 minutes after the last one, as it does
+after a laptop has slept. At about 1MB the log rolls over to `poke.log.1`, with the older ones
+shifting along to `poke.log.3`, which is what goes next. To see what it *would* do and why, for every run:
 
 ```bash
 otto poke --dry-run --verbose
@@ -44,7 +46,8 @@ otto service restart             # serve the binary now installed, on the same p
 ```
 
 The plist is `~/Library/LaunchAgents/com.joshuahill.otto-serve.plist` and the log is
-`~/.otto/logs/serve.log`. If the server can't start — usually because something else has the port
+`~/.otto/logs/serve.log`, every line of it stamped with the time it was written (lines from before
+that have no stamp). If the server can't start — usually because something else has the port
 — launchd waits 30 seconds between attempts, and the reason is in the log.
 
 ## Notifications

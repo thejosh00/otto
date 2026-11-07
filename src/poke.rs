@@ -683,6 +683,13 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
         return report;
     }
 
+    // The reviver's own log, looked after by the reviver alone. Whether a gap is worth saying comes
+    // first, before this pass has said anything to compare with.
+    let keeps_log = !args.dry_run && crate::logs::poke_writes_its_log();
+    if keeps_log {
+        report.lines.extend(crate::logs::gap_note(crate::clock::Timestamp::now()));
+    }
+
     let runs = crate::state::read_all_runs().unwrap_or_default();
     let mut exec = RealExec;
     let decisions = pass_once(
@@ -701,6 +708,11 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
     // two overlapping passes cannot both send the same notice.
     let runs = crate::state::read_all_runs().unwrap_or_default();
     let notices = crate::notify::pass(&runs, crate::clock::now(), &mut exec, args.dry_run);
+    // Last thing under the lock and just before this pass's lines are printed, so that they are the
+    // first in the new file and `otto agent status` has them from the start.
+    if keeps_log {
+        crate::logs::rotate_poke_log();
+    }
     let _ = fs4::fs_std::FileExt::unlock(&lock_file);
 
     let stamp = crate::clock::format_iso(crate::clock::now());
