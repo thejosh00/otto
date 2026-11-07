@@ -413,7 +413,8 @@ pub struct Decision {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process: Option<String>,
     /// That process's words on how a change lands, as they were then: changing the process later
-    /// doesn't change how an approved change lands.
+    /// doesn't change how an approved change lands. None when the person chose the other way of
+    /// landing this one, because those words are about the way they didn't choose.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub land: Option<String>,
     /// The person chose how this one lands, rather than its process.
@@ -1346,7 +1347,7 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                 merge_when_ready: chosen.merge_when_ready,
                 merge_asked: None,
                 process: Some(process.name.clone()),
-                land: process.land.clone(),
+                land: if chosen.mode == process.mode { process.land.clone() } else { None },
                 overridden,
                 allow_changes: if chosen.mode == LandMode::Pr { process.allow_changes.clone() } else { None },
             });
@@ -1479,6 +1480,8 @@ pub struct Due {
     /// follows them before anything the repository's docs say.
     pub process: Option<String>,
     pub land: Option<String>,
+    /// The person chose how this one lands (`mode`, `merge_when_ready`), rather than its process.
+    pub overridden: bool,
     /// As a pull request: what the babysitter may change on it without the person.
     pub allow_changes: Option<String>,
     pub approved_at: Option<Timestamp>,
@@ -1542,6 +1545,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
         process: d.and_then(|d| d.process.clone()),
         land: d.and_then(|d| d.land.clone()),
+        overridden: d.is_some_and(|d| d.overridden),
         allow_changes: d.and_then(|d| d.allow_changes.clone()),
         approved_at: d.map(|d| d.at),
         summary: dir.join(&c.latest().summary).display().to_string(),
@@ -1605,6 +1609,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
                 process: d.and_then(|d| d.process.clone()),
                 land: d.and_then(|d| d.land.clone()),
+                overridden: d.is_some_and(|d| d.overridden),
                 allow_changes: d.and_then(|d| d.allow_changes.clone()),
                 approved_at: d.map(|d| d.at),
                 summary: dir.join(&c.latest().summary).display().to_string(),
@@ -3245,6 +3250,43 @@ pub(crate) mod tests {
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.mode, d.process.as_deref(), d.overridden), (LandMode::Push, Some("standard"), true));
         assert!(c.timeline.last().unwrap().what.contains("rather than as standard says"), "{}", c.timeline.last().unwrap().what);
+    }
+
+    #[test]
+    fn a_process_s_words_on_landing_go_when_the_person_chooses_the_other_way() {
+        let _h = TempHome::new();
+        test_init("c-wds", "a goal").unwrap();
+        test_init("c-wdsl", "land changes").unwrap();
+        set_lander("c-wdsl");
+        let repo = repo();
+        submit("c-wds", &submit_fix(&repo, "one")).unwrap();
+        approve(&[seen(r("c-wds", 1))], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap();
+
+        // What the lander reads: pushed, by the person's choice, with nothing about a pull request.
+        let all = due().unwrap();
+        let d = all.iter().find(|d| d.run == "c-wds").unwrap();
+        assert_eq!((d.mode, d.land.as_deref(), d.overridden, d.process.as_deref()), (Some(LandMode::Push), None, true, Some("standard")));
+    }
+
+    #[test]
+    fn a_process_s_words_on_landing_stay_when_it_lands_that_way() {
+        let _h = TempHome::new();
+        test_init("c-kp", "a goal").unwrap();
+        test_init("c-kq", "a goal").unwrap();
+        test_init("c-kpl", "land changes").unwrap();
+        set_lander("c-kpl");
+        let (one, two) = (repo(), repo());
+        submit("c-kp", &submit_fix(&one, "one")).unwrap();
+        submit("c-kq", &submit_fix(&two, "two")).unwrap();
+        // As its process says.
+        approve(&[seen(r("c-kp", 1))], None, None).unwrap();
+        // Still a pull request, just merged when ready: how it is merged is still the process's to say.
+        approve(&[seen(r("c-kq", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: true }), None).unwrap();
+
+        let all = due().unwrap();
+        let of = |run| all.iter().find(|d| d.run == run).unwrap();
+        assert!(of("c-kp").land.as_deref().is_some_and(|l| l.starts_with("A pull request")) && !of("c-kp").overridden);
+        assert!(of("c-kq").land.as_deref().is_some_and(|l| l.starts_with("A pull request")) && of("c-kq").overridden);
     }
 
     #[test]

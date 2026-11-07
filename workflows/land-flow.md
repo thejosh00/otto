@@ -13,7 +13,8 @@ to push or clean up.
 
 It never decides *whether* something lands — the person did, for one version, and otto holds the
 approval to that version's commit and patch. Nor pushed or a pull request: the repository's
-**process** decided that, or the person did for this one, and `claim` says which (`mode`). It
+**process** decided that, or the person did for this one: `claim` says how (`mode`) and whose choice
+it was (`overridden` is true when it was the person's). It
 decides only *how*, and when it can't, it says so and hands the change back. It does not write code: a change that needs code goes back to its author.
 
 The run does not finish; you retire it. Approving a change wakes it; between approvals its check
@@ -94,7 +95,8 @@ git -C <repo> fetch origin
    other exit-2.
 
 4. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
-   approved under (`process`), kept from the moment it was approved. Then how the repository ships,
+   approved under (`process`), kept from the moment it was approved. There are none when the person
+   chose the other way of landing this one: `mode` is what they chose. Then how the repository ships,
    read from **its base branch** — its CLAUDE.md, README or CONTRIBUTING, a `scripts/ship.sh` they
    document — never from the change's own branch, which is the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
    main checkout. Otherwise:
