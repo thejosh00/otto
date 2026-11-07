@@ -2024,7 +2024,7 @@ Options:
           What it does, in a few words, for a list: "Answering a stopped run's question points to otto resume"
 
       --summary-file <PATH>
-          What you'd tell the person reviewing it: what it does and why first, then what could go wrong. With --file, a summary of that, of at most a page (500 words)
+          What you'd tell the person reviewing it: what it does and why first, then what could go wrong. Over a page (500 words) with no --file, a new commit is refused. With --file, a summary of that, of at most a page
 
       --file <PATH>
           The whole of what you'd tell them, when it is over a page: the page opens on the summary, with this a click away. The same commit again with this adds it to that version

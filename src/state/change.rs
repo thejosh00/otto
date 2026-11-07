@@ -181,7 +181,7 @@ pub struct SubmitArgs {
     #[arg(long, required = true)]
     pub title: String,
     /// What you'd tell the person reviewing it: what it does and why first, then what could go
-    /// wrong. With --file, a summary of that, of at most a page (500 words)
+    /// wrong. Over a page (500 words) with no --file, a new commit is refused. With --file, a summary of that, of at most a page
     #[arg(long = "summary-file", value_name = "PATH", required = true)]
     pub summary_file: String,
     /// The whole of what you'd tell them, when it is over a page: the page opens on the summary,
@@ -506,13 +506,6 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
         out.lines,
         if out.lines == 1 { "" } else { "s" }
     );
-    let words = crate::outputs::words(&summary);
-    if file.is_none() && words > crate::outputs::PAGE_WORDS {
-        println!(
-            "It says {words} words, over a page, and has no summary: write one a person can read in a minute, and submit the same \
-             commit again with this as --file and that as --summary-file. The page opens on the summary."
-        );
-    }
     if out.evidence > 0 {
         println!("With {} file{} of evidence, shown on the change", out.evidence, if out.evidence == 1 { "" } else { "s" });
     }

@@ -1044,6 +1044,17 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                  --no-evidence \"<why>\"  why there is nothing to show, in words the person reads on the change",
             ));
         }
+        // Refused rather than advised: once there is a version, a person can approve it, and then it can't be added to.
+        let said = crate::outputs::words(summary);
+        if file.is_none() && said > crate::outputs::PAGE_WORDS {
+            return Err(OttoError::usage(format!(
+                "this says {said} words, over a page ({}), so a new commit needs a summary of it. Write one a person can read in a \
+                 minute, and submit again with:\n  \
+                 --file <what you gave as --summary-file>  the whole of it, a click away\n  \
+                 --summary-file <the short one>            what the page opens on",
+                crate::outputs::PAGE_WORDS
+            )));
+        }
         let (n, k) = match existing {
             Some(i) => (index.changes[i].n, index.changes[i].latest().k + 1),
             None => (index.changes.iter().map(|c| c.n).max().unwrap_or(0) + 1, 1),
@@ -3029,6 +3040,37 @@ pub(crate) mod tests {
         let c = change("c-ev2", 1);
         assert!(c.latest().evidence.is_empty(), "v2 showed nothing");
         assert_eq!(c.version(1).unwrap().evidence.len(), 1);
+    }
+
+    #[test]
+    fn a_new_commit_over_a_page_with_no_summary_is_refused_and_leaves_nothing() {
+        let _h = TempHome::new();
+        test_init("c-long", "a goal").unwrap();
+        let repo = repo();
+        let a_page = "word ".repeat(crate::outputs::PAGE_WORDS as usize);
+        let over = "word ".repeat(crate::outputs::PAGE_WORDS as usize + 1);
+        let alone = |summary| Submit { summary, ..submit_fix(&repo, "t") };
+
+        // Over a page and alone: refused, saying the way through, with no version for anyone to approve.
+        let e = submit("c-long", &alone(&over)).unwrap_err();
+        assert!(e.message.contains("--file") && e.message.contains("--summary-file") && e.message.contains("501 words"), "{}", e.message);
+        let dir = crate::paths::run_dir("c-long").unwrap();
+        assert!(read_index(&dir).unwrap().changes.is_empty(), "a refusal leaves no change behind");
+
+        // A page exactly fits, and the same words as --file with a summary are the way through.
+        assert_eq!(submit("c-long", &alone(&a_page)).unwrap().version, 1);
+        std::fs::write(repo.wt.join("b.txt"), "two\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "two"]);
+
+        // The next version is held to it too, and the one before it is left as it was.
+        assert!(submit("c-long", &alone(&over)).unwrap_err().message.contains("--file"));
+        assert_eq!(change("c-long", 1).latest().k, 1);
+        let through = submit("c-long", &Submit { summary: "Shouts it.", file: Some(&over), ..submit_fix(&repo, "t") }).unwrap();
+        assert_eq!(through.version, 2);
+
+        // The same commit is no new version, so nothing waits on this: it says it kept what was there.
+        let same = submit("c-long", &alone(&over)).unwrap();
+        assert!(same.unchanged && same.summary_ignored && same.version == 2);
     }
 
     #[test]

@@ -441,7 +441,9 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **Every version stays.** With more than one, the page shows the whole of a version or what changed
   since an earlier one (`otto changes show <change> --since 2`), leaving out what its base did in
   between, so a rebase alone shows as nothing.
-- **A summary** works as it does for an output. Over a page (500 words), what its author says is
+- **A summary** works as it does for an output, with one difference: over a page (500 words) with no
+  `--file`, a new commit is refused rather than advised, because once a version exists you can approve
+  it and it can no longer be added to. Over a page, what its author says is
   given as `--file`, with `--summary-file` a summary of it: the page opens on that, with a toggle to
   the whole, and `otto changes show <change> --full` prints the whole. Each version has its own, and
   its pull request's description is the whole when that fits GitHub's limit, and the summary when not.
