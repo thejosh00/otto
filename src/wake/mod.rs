@@ -216,7 +216,7 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     // liveness observes, and a second `otto wake` (poke, the web's wake button) refuses rather
     // than racing — so the prompt, its notes and its answer are built from a state no other wake
     // is also delivering. A dry run spawns nothing and so takes no lock.
-    let _wake_lock = if args.dry_run { None } else { Some(WakeLock::acquire(&args.id)?) };
+    let mut wake_lock = if args.dry_run { None } else { Some(WakeLock::acquire(&args.id)?) };
     let state = crate::state::read_run(&args.id)?;
 
     // A late wake firing into a closed run is normal, and doing nothing is correct.
@@ -269,6 +269,10 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     if args.dry_run {
         println!("{}", dry_run_line(&argv));
         return Ok(());
+    }
+
+    if let Some(lock) = &mut wake_lock {
+        lock.record_wake(wake_number);
     }
 
     // Recorded before the spawn, so a crash in the next instant still leaves evidence.
@@ -1466,6 +1470,36 @@ mod tests {
         let err = run_wake(&args("w-solo"), &mut exec).expect_err("must refuse");
         assert_eq!(err.code, 2);
         assert!(exec.calls.borrow().is_empty());
+    }
+
+    /// While the model runs, the record beside the lock names this wake as `run.json` does.
+    #[test]
+    fn a_running_wake_s_holder_record_matches_its_wake() {
+        let _h = TempHome::new();
+        test_init("w-holder", "a goal").unwrap();
+        let mut exec = FakeExec::new();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let saw = seen.clone();
+        exec.on_exec(move || {
+            let wake = read_run("w-holder").unwrap().wake.unwrap();
+            *saw.borrow_mut() = Some((crate::liveness::read_holder("w-holder"), wake.pid, wake.n));
+            behave_well("w-holder");
+        });
+        run_wake(&args("w-holder"), &mut exec).unwrap();
+        let (holder, pid, n) = seen.borrow_mut().take().expect("the model ran");
+        let holder = holder.expect("a record beside the lock");
+        assert_eq!(Some(holder.pid), pid);
+        assert_eq!(holder.wake, Some(n));
+    }
+
+    #[test]
+    fn a_dry_run_leaves_no_holder_record() {
+        let _h = TempHome::new();
+        test_init("w-dry", "a goal").unwrap();
+        let mut dry = args("w-dry");
+        dry.dry_run = true;
+        run_wake(&dry, &mut FakeExec::new()).unwrap();
+        assert_eq!(crate::liveness::read_holder("w-dry"), None);
     }
 
     #[test]

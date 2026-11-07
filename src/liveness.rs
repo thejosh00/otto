@@ -28,10 +28,45 @@
 //! holds this one for minutes while taking the state lock briefly on each write, so they
 //! must never be the same flock or a wake would deadlock against its own first write.
 
+use crate::clock::Timestamp;
 use crate::error::OttoError;
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 pub const WAKE_LOCK_FILE: &str = "wake.lock";
+
+/// Beside the lock: who took it last. flock can't say who holds it, and a kill has to.
+pub const HOLDER_FILE: &str = "wake-holder.json";
+
+/// What whoever took the wake lock wrote when it did. It outlives them: nothing removes it, a
+/// `kill -9` couldn't anyway, and the next holder overwrites it. So it says who took the lock
+/// *last*, which is not always who holds it now, and a reader must compare it with the wake it
+/// cares about (`event::KillHolder::of`). A file of its own, not a field in `run.json`, which an
+/// older binary would drop on its next write; an older binary simply never opens this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Holder {
+    pub pid: u32,
+    /// The wake's number, once it has read the state. Absent in the moment before, and for good
+    /// when what took the lock isn't a wake, or stopped short of being one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake: Option<u32>,
+    /// When the lock was taken.
+    pub at: Timestamp,
+}
+
+/// `None` when there is no record, or none that can be read: both mean nobody can say.
+pub fn read_holder(run_id: &str) -> Option<Holder> {
+    let path = crate::paths::run_dir(run_id).ok()?.join(HOLDER_FILE);
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Evidence only, so failing to write it never stops a wake: a kill then finds an older record, or
+/// none, and says so.
+fn write_holder(path: &Path, holder: &Holder) {
+    if let Ok(text) = serde_json::to_string(holder) {
+        let _ = crate::state::write_atomic(path, &text);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WakeState {
@@ -101,6 +136,8 @@ pub fn probe_path(path: &Path) -> WakeState {
 #[derive(Debug)]
 pub struct WakeLock {
     file: std::fs::File,
+    holder_path: PathBuf,
+    holder: Holder,
 }
 
 impl WakeLock {
@@ -108,13 +145,23 @@ impl WakeLock {
     /// would duplicate work and race each other's writes, so this refuses rather than
     /// queues: whatever wanted to start can come back when the current wake has finished.
     /// A probe holds it for an instant, so a few quick retries tell a probe from a wake.
+    ///
+    /// Taking it says so on disk at once, in the record beside it. Only once it is really held, so
+    /// a refused wake leaves the holder's record alone. The state hasn't been read yet, so a wake's
+    /// number comes after, from [`Self::record_wake`].
     pub fn acquire(run_id: &str) -> Result<Self, OttoError> {
-        let path = crate::paths::run_dir(run_id)?.join(WAKE_LOCK_FILE);
+        let dir = crate::paths::run_dir(run_id)?;
+        let path = dir.join(WAKE_LOCK_FILE);
         let file = open_lock_file(&path)?;
         let mut tries = 0;
         loop {
             match fs4::fs_std::FileExt::try_lock_exclusive(&file) {
-                Ok(()) => return Ok(Self { file }),
+                Ok(()) => {
+                    let holder = Holder { pid: std::process::id(), wake: None, at: Timestamp::now() };
+                    let holder_path = dir.join(HOLDER_FILE);
+                    write_holder(&holder_path, &holder);
+                    return Ok(Self { file, holder_path, holder });
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && tries < 5 => {
                     tries += 1;
                     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -128,6 +175,15 @@ impl WakeLock {
                 Err(e) => return Err(e.into()),
             }
         }
+    }
+}
+
+impl WakeLock {
+    /// The holder is this wake, now its number is known. Before `run.json` names the wake, so that
+    /// a kill acting on that wake finds the number on its record.
+    pub fn record_wake(&mut self, n: u32) {
+        self.holder.wake = Some(n);
+        write_holder(&self.holder_path, &self.holder);
     }
 }
 
@@ -204,6 +260,49 @@ mod tests {
         assert_eq!(LockLiveness.probe("run-busy"), WakeState::Running);
         drop(held);
         assert_eq!(LockLiveness.probe("run-busy"), WakeState::Idle);
+    }
+
+    /// The pid and time are there the moment the lock is, before any state is read: the gap until
+    /// the number arrives is the one a kill most needs explaining. The time stays the lock's.
+    #[test]
+    fn taking_the_lock_records_the_holder_at_once_and_its_number_after() {
+        let _home = TempHome::new();
+        test_init("run-holder", "hello").unwrap();
+        assert_eq!(read_holder("run-holder"), None);
+
+        let mut held = WakeLock::acquire("run-holder").unwrap();
+        let first = read_holder("run-holder").expect("on disk as soon as the lock is taken");
+        assert_eq!(first.pid, std::process::id());
+        assert_eq!(first.wake, None);
+
+        held.record_wake(7);
+        let second = read_holder("run-holder").unwrap();
+        assert_eq!(second, Holder { wake: Some(7), ..first });
+    }
+
+    /// It outlives its wake, and the next holder replaces it. Being refused replaces nothing.
+    #[test]
+    fn the_record_outlives_the_holder_and_only_a_holder_replaces_it() {
+        let _home = TempHome::new();
+        test_init("run-after", "hello").unwrap();
+        let mut held = WakeLock::acquire("run-after").unwrap();
+        held.record_wake(3);
+        assert!(WakeLock::acquire("run-after").is_err());
+        assert_eq!(read_holder("run-after").unwrap().wake, Some(3), "refused, so it isn't the holder");
+        drop(held);
+        assert_eq!(read_holder("run-after").unwrap().wake, Some(3), "left behind, as a kill -9 would");
+
+        let _next = WakeLock::acquire("run-after").unwrap();
+        assert_eq!(read_holder("run-after").unwrap().wake, None);
+    }
+
+    /// Half a file, or a future shape, is not a holder anyone can name.
+    #[test]
+    fn a_record_that_cannot_be_read_is_no_record() {
+        let _home = TempHome::new();
+        test_init("run-garbled", "hello").unwrap();
+        std::fs::write(crate::paths::run_dir("run-garbled").unwrap().join(HOLDER_FILE), "{\"pid\":").unwrap();
+        assert_eq!(read_holder("run-garbled"), None);
     }
 
     /// The property that makes this worth using: releasing needs no bookkeeping, so a

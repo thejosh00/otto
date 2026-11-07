@@ -78,6 +78,31 @@ pub enum WakeCause {
     FollowOnAnswer,
 }
 
+/// Whether the record beside the wake lock is the wake a kill acted on. flock can't say who holds
+/// it, so this is as far as otto can honestly go: the record says who took it last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum KillHolder {
+    /// The record names this wake, by number and pid. It took the lock; `signalLanded` says whether
+    /// it was still there, since a wake killed outright leaves this record behind too.
+    ThisWake,
+    /// The record is someone else's: a leftover from an earlier wake, a wake too new to have its
+    /// number, or something that isn't a wake. See `holderRecord`, which is not this wake's.
+    NotThisWake,
+    /// No record, or none that can be read: taken by a binary from before they were written.
+    NotKnown,
+}
+
+impl KillHolder {
+    pub fn of(wake: Option<&crate::state::Wake>, record: Option<&crate::liveness::Holder>) -> Self {
+        match (wake, record) {
+            (_, None) => Self::NotKnown,
+            (Some(wake), Some(record)) if record.wake == Some(wake.n) && wake.pid.is_none_or(|pid| pid == record.pid) => Self::ThisWake,
+            (_, Some(_)) => Self::NotThisWake,
+        }
+    }
+}
+
 impl WakeCause {
     /// As the journal and `--cause` both spell it.
     pub fn label(self) -> String {
@@ -289,8 +314,29 @@ pub enum Event {
     /// Poke's own bookkeeping — the process-control counterpart to `wake-incomplete`. A killed
     /// wake cannot record its own failure, so poke journals this and calls `record_incomplete`
     /// on its behalf (see `spawner::kill`).
+    ///
+    /// A kill records the evidence it acted on. All but `reason` are absent on lines from before
+    /// they were recorded: read those as "not recorded", never as false or none.
     WakeKilled {
         reason: String,
+        /// The wake the decision acted on: its number and recorded pid, from `run.json`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wake: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        #[serde(rename = "deadlineAt", skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<Timestamp>,
+        /// That wake's outcome, written even when it has none: `null` is what the decision saw.
+        outcome: Option<crate::state::WakeOutcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        holder: Option<KillHolder>,
+        /// The record beside the lock, whoever's it was. `holder` says whether it is this wake's.
+        #[serde(rename = "holderRecord", skip_serializing_if = "Option::is_none")]
+        holder_record: Option<crate::liveness::Holder>,
+        #[serde(rename = "signalLanded", skip_serializing_if = "Option::is_none")]
+        signal_landed: Option<bool>,
+        #[serde(rename = "tmuxKilled", skip_serializing_if = "Option::is_none")]
+        tmux_killed: Option<bool>,
     },
     /// Poke gave up spawning this run after repeated attempts produced no wake. Journaled once
     /// per streak, not every pass — see `poke::spawn_or_back_off`.
@@ -523,6 +569,17 @@ pub fn record(path: &std::path::Path, event: &Event) -> Result<(), crate::error:
 
 #[cfg(test)]
 mod tests {
+    /// A line from before a kill recorded its evidence still reads, with none of it invented.
+    #[test]
+    fn an_old_wake_killed_line_still_reads() {
+        let old: super::Event = serde_json::from_str(r#"{"event":"wake-killed","reason":"wake is 16m past its deadline"}"#).unwrap();
+        let super::Event::WakeKilled { reason, wake, deadline_at, holder, signal_landed, tmux_killed, .. } = old else {
+            panic!("not a wake-killed")
+        };
+        assert_eq!(reason, "wake is 16m past its deadline");
+        assert!(wake.is_none() && deadline_at.is_none() && holder.is_none() && signal_landed.is_none() && tmux_killed.is_none());
+    }
+
     use super::*;
 
     /// The tag lands as `"event": "kebab-case-name"`, matching the untyped journal's own

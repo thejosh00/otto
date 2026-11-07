@@ -452,8 +452,23 @@ fn run_check(
 /// `spawner::kill` takes the process group, not just the wrapper — otherwise the model
 /// underneath would be left running.
 fn kill_wake(state: &RunState, run_id: &str, reason: &str, exec: &mut dyn Exec) -> Decision {
-    crate::spawner::kill(state, run_id, exec);
-    let _ = crate::state::log_event(run_id, Event::WakeKilled { reason: reason.to_string() });
+    let wake = state.wake.as_ref();
+    let holder_record = crate::liveness::read_holder(run_id);
+    let landed = crate::spawner::kill(state, run_id, exec);
+    let _ = crate::state::log_event(
+        run_id,
+        Event::WakeKilled {
+            reason: reason.to_string(),
+            wake: wake.map(|w| w.n),
+            pid: wake.and_then(|w| w.pid),
+            deadline_at: wake.map(|w| w.deadline_at),
+            outcome: wake.and_then(|w| w.outcome),
+            holder: Some(crate::event::KillHolder::of(wake, holder_record.as_ref())),
+            holder_record,
+            signal_landed: Some(landed.killed_process),
+            tmux_killed: Some(landed.killed_session),
+        },
+    );
     match crate::wake::record_incomplete(run_id, &format!("killed by poke: {reason}")) {
         Ok(()) => Decision::base(run_id, Action::Kill, format!("killed — {reason}")),
         Err(e) => Decision::base(run_id, Action::Error, format!("killed but could not record it: {e}")),
@@ -1452,6 +1467,104 @@ mod tests {
         // It must have tried to kill the process group, not just the wrapper.
         let calls: Vec<String> = exec.calls.borrow().iter().map(|c| c.join(" ")).collect();
         assert!(calls.iter().any(|c| c.contains("kill -TERM -999999")), "got {calls:?}");
+    }
+
+    /// Kill wake 5 (pid 4242) through `kill_wake`, with `exec`'s answers and `record` beside the
+    /// lock, and return its `wake-killed` line.
+    fn killed_line(id: &str, record: Option<crate::liveness::Holder>, exec: &mut FakeExec) -> serde_json::Value {
+        let _ = crate::state::commands::test_init(id, "a goal");
+        let dir = crate::paths::run_dir(id).unwrap();
+        if let Some(record) = &record {
+            std::fs::write(dir.join(crate::liveness::HOLDER_FILE), serde_json::to_string(record).unwrap()).unwrap();
+        }
+        let mut state = base_state(id);
+        state.status = Status::Running;
+        state.wake = Some(wake_with(5, at(now() - Duration::hours(1)), 4242));
+        kill_wake(&state, id, "wake is 60m past its deadline", exec);
+        std::fs::read_to_string(dir.join("journal.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|l| l["event"] == "wake-killed")
+            .expect("a wake-killed line")
+    }
+
+    fn fails() -> crate::exec::Output {
+        crate::exec::Output { code: 1, ..Default::default() }
+    }
+
+    fn holder(pid: u32, wake: Option<u32>) -> crate::liveness::Holder {
+        crate::liveness::Holder { pid, wake, at: at(now() - Duration::hours(2)) }
+    }
+
+    #[test]
+    fn a_kill_says_what_it_acted_on_and_that_a_signal_landed() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut exec = FakeExec::new();
+        exec.queue(Default::default()).queue(fails()); // the signal lands; no tmux session
+        let line = killed_line("p-ev", Some(holder(4242, Some(5))), &mut exec);
+        assert_eq!(line["wake"], 5);
+        assert_eq!(line["pid"], 4242);
+        assert_eq!(line["deadlineAt"], at(now() - Duration::hours(1)).to_string());
+        assert_eq!(line["outcome"], serde_json::Value::Null);
+        assert!(line.as_object().unwrap().contains_key("outcome"), "no outcome is said, not left out: {line}");
+        assert_eq!(line["holder"], "this-wake");
+        assert_eq!(line["holderRecord"]["pid"], 4242);
+        assert_eq!(line["holderRecord"]["wake"], 5);
+        assert_eq!(line["signalLanded"], true);
+        assert_eq!(line["tmuxKilled"], false);
+    }
+
+    #[test]
+    fn a_signal_that_fails_is_recorded_as_not_landing() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut exec = FakeExec::new();
+        exec.queue(fails()).queue(fails()); // no such process group; no tmux session
+        let line = killed_line("p-miss", Some(holder(4242, Some(5))), &mut exec);
+        assert_eq!(line["signalLanded"], false);
+        assert_eq!(line["tmuxKilled"], false);
+    }
+
+    #[test]
+    fn a_tmux_kill_is_recorded_only_if_it_landed() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let mut exec = FakeExec::new();
+        exec.queue(fails()).queue(Default::default()).queue(Default::default()); // session there, killed
+        let line = killed_line("p-tmux", None, &mut exec);
+        assert_eq!(line["signalLanded"], false);
+        assert_eq!(line["tmuxKilled"], true);
+
+        let mut exec = FakeExec::new();
+        exec.queue(fails()).queue(Default::default()).queue(fails()); // session there, kill refused
+        let line = killed_line("p-tmux-refused", None, &mut exec);
+        assert_eq!(line["tmuxKilled"], false);
+    }
+
+    /// Nothing beside the lock: an honest "not known", with no record dressed up as one.
+    #[test]
+    fn no_holder_record_says_not_known() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let line = killed_line("p-none", None, &mut FakeExec::new());
+        assert_eq!(line["holder"], "not-known");
+        assert!(line.get("holderRecord").is_none(), "{line}");
+    }
+
+    /// The Sep 28 question. A record is this wake's only if both its number and its pid are: a
+    /// leftover, a wake too new to have its number, and a number whose pid disagrees are not.
+    #[test]
+    fn a_record_left_by_anything_else_is_not_reported_as_this_wake_s_holder() {
+        let _h = crate::paths::test_support::TempHome::new();
+        for (id, record) in [
+            ("p-leftover", holder(1111, Some(4))),
+            ("p-same-pid", holder(4242, Some(4))),
+            ("p-unnumbered", holder(1111, None)),
+            ("p-other-pid", holder(1111, Some(5))),
+        ] {
+            let line = killed_line(id, Some(record.clone()), &mut FakeExec::new());
+            assert_eq!(line["holder"], "not-this-wake", "{id}: {line}");
+            assert_eq!(line["holderRecord"]["pid"], record.pid, "what was found is still shown: {line}");
+            assert_eq!(line["pid"], 4242, "and can be set beside the wake it acted on: {line}");
+        }
     }
 
     /// Without this, a wake that reliably crashes after starting would be respawned every

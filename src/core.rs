@@ -2518,6 +2518,15 @@ impl Renderer {
             if event == "wake-started" && !map.contains_key("cause") {
                 rest.push("cause=not recorded".to_string());
             }
+            // Likewise a kill from before it recorded what it acted on. `holderRecord` is absent
+            // on a new line too, when there is none, so `holder` is what speaks for it.
+            if event == "wake-killed" {
+                for field in ["wake", "deadlineAt", "outcome", "holder", "signalLanded", "tmuxKilled"] {
+                    if !map.contains_key(field) {
+                        rest.push(format!("{field}=not recorded"));
+                    }
+                }
+            }
         }
         out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));
         out
@@ -2545,6 +2554,8 @@ impl Renderer {
                     s.clone()
                 }
             }
+            // Recorded as having none, as against absent, which is "not recorded" above.
+            Value::Null if key == "outcome" => "none".to_string(),
             Value::Number(n) if TOKEN_KEYS.contains(&key) => n.as_u64().map(humanise).unwrap_or_else(|| n.to_string()),
             other => other.to_string(),
         }

@@ -462,6 +462,10 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
                 happening("trouble", "Couldn't start — claude exited straight away; retrying until it can".to_string())
             }
             "wake-incomplete" => happening("trouble", "Stopped part-way; it will try again".to_string()),
+            // Only when both are recorded as missing: a line from before they were says nothing.
+            "wake-killed" if [v.get("signalLanded"), v.get("tmuxKilled")].iter().all(|f| f.and_then(Value::as_bool) == Some(false)) => {
+                happening("trouble", "Looked past its time limit, but nothing was left to stop".to_string())
+            }
             "wake-killed" => happening("trouble", "Ran past its time limit and was stopped".to_string()),
             "usage-limited" => happening("trouble", "Hit the account's usage limit; waiting for it to reset".to_string()),
             "paused" => happening(
@@ -660,6 +664,28 @@ mod tests {
                 "You started it: a goal".to_string(),
             ],
             "the reply's note is told once, as the reply"
+        );
+    }
+
+    /// "Was stopped" only if something was: a kill that landed nowhere says so, and one from before
+    /// that was recorded isn't accused of landing nowhere.
+    #[test]
+    fn a_kill_is_told_as_stopping_something_only_if_it_might_have() {
+        let _h = TempHome::new();
+        test_init("t-kill", "a goal").unwrap();
+        let dir = crate::paths::run_dir("t-kill").unwrap();
+        let told = |line: &str| {
+            std::fs::write(dir.join("journal.jsonl"), format!("{line}\n")).unwrap();
+            lately(&dir, 10).into_iter().map(|h| h.text).collect::<Vec<_>>().join("")
+        };
+        let at = r#""ts":"2026-09-28T11:00:00Z""#;
+        let stopped = "Ran past its time limit and was stopped";
+        assert_eq!(told(&format!(r#"{{"event":"wake-killed","reason":"r",{at}}}"#)), stopped);
+        assert_eq!(told(&format!(r#"{{"event":"wake-killed","reason":"r","signalLanded":true,"tmuxKilled":false,{at}}}"#)), stopped);
+        assert_eq!(told(&format!(r#"{{"event":"wake-killed","reason":"r","signalLanded":false,"tmuxKilled":true,{at}}}"#)), stopped);
+        assert_eq!(
+            told(&format!(r#"{{"event":"wake-killed","reason":"r","signalLanded":false,"tmuxKilled":false,{at}}}"#)),
+            "Looked past its time limit, but nothing was left to stop"
         );
     }
 

@@ -169,10 +169,8 @@ pub fn kill(state: &RunState, run_id: &str, exec: &mut dyn Exec) -> KillOutcome 
         false
     };
     let session = crate::detach::session_name(run_id);
-    let killed_session = crate::detach::session_exists(exec, &session);
-    if killed_session {
-        crate::detach::kill_session(exec, &session);
-    }
+    // Like the signal, only a kill that landed counts: a session being there isn't one.
+    let killed_session = crate::detach::session_exists(exec, &session) && crate::detach::kill_session(exec, &session);
     KillOutcome { killed_process, killed_session }
 }
 

@@ -616,6 +616,8 @@ for a wake's report. That's all the driver gets: it can't approve, land or close
     run.json                     machine truth — see reference/run-json.md
     handoff.md                   what the next wake gets for free
     journal.jsonl                every event, append-only — see reference/journal.md
+    wake.lock                    held by a wake for its whole life — how otto knows it's running
+    wake-holder.json             who took that lock last: pid, wake number, time. Stays after they've gone
     gates/NNN-<slug>.md          questions, and their answers verbatim
     notes/NNN.md                 notes, verbatim
     messages/NNN-<slug>.md|.json messages it sent you: the body verbatim, and the rest
