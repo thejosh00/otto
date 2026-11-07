@@ -142,6 +142,8 @@ otto logs my-run -f             # keep following
 otto logs my-run --decisions    # just the turning points: gates, answers, status changes
 otto logs my-run --since 2h --event gate-opened,gate-closed
 otto attach my-run              # follow what the running wake is saying and doing, live
+otto why my-run                 # the latest wake on one screen: what started it, how it ended
+otto why my-run --wake 12       # the same for an earlier wake
 ```
 
 [The journal reference](../reference/journal.md) lists every event.

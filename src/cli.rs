@@ -41,6 +41,8 @@ pub enum Command {
     Check(crate::human::CheckArgs),
     /// The run's journal, readably.
     Logs(crate::human::LogsArgs),
+    /// One wake's account, in order: what started it, how it ended, and what happened around it.
+    Why(crate::why::WhyArgs),
     /// What wakes and chats have used, in tokens, across every run — by run or by day.
     Usage(crate::human::UsageArgs),
     /// What wakes have said about otto itself: where it got in their way.

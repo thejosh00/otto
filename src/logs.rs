@@ -59,6 +59,15 @@ fn rotated(log: &Path, n: u32) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// `poke.log` and the files rotated from it, oldest first, whether or not each is there. Makes
+/// nothing: `paths::poke_log_path` makes the directory, and `otto why` only reads.
+pub fn poke_logs_oldest_first() -> Vec<PathBuf> {
+    let log = crate::paths::otto_home().join("logs").join("poke.log");
+    let mut files: Vec<PathBuf> = (1..=KEPT).rev().map(|n| rotated(&log, n)).collect();
+    files.push(log);
+    files
+}
+
 /// The stamp on the last line that has one. Not every line does: `otto poke: ...` lines and errors
 /// don't, and a log can hold anything. No file is simply no stamp.
 fn last_stamp_in(path: &Path) -> std::io::Result<Option<Timestamp>> {

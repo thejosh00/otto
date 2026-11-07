@@ -2505,6 +2505,15 @@ impl Renderer {
             None => line.value.get("ts").and_then(Value::as_str).unwrap_or("").to_string(),
         };
         let event = line.value.get("event").and_then(Value::as_str).unwrap_or("?");
+        let rest = self.fields(line);
+        out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));
+        out
+    }
+
+    /// A line's fields as `key=value`, and what an old line didn't record as `key=not recorded`.
+    pub fn fields(&self, line: &Line) -> Vec<String> {
+        let day = line.at.map(|at| at.to_offset(self.offset).date());
+        let event = line.value.get("event").and_then(Value::as_str).unwrap_or("?");
         let mut rest: Vec<String> = Vec::new();
         if let Value::Object(map) = &line.value {
             for (key, val) in map {
@@ -2528,8 +2537,7 @@ impl Renderer {
                 }
             }
         }
-        out.push_str(&format!("{time}  {event:<18}  {}", rest.join(" ")));
-        out
+        rest
     }
 
     /// One field's value. `day` is the line's own date, so a timestamp on the same day is just a

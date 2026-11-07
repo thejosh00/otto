@@ -36,6 +36,7 @@ mod state;
 mod story;
 mod todo;
 mod wake;
+mod why;
 
 use cli::{AgentCommand, Cli, Command, ConfigCommand, ServiceCommand, StateCommand};
 use clap::Parser;
@@ -70,6 +71,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Chat(args) => chat::chat(args),
         Command::Check(args) => human::check(args),
         Command::Logs(args) => human::logs(args),
+        Command::Why(args) => why::why(args),
         Command::Usage(args) => human::usage(args),
         Command::Feedback(args) => human::feedback(args),
         Command::Attach(args) => human::attach(args),

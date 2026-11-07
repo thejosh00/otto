@@ -69,6 +69,7 @@ Editor, which is what `osascript` posts as.
 |---|---|
 | A sleeping run never wakes | `otto agent status` — is the reviver loaded, and when did it last poke? |
 | A run is due but not waking | `otto poke --dry-run --verbose` says why for every run; `otto logs <id>` for its history |
+| You want to know why a wake started, or how it ended | `otto why <id> [--wake <n>]` puts the journal, poke's decisions and the check results in one order |
 | A run keeps failing | `otto logs <id> --event wake-incomplete,wake-killed,error`; after five in a row it becomes `blocked` with a gate explaining |
 | The web UI isn't there | `otto service status`, then `~/.otto/logs/serve.log` |
 | Wakes can't find `claude` or `gh` | launchd's `PATH` is `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:~/.local/bin` — install tools there or use absolute paths |

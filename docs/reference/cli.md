@@ -609,6 +609,25 @@ Options:
           Print help
 ```
 
+## `otto why`
+
+```text
+One wake's account, in order: what started it, how it ended, and what happened around it
+
+Usage: otto why [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --wake <N>
+          Which wake [default: the run's latest]
+
+  -h, --help
+          Print help
+```
+
 ## `otto usage`
 
 ```text
