@@ -317,6 +317,18 @@ mod tests {
         assert_eq!((d.version, d.sha.as_str()), (2, c.latest().sha.as_str()));
     }
 
+    /// What the page goes by: the reason when there is one, nothing when there isn't.
+    #[test]
+    fn a_changes_page_is_given_its_reason_for_no_evidence() {
+        use crate::changes::tests::{repo, submit_fix};
+        let _h = TempHome::new();
+        test_init("2026-09-21-wn", "a goal").unwrap();
+        let repo = repo();
+        crate::changes::submit("2026-09-21-wn", &crate::changes::Submit { no_evidence: Some("plan only, no code"), ..submit_fix(&repo, "t") }).unwrap();
+        let (_, detail) = rt().block_on(send(get_req("/api/changes/wn/1")));
+        assert_eq!(detail["version"]["noEvidence"], "plan only, no code", "{detail}");
+    }
+
     /// A change's screenshot comes back as itself, and nothing the page didn't list comes back at all.
     #[test]
     fn a_changes_evidence_is_served_as_itself_and_inert() {

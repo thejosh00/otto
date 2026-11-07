@@ -907,6 +907,12 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
         return Err(OttoError::usage(format!("--tests is what the tests said, in at most {TESTS_MAX_CHARS} characters")));
     }
     let no_evidence = check_say(s.no_evidence, "--no-evidence")?;
+    if s.no_evidence.is_some() && no_evidence.is_none() {
+        return Err(OttoError::usage("--no-evidence needs its reason: why there is nothing to show, in words the person reads on the change"));
+    }
+    if s.no_evidence.is_some() && !s.evidence.is_empty() {
+        return Err(OttoError::usage("--evidence or --no-evidence, not both: either there is something to show, or a reason there isn't"));
+    }
     let repo = main_repo(Path::new(s.repo))?;
     let branch = s.branch.trim().trim_start_matches("refs/heads/").to_string();
     if !branch_exists(&repo, &branch) {
@@ -1029,6 +1035,14 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 write_index(path, &index)?;
                 return Ok(out);
             }
+        }
+        // Anything from here on is a new version for the person to read. Nothing is written yet.
+        if s.evidence.is_empty() && no_evidence.is_none() {
+            return Err(OttoError::usage(
+                "a new commit needs what shows it works, or why nothing does. Submit again with one of:\n  \
+                 --evidence <path>      a screenshot, a transcript, tests failing before and passing after: a file or a folder\n  \
+                 --no-evidence \"<why>\"  why there is nothing to show, in words the person reads on the change",
+            ));
         }
         let (n, k) = match existing {
             Some(i) => (index.changes[i].n, index.changes[i].latest().k + 1),
@@ -3069,6 +3083,70 @@ pub(crate) mod tests {
         submit("c-sumr", &Submit { summary: "Second.", file: Some(&long), ..submit_fix(&repo, "t") }).unwrap();
         assert_eq!(read(&r("c-sumr", 1), Some(2)).unwrap().summary, "Second.\n");
         assert_eq!(read(&r("c-sumr", 1), Some(1)).unwrap().summary, "First.\n");
+    }
+
+    #[test]
+    fn a_version_from_before_the_reason_still_reads_and_writes_as_it_was() {
+        let old = serde_json::json!({
+            "k": 1, "sha": "abc", "baseSha": "def", "patchId": "p", "at": Timestamp::now(), "by": "author",
+            "patchBytes": 0, "commits": 1, "stat": {"add": 1, "del": 0, "files": []}, "summary": "changes/1-fix/v1.summary.md",
+        });
+        let v: ChangeVersion = serde_json::from_value(old).unwrap();
+        assert_eq!(v.no_evidence, None);
+        assert!(v.evidence.is_empty());
+        assert!(serde_json::to_value(&v).unwrap().get("noEvidence").is_none(), "the page goes by its absence: the old sentence stays");
+    }
+
+    #[test]
+    fn evidence_joining_the_same_commit_replaces_its_reason() {
+        let _h = TempHome::new();
+        test_init("c-evw", "a goal").unwrap();
+        let repo = repo();
+        let ev = evidence_dir();
+        submit("c-evw", &Submit { no_evidence: Some("the screenshot isn't taken yet"), ..submit_fix(&repo, "t") }).unwrap();
+        assert_eq!(change("c-evw", 1).latest().no_evidence.as_deref(), Some("the screenshot isn't taken yet"));
+        submit("c-evw", &Submit { evidence: find_evidence(&[ev.path().to_path_buf()]).unwrap(), no_evidence: None, ..submit_fix(&repo, "t") }).unwrap();
+        let c = change("c-evw", 1);
+        assert_eq!((c.latest().k, c.latest().evidence.len(), c.latest().no_evidence.as_deref()), (1, 2, None));
+    }
+
+    #[test]
+    fn a_rebase_by_the_lander_needs_no_flag_and_keeps_the_reason() {
+        let _h = TempHome::new();
+        test_init("c-rw", "a goal").unwrap();
+        test_init("c-rwl", "land changes").unwrap();
+        set_lander("c-rwl");
+        let repo = repo();
+        submit("c-rw", &Submit { no_evidence: Some("plan only, no code"), ..submit_fix(&repo, "t") }).unwrap();
+        approve(&[seen(r("c-rw", 1))], None, None).unwrap();
+        claim("c-rwl", &r("c-rw", 1)).unwrap();
+        let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        let c = rebased("c-rwl", &r("c-rw", 1), &head).unwrap();
+        assert_eq!((c.latest().k, c.latest().by.as_str(), c.latest().no_evidence.as_deref()), (2, "lander", Some("plan only, no code")));
+    }
+
+    #[test]
+    fn a_fix_by_the_babysitter_needs_no_flag_and_has_no_reason_of_its_own() {
+        let _h = TempHome::new();
+        test_init("c-bw", "a goal").unwrap();
+        test_init("c-bwl", "land changes").unwrap();
+        test_init("c-bwb", "look after pull requests").unwrap();
+        set_lander("c-bwl");
+        set_babysitter("c-bwb");
+        let repo = repo();
+        submit("c-bw", &Submit { no_evidence: Some("plan only, no code"), ..submit_fix(&repo, "t") }).unwrap();
+        approve(&[seen(r("c-bw", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let v1 = claim("c-bwl", &r("c-bw", 1)).unwrap().sha.unwrap();
+        pr_pushed("c-bwl", &r("c-bw", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
+        let own = repo.main.parent().unwrap().join("babysitter");
+        sh(&repo.main, &["worktree", "add", "--quiet", "--detach", own.to_str().unwrap(), &v1]);
+        std::fs::write(own.join("b.txt"), "alpha!\n").unwrap();
+        sh(&own, &["commit", "--quiet", "-am", "bang"]);
+        let fixed = sh(&own, &["rev-parse", "HEAD"]);
+        allow(&r("c-bw", 1), Some("typos")).unwrap();
+        let f = Fix { head: &fixed, summary: "Adds the bang.", tests: None, why: "a typo" };
+        let c = fix("c-bwb", &r("c-bw", 1), &f).unwrap();
+        assert_eq!((c.latest().k, c.latest().by.as_str(), c.latest().no_evidence.as_deref()), (2, "babysitter", None));
     }
 
     #[test]
