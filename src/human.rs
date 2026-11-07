@@ -125,8 +125,8 @@ pub enum FeedbackCommand {
         /// What should change, and how you'd know it had
         text: String,
     },
-    /// Name the one run that may file work here with `otto state assign`, or show or clear it. A
-    /// person's to do: refused from a wake
+    /// Show the one run that may file work here with `otto state assign`, or name or clear it.
+    /// Naming and clearing are a person's to do: refused from a wake
     Driver {
         /// The run to name. With neither this nor --clear, shows which is named
         run: Option<String>,
@@ -202,8 +202,11 @@ fn feedback_command(command: FeedbackCommand) -> Result<(), OttoError> {
             println!("filed as report {}", f::add(&text)?.id);
         }
         FeedbackCommand::Driver { run, clear } => {
-            if std::env::var_os("OTTO_RUN_ID").is_some() || std::env::var_os(crate::chat::CHAT_ENV).is_some() {
-                return Err(OttoError::usage("which run may assign work is a person's to say, so this is refused from a wake or a chat"));
+            let changing = run.is_some() || clear;
+            if changing && (std::env::var_os("OTTO_RUN_ID").is_some() || std::env::var_os(crate::chat::CHAT_ENV).is_some()) {
+                return Err(OttoError::usage(
+                    "which run may assign work is a person's to say, so naming or clearing one is refused from a wake or a chat; `otto feedback driver` alone shows who is named",
+                ));
             }
             let label = crate::paths::label_of;
             match (run, clear) {

@@ -600,7 +600,8 @@ otto feedback driver --clear        # name none, and no run can assign
 otto state assign otto-driver --file artifacts/next-item.md   # what its wake runs
 ```
 
-Naming it is yours alone: it is refused from a wake. Any other run is refused with exit 2 and told
+Naming it and clearing it are yours alone: both are refused from a wake, though a wake may look to
+see who is named. Any other run is refused with exit 2 and told
 which run is named. Unlike a report, assigning fails loudly and has no limit per wake. The item is
 queued and built like any other, and shown as "from <run>", so it can't be mistaken for yours or
 for a wake's report. That's all the driver gets: it can't approve, land or close anything by this.

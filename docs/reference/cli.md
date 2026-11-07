@@ -645,7 +645,7 @@ Usage: otto feedback [OPTIONS] [COMMAND]
 
 Commands:
   add       File something you want built in otto. A wake reports with `otto state feedback` instead
-  driver    Name the one run that may file work here with `otto state assign`, or show or clear it. A person's to do: refused from a wake
+  driver    Show the one run that may file work here with `otto state assign`, or name or clear it. Naming and clearing are a person's to do: refused from a wake
   next      What to build now: nothing while something is being built, else whatever was reopened, else the oldest
   due       Whether a run building from this should wake, and why: what its check script asks
   building  Its change is out: `otto feedback building 12 --change 7/7`
@@ -689,7 +689,7 @@ Options:
 ### `otto feedback driver`
 
 ```text
-Name the one run that may file work here with `otto state assign`, or show or clear it. A person's to do: refused from a wake
+Show the one run that may file work here with `otto state assign`, or name or clear it. Naming and clearing are a person's to do: refused from a wake
 
 Usage: otto feedback driver [OPTIONS] [RUN]
 

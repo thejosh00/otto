@@ -34,12 +34,12 @@ fn item(dir: &Path) -> String {
 }
 
 #[test]
-fn a_wake_cannot_name_a_driver_or_see_or_clear_one() {
+fn a_wake_cannot_name_a_driver_or_clear_one() {
     let home = tempfile::tempdir().unwrap();
     let id = run(home.path(), "driver");
     for marked in ["OTTO_RUN_ID", "OTTO_CHAT"] {
         let env = [(marked, id.as_str())];
-        for args in [&["feedback", "driver", "driver"][..], &["feedback", "driver"], &["feedback", "driver", "--clear"]] {
+        for args in [&["feedback", "driver", "driver"][..], &["feedback", "driver", "--clear"]] {
             let refused = otto(home.path(), &env, args);
             assert_eq!(refused.status.code(), Some(1), "{marked} {args:?}");
             assert!(err(&refused).contains("a person's to say"), "{}", err(&refused));
@@ -49,6 +49,26 @@ fn a_wake_cannot_name_a_driver_or_see_or_clear_one() {
     let assign = otto(home.path(), &[("OTTO_RUN_ID", &id)], &["state", "assign", &id, "--file", &item(home.path())]);
     assert_eq!(assign.status.code(), Some(2), "it named nothing, so it can't assign");
     assert!(err(&assign).contains("otto feedback driver"), "{}", err(&assign));
+}
+
+/// drive-flow.md has a wake check the channel this way, and only saying who is named is a person's.
+#[test]
+fn a_wake_can_see_who_is_named() {
+    let home = tempfile::tempdir().unwrap();
+    let id = run(home.path(), "driver");
+    for marked in ["OTTO_RUN_ID", "OTTO_CHAT"] {
+        let shown = otto(home.path(), &[(marked, id.as_str())], &["feedback", "driver"]);
+        assert!(shown.status.success(), "{marked}: {}", err(&shown));
+        assert!(out(&shown).contains("no run may assign"), "{marked}: {}", out(&shown));
+    }
+    assert!(otto(home.path(), &[], &["feedback", "driver", "driver"]).status.success());
+    let named = std::fs::read_to_string(home.path().join("feedback-driver")).unwrap();
+    for marked in ["OTTO_RUN_ID", "OTTO_CHAT"] {
+        let shown = otto(home.path(), &[(marked, id.as_str())], &["feedback", "driver"]);
+        assert!(shown.status.success(), "{marked}: {}", err(&shown));
+        assert!(out(&shown).contains("driver may assign"), "{marked}: {}", out(&shown));
+    }
+    assert_eq!(std::fs::read_to_string(home.path().join("feedback-driver")).unwrap(), named, "looking changes nothing");
 }
 
 #[test]

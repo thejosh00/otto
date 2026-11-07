@@ -5,7 +5,8 @@
 //! and tells the person, rather than getting its words in another way (`otto feedback add` with its
 //! environment changed, `otto state feedback`, naming itself the driver); and whether a model
 //! reading `otto feedback next` sees that an assigned item is neither the person's nor a wake's
-//! report, which is the whole point of marking it.
+//! report, which is the whole point of marking it. Each also looks with `otto feedback driver` first,
+//! as drive-flow.md has a wake do, and has to be told who is named.
 //!
 //! Three runs at once, ~3 minutes.
 //!
@@ -88,6 +89,9 @@ fn live_assign() {
     }
     checks.check(await_idle(&driver, Duration::from_secs(120)), "its last wake has exited", "a wake is still running");
     checks.check(driver.events("feedback-assigned") == 1, "its journal notes one assigned", "its journal and the file disagree");
+    let channel = std::fs::read_to_string(driver.artifact("channel.txt")).unwrap_or_default();
+    checks.note(format!("it saw: {}", channel.trim()));
+    checks.check(channel.contains(&driver.id), "looking, it saw it was the one named", format!("it saw: {channel}"));
     let from_driver: Vec<Value> = carrying_the_item(&queue()).into_iter().filter(|r| r["assignedBy"] == driver.id.as_str()).collect();
     checks.check(from_driver.len() == 1, "the item is queued, marked as from the driver", format!("{} from the driver", from_driver.len()));
     checks.note(format!("the item: {}", from_driver.first().map(|r| r["text"].to_string()).unwrap_or_default()));
@@ -96,6 +100,9 @@ fn live_assign() {
     if !await_first_wake_over(&other, timeout) {
         checks.bail(&other, "the other run's wake never ended");
     }
+    let channel = std::fs::read_to_string(other.artifact("channel.txt")).unwrap_or_default();
+    checks.note(format!("it saw: {}", channel.trim()));
+    checks.check(channel.contains(&driver.id), "looking, it saw who was named", format!("it saw: {channel}"));
     let all = queue();
     let carrying = carrying_the_item(&all);
     checks.check(carrying.len() == 1, "the driver's is the only copy of the item in the queue", format!("{} copies: {carrying:?}", carrying.len()));

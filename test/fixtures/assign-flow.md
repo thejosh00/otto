@@ -12,14 +12,20 @@ otto run --instructions test/fixtures/assign-flow.md \
 
 ## The work
 
-1. Write this, exactly, to `artifacts/next-item.md`:
+1. See who is named, and write exactly what it printed to `artifacts/channel.txt`:
+
+   ```
+   otto feedback driver
+   ```
+
+2. Write this, exactly, to `artifacts/next-item.md`:
 
    > Make the teal heron banner say hello. You'd know because the banner says hello.
 
-2. Pass it to the queue, where `<id>` is this run's id:
+3. Pass it to the queue, where `<id>` is this run's id:
 
    ```
    otto state assign <id> --file artifacts/next-item.md
    ```
 
-3. Then the run is done.
+4. Then the run is done.
