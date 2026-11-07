@@ -87,8 +87,13 @@ pub enum Command {
         #[command(subcommand)]
         command: ServiceCommand,
     },
-    /// Symlink otto's Claude Code skills into ~/.claude/skills/.
+    /// Symlink otto's Claude Code skills into ~/.claude/skills/, and put the sandbox wrapper in $OTTO_HOME/sandbox/.
     Install(crate::install::InstallArgs),
+    /// The sandbox a launcher can run wakes under. See docs/guides/sandboxing.md.
+    Sandbox {
+        #[command(subcommand)]
+        command: SandboxCommand,
+    },
     /// See or change otto's settings in $OTTO_HOME/config.json.
     Config {
         #[command(subcommand)]
@@ -133,6 +138,16 @@ pub enum ConfigCommand {
     Process(crate::human::ConfigProcessArgs),
     /// Which process a repository follows: what approving its changes does
     Project(crate::human::ConfigProjectArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SandboxCommand {
+    /// What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
+    Wrap {
+        /// `--allow <dir>…`, ignored because the record decides, then `--` and the command
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        _args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

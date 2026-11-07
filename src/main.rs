@@ -30,6 +30,7 @@ mod paths;
 mod plain;
 mod poke;
 mod progress;
+mod sandbox;
 mod server;
 mod spawner;
 mod state;
@@ -38,7 +39,7 @@ mod todo;
 mod wake;
 mod why;
 
-use cli::{AgentCommand, Cli, Command, ConfigCommand, ServiceCommand, StateCommand};
+use cli::{AgentCommand, Cli, Command, ConfigCommand, SandboxCommand, ServiceCommand, StateCommand};
 use clap::Parser;
 use error::OttoError;
 
@@ -84,6 +85,13 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Delete(args) => human::delete(args),
         Command::Cleanup(args) => human::cleanup(args),
         Command::Install(args) => install::install(args),
+        Command::Sandbox { command } => match command {
+            // As they were given, not as clap read them: it takes the first `--` away, and what's past that is claude's.
+            SandboxCommand::Wrap { .. } => {
+                let raw: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+                sandbox::wrap(raw.get(2..).unwrap_or_default())
+            }
+        },
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {
             AgentCommand::Start => launchd::start(),

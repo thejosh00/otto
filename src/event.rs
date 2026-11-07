@@ -27,6 +27,7 @@ use serde_json::{Map, Value};
 pub const OTTO_EVENTS: &[&str] = &[
     "run-created", "phase-changed", "status-changed", "facts-recorded", "gate-opened", "gate-closed",
     "gate-expired", "timer-armed", "tick", "noop-tick", "wake-started", "wake-spent", "usage-unavailable",
+    "sandbox-refused",
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
@@ -252,6 +253,10 @@ pub enum Event {
     },
     UsageUnavailable {
         note: String,
+    },
+    /// The sandbox wrapper wouldn't start anything, and why. No token, or any of a token, in `why`.
+    SandboxRefused {
+        why: String,
     },
     WakeReportedError {
         #[serde(rename = "exitCode")]

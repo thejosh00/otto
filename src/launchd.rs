@@ -359,6 +359,15 @@ fn service_port(plist: &str) -> Option<u16> {
     value.trim().parse().ok()
 }
 
+/// The ports otto's web page is on or would be on, which a sandbox closes: the default, and the
+/// installed service's own if that's another.
+pub fn web_ports() -> Vec<u16> {
+    let mut ports = vec![crate::server::DEFAULT_PORT];
+    let installed = std::fs::read_to_string(plist_path_for(SERVICE_LABEL)).ok().and_then(|plist| service_port(&plist));
+    ports.extend(installed.filter(|port| *port != crate::server::DEFAULT_PORT));
+    ports
+}
+
 pub fn service_status() -> Result<(), OttoError> {
     let plist_path = plist_path_for(SERVICE_LABEL);
     let plist = std::fs::read_to_string(&plist_path).ok();

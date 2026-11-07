@@ -127,6 +127,9 @@ pub fn install(args: InstallArgs) -> Result<(), OttoError> {
     for line in crate::agents::ensure()? {
         println!("{line}");
     }
+    // It opens nothing and moves no run: only a launcher naming it, and a record, do that.
+    let otto = std::env::current_exe()?;
+    println!("sandbox wrapper: {}", crate::sandbox::ensure_wrapper(&otto)?.display());
     Ok(())
 }
 

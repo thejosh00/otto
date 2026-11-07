@@ -1,0 +1,635 @@
+//! The sandbox wrapper and the profile it generates, against the real `sandbox-exec` and the real
+//! binary, with no model: `plans/v3.md`, "Escapes the sandbox must close". Each probe tries the
+//! thing and looks at what happened on disk or what came back.
+//!
+//! **Where these run.** A profile can't be entered from inside a different one (exit 71), so under a
+//! sandboxed wake each test says so and passes without having run; item 1.9 runs them from outside. They
+//! need macOS, for `sandbox-exec`. Almost everything uses a scratch `HOME`, so a probe that wrongly
+//! succeeded touches only that. `the_real_token…` is the exception, on the real Keychain: it counts bytes
+//! and prints none.
+#![cfg(target_os = "macos")]
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+
+/// Whether a different profile can be entered from here. Not from inside a sandboxed wake.
+fn can_nest() -> bool {
+    let inside = Command::new("/usr/bin/sandbox-exec").args(["-p", "(version 1)(allow default)", "/usr/bin/true"]).output().is_ok_and(|o| o.status.success());
+    if !inside {
+        eprintln!("skipped: already inside a sandbox, so a different profile can't start here. This runs from outside one (plans/v3.md, 1.9)");
+    }
+    inside
+}
+
+struct Scratch {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    /// The run under test; another one, to be out of reach.
+    id: String,
+    other: String,
+}
+
+impl Scratch {
+    fn new(record: impl FnOnce(&Path) -> serde_json::Value) -> Scratch {
+        // Not under /private/tmp, which the profile leaves open, or every refusal here would be a false alarm.
+        let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        assert!(!root.starts_with("/private/tmp"), "CARGO_TARGET_DIR is under /private/tmp, which the profile leaves open, so these can't test anything");
+        std::fs::create_dir_all(root.join("tmp")).unwrap();
+        let home = root.join("h");
+        for sub in [
+            ".claude/projects", ".claude/hooks", ".claude/skills", ".local/bin", "Library/LaunchAgents", ".ssh", ".config/gh", ".config/cloudgpu",
+            "workspace/repo/.git/hooks", "workspace/repo/.claude", "workspace/other", ".otto", "Library/Keychains",
+        ] {
+            std::fs::create_dir_all(home.join(sub)).unwrap();
+        }
+        for file in [
+            ".claude/settings.json", ".zshenv", ".ssh/id_ed25519", ".config/gh/hosts.yml", ".config/cloudgpu/secrets.env", ".netrc", ".zsh_history",
+            "workspace/repo/.git/config", "workspace/repo/.git/hooks/a", "workspace/repo/tracked", "workspace/other/secret", "Library/Keychains/login.keychain-db",
+        ] {
+            std::fs::write(home.join(file), "seed\n").unwrap();
+        }
+        let stub = root.join("stub");
+        write_exec(&stub, "#!/bin/sh\nexit 0\n");
+        std::fs::write(home.join(".otto/config.json"), serde_json::json!({"launchers": [{"name": "claude", "command": stub.display().to_string()}]}).to_string()).unwrap();
+        let mut s = Scratch { _dir: dir, root, id: String::new(), other: String::new() };
+        s.id = s.run("r");
+        s.other = s.run("o");
+        std::fs::create_dir_all(s.otto_home().join("sandbox/runs")).unwrap();
+        std::fs::write(s.record_path(), record(&home).to_string()).unwrap();
+        s
+    }
+
+    fn home(&self) -> PathBuf {
+        self.root.join("h")
+    }
+
+    fn otto_home(&self) -> PathBuf {
+        self.home().join(".otto")
+    }
+
+    fn record_path(&self) -> PathBuf {
+        self.otto_home().join("sandbox/runs").join(format!("{}.json", self.id))
+    }
+
+    fn profile_path(&self) -> PathBuf {
+        self.otto_home().join("sandbox/profiles").join(format!("{}.sb", self.id))
+    }
+
+    fn otto(&self) -> Command {
+        let mut c = Command::new(OTTO);
+        c.env("HOME", self.home())
+            .env("OTTO_HOME", self.otto_home())
+            .env("TMUX_TMPDIR", &self.root)
+            .env("TMPDIR", self.root.join("tmp"))
+            .env_remove("TMUX")
+            .env_remove("OTTO_RUN_ID")
+            .env_remove("OTTO_RUN_DIR")
+            .env_remove("OTTO_CHAT")
+            .current_dir(&self.root);
+        c
+    }
+
+    fn run(&self, name: &str) -> String {
+        let out = self.otto().args(["run", "--goal", "g", "--name", name, "--perpetual", "--period", "1h", "--detach", "none", "--workdir"]).arg(self.home().join("workspace")).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let list = self.otto().args(["state", "list", "--json"]).output().unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+        list.as_array().unwrap().iter().find(|r| r["name"] == name).unwrap()["id"].as_str().unwrap().to_string()
+    }
+
+    /// The wrapper, for this run. In a scratch `HOME` there's no sign-in, so it stops at the token, having
+    /// written the profile: which is how these tests get the very text a wake would run under.
+    fn wrap(&self, args: &[&str]) -> Output {
+        self.otto().env("OTTO_RUN_ID", &self.id).args(["sandbox", "wrap"]).args(args).output().unwrap()
+    }
+
+    fn profile(&self) -> PathBuf {
+        let marker = self.root.join("started");
+        let stub = self.root.join("marks");
+        write_exec(&stub, &format!("#!/bin/sh\ntouch '{}'\n", marker.display()));
+        let out = self.wrap(&["--", stub.to_str().unwrap()]);
+        assert!(!out.status.success(), "a scratch home has no sign-in: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!marker.exists(), "nothing starts without a token");
+        assert!(self.profile_path().exists(), "{}", String::from_utf8_lossy(&out.stderr));
+        self.profile_path()
+    }
+
+    /// A shell under the generated profile, cwd in the workspace.
+    fn inside(&self, script: &str) -> Output {
+        let profile = self.profile();
+        Command::new("/usr/bin/sandbox-exec")
+            .arg("-f")
+            .arg(profile)
+            .args(["/bin/sh", "-c", script])
+            .current_dir(self.home().join("workspace"))
+            .env("HOME", self.home())
+            .env("H", self.home())
+            .env("O", self.otto_home())
+            .env("R", &self.root)
+            .env("OTTO_HOME", self.otto_home())
+            .env("TMPDIR", self.root.join("tmp"))
+            .env_remove("TMUX")
+            .output()
+            .unwrap()
+    }
+
+    fn refused(&self, what: &str, script: &str) {
+        let out = self.inside(script);
+        assert!(!out.status.success(), "{what} should be refused: {script}");
+    }
+
+    fn allowed(&self, what: &str, script: &str) {
+        let out = self.inside(script);
+        assert!(out.status.success(), "{what} should work: {script}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn journal(&self) -> String {
+        std::fs::read_to_string(self.otto_home().join("runs").join(&self.id).join("journal.jsonl")).unwrap()
+    }
+}
+
+fn write_exec(path: &Path, text: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// Grants one repo, with the whole workspace as the working directory, as every real run has.
+fn one_repo(home: &Path) -> serde_json::Value {
+    serde_json::json!({"launcher": "sandbox", "workdir": home.join("workspace"), "write": [home.join("workspace/repo")]})
+}
+
+#[test]
+fn what_a_wake_needs_still_works() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    s.allowed("writing in the granted repo", "echo x > \"$H/workspace/repo/new\" && cat \"$H/workspace/repo/tracked\"");
+    s.allowed("a temporary file", "echo x > \"$TMPDIR/f\"");
+    s.allowed("the transcript directory", "echo x > \"$H/.claude/projects/t\"");
+    s.allowed("reading its own record", "cat \"$O/sandbox/runs/\"*.json");
+    s.allowed("reading config", "cat \"$O/config.json\"");
+    s.allowed("a repo lock's directory", "mkdir -p \"$O/runs/.locks\" && echo x > \"$O/runs/.locks/l\"");
+    s.allowed("the feedback file", "echo x >> \"$O/feedback.jsonl\"");
+    let own = format!("echo x > \"$O/runs/{}/note\"", s.id);
+    s.allowed("its own run", &own);
+    s.allowed("a git repo of its own in a temporary directory, hooks and all", "cd \"$TMPDIR\" && git init -q mine && echo x > mine/.git/hooks/h");
+    // The worktree a wake makes: its `.git` is a file, its admin directory is under the repo's.
+    s.allowed(
+        "a worktree",
+        "cd \"$H/workspace/repo\" && echo x > \"$H/workspace/repo/.git/HEAD\" && mkdir -p .git/worktrees/w work && printf 'gitdir: x\\n' > work/.git && echo y > .git/worktrees/w/HEAD && rm work/.git",
+    );
+}
+
+/// Plan table, "Git hooks and config": including the ways round a rule that names a path.
+#[test]
+fn git_hooks_and_config_can_not_be_written() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let repo = "\"$H/workspace/repo\"";
+    for (what, script) in [
+        ("a hook", format!("echo x > {repo}/.git/hooks/pre-commit")),
+        ("a hook, in other case", format!("echo x > {repo}/.GIT/HOOKS/pre-commit")),
+        ("config", format!("echo x >> {repo}/.git/config")),
+        ("config, in other case", format!("echo x >> {repo}/.git/CONFIG")),
+        ("a worktree's config", format!("mkdir -p {repo}/.git/worktrees/w && echo x > {repo}/.git/worktrees/w/config.worktree")),
+        ("through a symlink", format!("ln -s {repo}/.git/config {repo}/sl && echo x >> {repo}/sl")),
+        ("a hard link to config", format!("ln {repo}/.git/config {repo}/hl")),
+        ("moving .git aside", format!("mv {repo}/.git {repo}/g2")),
+        ("moving hooks aside", format!("mv {repo}/.git/hooks {repo}/.git/h2")),
+        ("moving the repo out", format!("mv {repo} \"$TMPDIR/moved\"")),
+        ("claude settings in the repo", format!("echo x > {repo}/.claude/settings.local.json")),
+        ("~/.gitconfig", "echo x >> \"$H/.gitconfig\"".to_string()),
+        ("~/.config/git/config", "mkdir -p \"$H/.config/git\" && echo x >> \"$H/.config/git/config\"".to_string()),
+    ] {
+        s.refused(what, &script);
+    }
+    assert_eq!(std::fs::read_to_string(s.home().join("workspace/repo/.git/config")).unwrap(), "seed\n");
+}
+
+/// `otto state`, for real, from inside: everything a wake does through it has to land, in a run whose wake
+/// is the only thing that could be writing. A new place otto writes, and this is what notices.
+#[test]
+fn a_wake_can_do_its_job_through_otto_state() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let repo = s.home().join("workspace/repo");
+    let init = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&repo).env("HOME", s.home()).output().unwrap().status.success(), "{args:?}");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    init(&["init", "-q", "-b", "main"]);
+    init(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    init(&["checkout", "-q", "-b", "try"]);
+    std::fs::write(repo.join("made"), "x\n").unwrap();
+    init(&["add", "made"]);
+    init(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "try"]);
+    init(&["checkout", "-q", "main"]);
+    assert!(s.otto().args(["config", "project", repo.to_str().unwrap(), "--process", "direct"]).output().unwrap().status.success());
+    let id = &s.id;
+    let r = repo.display();
+    let info = repo.join(".git/info");
+    std::fs::create_dir_all(&info).unwrap();
+    std::fs::write(info.join("exclude"), "summary.md\nhandoff.md\n").unwrap();
+    std::fs::write(repo.join("summary.md"), "What it does.\n").unwrap();
+    std::fs::write(repo.join("handoff.md"), "# h\n## Goal\ng\n## Where this is\nHere.\n## Decided\nn\n## This wake did\nn\n## Next wake must\nn\n## Needs\nnothing\n## Don't re-derive\nn\n").unwrap();
+    for (what, script) in [
+        ("a lock", format!("'{OTTO}' state lock {id} --repo '{r}'")),
+        ("the unlock", format!("'{OTTO}' state unlock {id}")),
+        ("a log line", format!("'{OTTO}' state log {id} --event cycle --message m")),
+        ("a fact", format!("'{OTTO}' state record-fact {id} k=v")),
+        ("a todo-ish artifact", format!("echo x > \"$O/runs/{id}/artifacts/todo.md\"")),
+        ("feedback", format!("'{OTTO}' state feedback {id} --body 'a report'")),
+        ("moving a feedback item on", format!("'{OTTO}' feedback building 1 --change {id}/1")),
+        ("a published output", format!("'{OTTO}' state publish {id} --key k --title t --file '{r}/summary.md'")),
+        ("a message", format!("'{OTTO}' state message {id} --kind update --title t --body b")),
+        ("a change", format!("'{OTTO}' state change submit {id} --repo '{r}' --branch try --title t --summary-file '{r}/summary.md' --tests none --no-evidence none")),
+        ("a handoff", format!("'{OTTO}' state handoff {id} --stdin < '{r}/handoff.md'")),
+        ("a timer", format!("'{OTTO}' state arm-timer {id} --in 600")),
+    ] {
+        let out = s.inside(&script);
+        assert!(out.status.success(), "{what}: {script}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+}
+
+/// Found by running `cargo test` under a profile: rustc looks at every directory on the way down to a grant,
+/// so a grant below a closed directory has to leave those visible, and only visible.
+#[test]
+fn a_grant_below_a_closed_directory_can_be_walked_to() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "workdir": home.join("workspace"), "write": [home.join("workspace/trees/deep/x")]}));
+    std::fs::create_dir_all(s.home().join("workspace/trees/deep/x")).unwrap();
+    std::fs::write(s.home().join("workspace/trees/sibling"), "seed\n").unwrap();
+    s.allowed("looking at the directory above", "stat \"$H/workspace/trees\" && stat \"$H/workspace/trees/deep\"");
+    s.allowed("the grant", "echo x > \"$H/workspace/trees/deep/x/f\"");
+    s.refused("listing the directory above", "ls \"$H/workspace/trees\"");
+    s.refused("what's beside it", "cat \"$H/workspace/trees/sibling\"");
+    s.refused("looking at what's beside it", "stat \"$H/workspace/trees/sibling\"");
+    s.refused("writing beside it", "echo x > \"$H/workspace/trees/new\"");
+}
+
+/// With `.git/config` closed, what a wake does with git still works: fetch, a worktree on a new branch from
+/// `origin/main` (git can't record the upstream, and says so, and goes on), commit, rebase, remove.
+#[test]
+fn git_works_with_its_config_closed() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| {
+        serde_json::json!({"launcher": "sandbox", "workdir": home.join("workspace"), "read": [home.join("workspace/origin.git")], "write": [home.join("workspace/real"), home.join("workspace/trees")]})
+    });
+    let (space, real) = (s.home().join("workspace"), s.home().join("workspace/real"));
+    std::fs::create_dir_all(space.join("trees")).unwrap();
+    let git = |dir: &Path, args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(dir).env("HOME", s.home()).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&space, &["init", "-q", "--bare", "origin.git"]);
+    git(&space, &["init", "-q", "-b", "main", "real"]);
+    git(&real, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&real, &["remote", "add", "origin", space.join("origin.git").to_str().unwrap()]);
+    git(&real, &["push", "-q", "origin", "main"]);
+    let config = std::fs::read(real.join(".git/config")).unwrap();
+    s.allowed(
+        "the worktree flow",
+        "cd \"$H/workspace/real\" && git fetch -q origin && git worktree add -q -b x \"$H/workspace/trees/x\" origin/main && cd \"$H/workspace/trees/x\" \
+         && echo y > f && git add f && git -c user.name=t -c user.email=t@t commit -q -m c && git rebase -q origin/main && git log -1 --format=%s | grep -q c \
+         && cd \"$H/workspace/real\" && git worktree remove --force \"$H/workspace/trees/x\" && git worktree prune && git branch -D -q x",
+    );
+    s.refused("git setting config", "cd \"$H/workspace/real\" && git config foo.bar 1");
+    s.refused("the lock renamed onto it", "cd \"$H/workspace/real\" && echo x > .git/config.lock && mv .git/config.lock .git/config");
+    std::fs::remove_file(real.join(".git/config.lock")).unwrap();
+    assert_eq!(std::fs::read(real.join(".git/config")).unwrap(), config);
+}
+
+/// A record listing the directory above a repo opens that directory, and still not the hooks, and the repo
+/// can't be moved out from under the rule.
+#[test]
+fn a_grant_above_a_repo_does_not_open_its_hooks() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "workdir": home.join("workspace"), "write": [home.join("workspace")]}));
+    s.allowed("the directory the record lists", "echo x > \"$H/workspace/repo/new\"");
+    s.refused("the hooks below it", "echo x > \"$H/workspace/repo/.git/hooks/h\"");
+    s.refused("moving the repo out", "mv \"$H/workspace/repo\" \"$TMPDIR/moved\"");
+    s.refused("the credentials rule still applies", "cat \"$H/.ssh/id_ed25519\"");
+}
+
+/// Plan table: "Claude settings", "Persistence", "`otto-build` installing".
+#[test]
+fn nothing_that_runs_later_can_be_written() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    for (what, path) in [
+        ("claude's settings", ".claude/settings.json"),
+        ("claude's local settings", ".claude/settings.local.json"),
+        ("a claude hook", ".claude/hooks/h"),
+        ("a skill", ".claude/skills/s"),
+        ("a claude agent", ".claude/agents/a.md"),
+        ("~/.claude.json, with its mcpServers", ".claude.json"),
+        ("a shell startup file", ".zshenv"),
+        ("another", ".zshrc"),
+        ("a LaunchAgent", "Library/LaunchAgents/x.plist"),
+        ("the binary otto runs", ".local/bin/otto"),
+        ("a cargo binary", ".cargo/bin/x"),
+    ] {
+        s.refused(what, &format!("mkdir -p \"$(dirname \"$H/{path}\")\" 2>/dev/null; echo x >> \"$H/{path}\""));
+    }
+    assert_eq!(std::fs::read_to_string(s.home().join(".claude/settings.json")).unwrap(), "seed\n");
+}
+
+/// Plan table: "Other otto state", "The wrapper and profiles". Its own `run.json` is writable, and that's
+/// what the record is for (the next part of 1.2).
+#[test]
+fn otto_state_past_its_own_run_can_not_be_written() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    s.profile();
+    std::fs::write(s.otto_home().join("sandbox/wrapper"), "#!/bin/sh\n").unwrap();
+    let other = format!("\"$O/runs/{}/run.json\"", s.other);
+    for (what, script) in [
+        ("config.json", "echo x >> \"$O/config.json\"".to_string()),
+        ("its record", format!("echo x >> \"$O/sandbox/runs/{}.json\"", s.id)),
+        ("a new record", "echo x > \"$O/sandbox/runs/new.json\"".to_string()),
+        ("the wrapper", "echo x >> \"$O/sandbox/wrapper\"".to_string()),
+        ("its profile", format!("echo x >> \"$O/sandbox/profiles/{}.sb\"", s.id)),
+        ("moving the sandbox directory", "mv \"$O/sandbox\" \"$O/sandbox2\"".to_string()),
+        ("another run", format!("echo x >> {other}")),
+        ("who may assign", "echo x > \"$O/feedback-driver\"".to_string()),
+        ("a new file in $OTTO_HOME", "echo x > \"$O/approvals\"".to_string()),
+    ] {
+        s.refused(what, &script);
+    }
+}
+
+/// Found by a real wake: `$OTTO_HOME` under a directory the projects rule closes, and the wake can't read its
+/// own `run.json`, so it can't even say what's wrong. Its home is still its home.
+#[test]
+fn a_home_under_a_closed_directory_is_still_open() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "workdir": home}));
+    s.allowed("its own run.json", &format!("cat \"$O/runs/{}/run.json\"", s.id));
+    s.allowed("writing in its run", &format!("echo x > \"$O/runs/{}/note\"", s.id));
+    s.allowed("a repo lock", "mkdir -p \"$O/runs/.locks\" && echo x > \"$O/runs/.locks/l\"");
+    s.refused("config.json still", "echo x >> \"$O/config.json\"");
+    s.refused("what the home's beside", "cat \"$H/.zshenv\"");
+}
+
+/// A record can name a place under `$OTTO_HOME`, which is how the lander's writes into other runs get said,
+/// and still can't open what no record can.
+#[test]
+fn a_record_can_open_other_runs_and_not_config() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "write": [home.join(".otto")]}));
+    s.allowed("other runs", &format!("echo x >> \"$O/runs/{}/note\"", s.other));
+    s.refused("config.json", "echo x >> \"$O/config.json\"");
+    s.refused("the sandbox", "echo x > \"$O/sandbox/runs/new.json\"");
+}
+
+/// Plan table: "The working directory as a grant". Other projects closed both ways, with `~/workspace` as
+/// the working directory; a `--allow` the record doesn't list opens nothing.
+#[test]
+fn other_projects_are_closed_both_ways() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let other = s.home().join("workspace/other");
+    // What otto would pass for a run.json that had an extra repo in it.
+    s.wrap(&["--allow", other.to_str().unwrap(), "--", "/usr/bin/true"]);
+    for (what, script) in [
+        ("reading another project", "cat \"$H/workspace/other/secret\""),
+        ("listing it", "ls \"$H/workspace/other\""),
+        ("writing to it", "echo x >> \"$H/workspace/other/secret\""),
+        ("reading through a symlink", "ln -s \"$H/workspace/other\" \"$H/workspace/repo/l\"; cat \"$H/workspace/repo/l/secret\""),
+        ("in other case", "cat \"$H/WORKSPACE/OTHER/SECRET\""),
+        ("listing the workspace", "ls \"$H/workspace\""),
+        ("creating in the workspace", "echo x > \"$H/workspace/new\""),
+    ] {
+        s.refused(what, script);
+    }
+    s.allowed("the repo it was granted", "cat \"$H/workspace/repo/tracked\"");
+    s.allowed("still being in the workspace", "test \"$(pwd -P)\" = \"$H/workspace\"");
+}
+
+/// Plan table: "Credentials in other files", and the Keychain from the spike.
+#[test]
+fn credentials_read_as_nothing() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    for (what, path) in [
+        ("an ssh key", ".ssh/id_ed25519"),
+        ("gh's token", ".config/gh/hosts.yml"),
+        ("an app's secrets", ".config/cloudgpu/secrets.env"),
+        ("netrc", ".netrc"),
+        ("shell history", ".zsh_history"),
+        ("the Keychain file", "Library/Keychains/login.keychain-db"),
+    ] {
+        let out = s.inside(&format!("cat \"$H/{path}\""));
+        assert!(!out.status.success() && out.stdout.is_empty(), "{what}: {} bytes", out.stdout.len());
+    }
+    let out = s.inside("/usr/bin/security find-generic-password -s 'Claude Code-credentials' -w");
+    assert!(!out.status.success() && out.stdout.is_empty(), "the Keychain: {} bytes", out.stdout.len());
+}
+
+/// An app's secrets are the one thing a record can open, for the run that's that app's.
+#[test]
+fn a_record_can_open_an_apps_secrets_but_not_a_credential() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "read": [home.join(".config/cloudgpu"), home.join(".ssh")]}));
+    s.allowed("the app's", "cat \"$H/.config/cloudgpu/secrets.env\"");
+    s.refused("the ssh key, listed or not", "cat \"$H/.ssh/id_ed25519\"");
+}
+
+/// Plan table: "Talking to outside processes". None of these acts on anything: each is refused at the exec.
+#[test]
+fn outside_processes_can_not_be_reached() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    for (what, script) in [
+        ("launchctl", "/bin/launchctl list"),
+        ("open", "/usr/bin/open -R /nonexistent"),
+        ("osascript", "/usr/bin/osascript -e 'return 1'"),
+        ("security", "/usr/bin/security list-keychains"),
+    ] {
+        let out = s.inside(script);
+        assert_eq!(out.status.code(), Some(126), "{what}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    // The socket, whichever server is or isn't there: refused is not the same as nothing listening.
+    let out = s.inside("mkdir -p /private/tmp/tmux-$(id -u); exec tmux -S /private/tmp/tmux-$(id -u)/default ls");
+    assert!(!out.status.success());
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("not permitted") || said.contains("no server"), "{said}");
+    // otto's page approves for whoever asks. Whether or not it's up, a curl from here must not connect.
+    let out = s.inside("exec curl -s --max-time 5 -o /dev/null http://127.0.0.1:7878/api/inbox");
+    assert!(!out.status.success(), "otto's web page must be out of reach, or a wake approves itself");
+    let out = s.inside("exec curl -s --max-time 5 -o /dev/null http://localhost:7878/api/inbox");
+    assert!(!out.status.success());
+}
+
+/// `otto note --now` and `otto answer` start wakes. From inside, whatever it starts is still inside, so it
+/// can't be less confined: a stub launcher started that way can't write what the sandbox refuses.
+#[test]
+fn a_wake_started_from_inside_stays_inside() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let escaped = s.home().join("escaped");
+    write_exec(&s.root.join("stub"), &format!("#!/bin/sh\necho x > '{}'\n", escaped.display()));
+    let out = s.inside(&format!("exec '{OTTO}' wake {}", s.other));
+    assert!(!escaped.exists(), "a child of a sandbox wrote outside it: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Every way the wrapper can fail: nothing starts, and it says so where it will be seen.
+#[test]
+fn the_wrapper_fails_closed_and_says_why() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let marker = s.root.join("started");
+    let stub = s.root.join("marks");
+    write_exec(&stub, &format!("#!/bin/sh\ntouch '{}'\n", marker.display()));
+    let stub = stub.to_str().unwrap();
+    let check = |s: &Scratch, what: &str, said: &str| {
+        let out = s.wrap(&["--", stub]);
+        assert!(!out.status.success(), "{what}");
+        assert!(!marker.exists(), "{what}: the command started");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(said), "{what}: {stderr}");
+        assert!(s.journal().lines().last().unwrap().contains(said), "{what}: {}", s.journal());
+        assert!(s.journal().contains("sandbox-refused"));
+    };
+    check(&s, "no token", "sign");
+    std::fs::write(s.record_path(), "{ garbled").unwrap();
+    check(&s, "a garbled record", "can't be used");
+    std::fs::write(s.record_path(), r#"{"launcher":"s","writes":["/x"]}"#).unwrap();
+    check(&s, "a mistyped record", "can't be used");
+    std::fs::remove_file(s.record_path()).unwrap();
+    check(&s, "no record", "no sandbox record");
+    std::fs::write(s.record_path(), r#"{"launcher":"s","write":["relative"]}"#).unwrap();
+    check(&s, "a relative path", "absolute");
+
+    // Not a wake or a chat at all.
+    let out = s.otto().args(["sandbox", "wrap", "--", stub]).output().unwrap();
+    assert!(!out.status.success() && !marker.exists());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("OTTO_RUN_ID"));
+    // The launcher's own -- missing.
+    std::fs::write(s.record_path(), one_repo(&s.home()).to_string()).unwrap();
+    let out = s.wrap(&[stub]);
+    assert!(!out.status.success() && !marker.exists());
+}
+
+/// A path that would break out of its string doesn't, so the profile still compiles and still closes.
+#[test]
+fn a_path_with_a_quote_in_it_stays_a_path() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "sandbox", "write": [home.join("workspace/a\") (allow default) (literal \"b")]}));
+    let profile = s.profile();
+    assert!(std::fs::read_to_string(profile).unwrap().contains(r#"a\") (allow default) (literal \"b"#));
+    s.refused("the credentials are still closed", "cat \"$H/.ssh/id_ed25519\"");
+    s.refused("and writes", "echo x >> \"$H/.zshenv\"");
+}
+
+/// A profile `sandbox-exec` won't take stops before anything starts, including the token being read.
+#[test]
+fn a_profile_that_will_not_compile_starts_nothing() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    // Not a directory where profiles go: the wrapper can't write one.
+    std::fs::remove_dir_all(s.otto_home().join("sandbox/profiles")).ok();
+    std::fs::write(s.otto_home().join("sandbox/profiles"), "").unwrap();
+    let out = s.wrap(&["--", "/usr/bin/true"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("profile"));
+}
+
+/// The real thing, with a real sign-in and a stub for claude: the token is on descriptor 3, in no variable,
+/// and a planted credential doesn't get in. Passes without running if this machine has no sign-in.
+#[test]
+fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
+    if !can_nest() {
+        return;
+    }
+    let signed_in = Command::new("/usr/bin/security").args(["find-generic-password", "-s", "Claude Code-credentials"]).output().is_ok_and(|o| o.status.success());
+    if !signed_in {
+        eprintln!("skipped: no claude sign-in in this Keychain");
+        return;
+    }
+    let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let otto_home = root.join("home");
+    std::fs::create_dir_all(otto_home.join("sandbox/runs")).unwrap();
+    let otto = |args: &[&str]| {
+        Command::new(OTTO)
+            .args(args)
+            .env("OTTO_HOME", &otto_home)
+            .env("TMUX_TMPDIR", &root)
+            .env("OTTO_BIN", OTTO)
+            .env_remove("TMUX")
+            .env_remove("OTTO_RUN_ID")
+            .env_remove("OTTO_CHAT")
+            .current_dir(&root)
+            .output()
+            .unwrap()
+    };
+    std::fs::write(otto_home.join("config.json"), serde_json::json!({"launchers": [{"name": "claude", "command": "/usr/bin/true"}]}).to_string()).unwrap();
+    assert!(otto(&["run", "--goal", "g", "--name", "r", "--perpetual", "--period", "1h", "--detach", "none", "--workdir", root.to_str().unwrap()]).status.success());
+    let list: serde_json::Value = serde_json::from_slice(&otto(&["state", "list", "--json"]).stdout).unwrap();
+    let id = list[0]["id"].as_str().unwrap().to_string();
+    std::fs::write(otto_home.join("sandbox/runs").join(format!("{id}.json")), serde_json::json!({"launcher": "sandbox", "write": [root]}).to_string()).unwrap();
+
+    // Counts only. Nothing prints the token.
+    let script = "printf 'fd3=%s\\n' \"$(wc -c <&3 | tr -d ' ')\"; printf 'again=%s\\n' \"$(wc -c <&3 2>/dev/null | tr -d ' ')\"; \
+                  printf 'fd=%s gh=%s github=%s tmux=%s kept=%s\\n' \"$CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR\" \"${GH_TOKEN:-none}\" \"${GITHUB_TOKEN:-none}\" \"${TMUX:-none}\" \"$KEPT_DIR\"; \
+                  printf 'oauth=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; printf 'gitcfg=%s\\n' \"${GIT_CONFIG_COUNT:-none}\"; \
+                  printf 'ghfile=%s\\n' \"$(cat \"$HOME/.config/gh/hosts.yml\" 2>/dev/null | wc -c | tr -d ' ')\"";
+    let out = Command::new(OTTO)
+        .args(["sandbox", "wrap", "--", "/bin/sh", "-c", script])
+        .current_dir(&root)
+        .env("OTTO_HOME", &otto_home)
+        .env("OTTO_RUN_ID", &id)
+        .env("GH_TOKEN", "planted")
+        .env("GITHUB_TOKEN", "planted")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("TMUX", "planted")
+        .env("KEPT_DIR", "kept")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let bytes: usize = said.lines().next().unwrap().trim_start_matches("fd3=").parse().unwrap();
+    assert!(bytes > 20, "the token is on the descriptor: {bytes} bytes");
+    assert!(said.contains("again=0"), "it can be read once: {said}");
+    assert!(said.contains("fd=3 gh=none github=none tmux=none kept=kept"), "{said}");
+    assert!(said.contains("oauth=none") && said.contains("gitcfg=none") && said.contains("ghfile=0"), "{said}");
+    assert!(!said.contains("planted"), "{said}");
+}

@@ -69,6 +69,89 @@ A run records the launcher's **name**, not its command. Editing a launcher in `c
 changes the next wake of every run using it; removing one makes those runs' wakes refuse up front
 with a message listing the launchers that exist.
 
+## otto's own sandbox
+
+otto ships a sandbox built on macOS's Seatbelt: a launcher whose command is a wrapper, and a record for each
+run saying what it may touch. **Nothing uses it yet.** `otto install` puts the wrapper in place, which opens
+nothing and moves no run; a run is under it only once a person has given it both a launcher and a record, and
+the commands for that come later (`plans/v3.md`, 1.7). A run with no record behaves exactly as it did.
+
+```json
+{ "name": "sandbox", "command": "~/.otto/sandbox/wrapper -- claude", "grantFlag": "--allow" }
+```
+
+Words in front keep working (`env LEGENDA_DIR=… ~/.otto/sandbox/wrapper -- claude`), and that variable arrives.
+
+### The record decides
+
+`$OTTO_HOME/sandbox/runs/<id>.json` is written by a person and can't be written by any wake:
+
+```json
+{
+  "launcher": "sandbox",
+  "workdir": "/Users/me/workspace",
+  "read": ["/Users/me/workspace/lib"],
+  "write": ["/Users/me/workspace/svc", "/Users/me/workspace/.work-trees/svc"],
+  "mode": "enforce"
+}
+```
+
+- **`workdir`** is where the wake starts. Being listed there opens nothing: `~/workspace` is every project.
+  `claude` starts in a working directory it can't read, without its `CLAUDE.md` or `.claude/`. Those aren't
+  read, so anything that a wake needs from them has to be in a repo the record lists.
+- **`read`** and **`write`** are what's open, and writing implies reading. A path under `$OTTO_HOME` is allowed,
+  which is how a system agent's writes into other runs are said.
+- **`mode`** is `enforce`, the default, or `report`, which allows the same things and logs each (for 1.7).
+- An unknown field is refused, so a mistyped key can't quietly change what's open.
+
+The `--allow` otto passes come from `run.json`, which a wake can write, so the wrapper ignores them.
+
+### What the wrapper does
+
+Each time, outside the sandbox: read the record; generate `$OTTO_HOME/sandbox/profiles/<id>.sb`, never reusing
+one; check that `sandbox-exec` takes it; read claude's access token from the Keychain and put it on descriptor 3;
+clear what would carry a credential in (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `GIT_CONFIG*`,
+anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; exec
+`sandbox-exec` with the command after its `--`.
+
+**Anything wrong and nothing starts.** No record, a bad record, no sign-in, a profile that won't compile: it says
+why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md), and never runs the command
+outside the sandbox. Keeping the token fresh isn't built yet (1.8), so a run left alone long enough stops with
+a sign-in message.
+
+### What's closed
+
+| | |
+|---|---|
+| **Writes** | Closed by default. Open: the record's `write`, temporary directories, tools' caches, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`), its own run, repo locks, `feedback.jsonl` |
+| **Other projects** | Reads and writes, under the configured working directory and every configured project, unless the record lists them |
+| **In anything writable** | `.git/hooks`, `.git/config`, `config.worktree`, `.claude/settings*.json`, `.claude/hooks`; moving a repository or its `.git`. No record opens these |
+| **otto's** | `config.json`, `feedback-driver`, `sandbox/`, all closed to writes whatever a record says |
+| **Credentials** | The Keychain and a list of files, listed in `src/sandbox.rs`; `gh` doesn't work, even for public reads. An app's own secrets (`.config/cloudgpu`, `.config/wrangler`, `.omnifactum/token`) are closed unless the record lists them |
+| **Acting from outside** | `launchctl`, `open`, `osascript`, `security`, the services behind them, the real tmux server, the ssh agent, docker's socket, and **otto's own web page**, which approves changes for anyone who asks |
+
+`tests/sandbox.rs` tries each of these against the real `sandbox-exec`, on a scratch home. `test/sandbox/real-wake.sh`
+runs one real wake and one real chat under it, on a throwaway `OTTO_HOME` with your real home and sign-in, and prints
+exit codes and byte counts only.
+
+### What it doesn't close
+
+Not a promise past the list above:
+
+- **Reads are a denylist.** Anything readable and not named is readable, and the network is open, so it can be
+  sent. A new credential file is open until someone adds it.
+- **Other local services.** Only otto's page and docker's socket are closed. Anything else listening on the
+  machine can be reached.
+- **`~/.claude/projects`** holds auto-memory, which steers later sessions in that directory, unsandboxed ones too.
+- **Files in a writable repo that run later:** `.envrc`, `.vscode/`, `Makefile`, `.mcp.json`. Under a person's
+  own tools these run with everything. Give a run its worktree and not the main checkout where that matters.
+- **A worktree's `.git` file** can be pointed at a directory of a wake's own making, with hooks in it, which
+  runs in whoever next uses git in that worktree (the lander, until 1.5).
+- **Signals.** A wake can kill other processes of yours.
+- **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
+  the record lists them.
+- **Comparing `run.json` to the record** before a wake starts, and what's listed under 1.3 to 1.5, are separate work.
+
 ## Permission mode
 
 `--permission-mode` (default `bypass-permissions`) is passed to claude for every wake, along with

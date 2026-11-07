@@ -1291,7 +1291,7 @@ Options:
 ## `otto install`
 
 ```text
-Symlink otto's Claude Code skills into ~/.claude/skills/
+Symlink otto's Claude Code skills into ~/.claude/skills/, and put the sandbox wrapper in $OTTO_HOME/sandbox/
 
 Usage: otto install [OPTIONS]
 
@@ -1299,6 +1299,38 @@ Options:
       --repo <REPO>
           path to the otto checkout (default: $OTTO_REPO, or detected from the current directory)
 
+  -h, --help
+          Print help
+```
+
+## `otto sandbox`
+
+```text
+The sandbox a launcher can run wakes under. See docs/guides/sandboxing.md
+
+Usage: otto sandbox <COMMAND>
+
+Commands:
+  wrap  What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help
+          Print help
+```
+
+### `otto sandbox wrap`
+
+```text
+What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
+
+Usage: otto sandbox wrap [ARGS]...
+
+Arguments:
+  [ARGS]...
+          `--allow <dir>…`, ignored because the record decides, then `--` and the command
+
+Options:
   -h, --help
           Print help
 ```
