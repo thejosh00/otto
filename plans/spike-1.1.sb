@@ -1,0 +1,34 @@
+;; plans/spike-1.1.sb: the working profile from the 1.1 spike. Not a finished design: it answers
+;; plans/spike-1.1.md's questions, and that document lists which escapes it closes and which it leaves.
+;;
+;;   sandbox-exec -D HOME="$HOME" -f plans/spike-1.1.sb <command>
+;;
+;; It starts from allow-all and takes away, so what's refused below is the whole of what it refuses.
+(version 1)
+(allow default)
+
+;; The Keychain, whole: Seatbelt has no filter for one item. Refusing the services stops `security`,
+;; gh's keyring and claude's own read, whichever binary asks. The files are closed too, since the
+;; database can be copied out and attacked offline.
+(deny mach-lookup
+      (global-name "com.apple.SecurityServer")
+      (global-name "com.apple.securityd.xpc")
+      (global-name "com.apple.secd")
+      (global-name "com.apple.security.agent")
+      (global-name "com.apple.trustd.agent"))
+(deny file-read* file-write*
+      (subpath (string-append (param "HOME") "/Library/Keychains"))
+      (subpath "/Library/Keychains/System.keychain"))
+
+;; Credentials that live in files.
+(deny file-read* file-write*
+      (subpath (string-append (param "HOME") "/.ssh"))
+      (subpath (string-append (param "HOME") "/.config/gh"))
+      (literal (string-append (param "HOME") "/.git-credentials")))
+
+;; The ssh agent, and the real tmux server, whose socket runs things outside this sandbox. A private
+;; server under TMUX_TMPDIR stays allowed: it starts inside, so it is confined too.
+(deny network-outbound
+      (regex #"^/private/(tmp|var/run)/com\.apple\.launchd\.[^/]+/Listeners$")
+      (subpath (string-append (param "HOME") "/.ssh"))
+      (regex #"^/private/tmp/tmux-[0-9]+/"))
