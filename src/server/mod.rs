@@ -317,6 +317,36 @@ mod tests {
         assert_eq!((d.version, d.sha.as_str()), (2, c.latest().sha.as_str()));
     }
 
+    /// The page's Approve for picked changes: one stale pick refuses the lot, and the others stay
+    /// waiting for review, whichever order the page sends them in.
+    #[test]
+    fn approving_picked_changes_from_the_page_is_all_or_nothing() {
+        use crate::changes::tests::{change, repo, set_lander, submit_fix};
+        let _h = TempHome::new();
+        test_init("2026-09-21-pa", "a goal").unwrap();
+        test_init("2026-09-21-pb", "a goal").unwrap();
+        test_init("2026-09-21-pl", "land changes").unwrap();
+        set_lander("2026-09-21-pl");
+        crate::state::transaction("2026-09-21-pl", |_p, s| {
+            s.status = crate::state::Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        let (one, two) = (repo(), repo());
+        crate::changes::submit("2026-09-21-pa", &submit_fix(&one, "stale")).unwrap();
+        crate::changes::submit("2026-09-21-pb", &submit_fix(&two, "current")).unwrap();
+        let approve = |changes: serde_json::Value| rt().block_on(send(post_req("/api/changes/approve", serde_json::json!({"changes": changes}))));
+        for picked in [serde_json::json!(["pb/1@v1", "pa/1@v9"]), serde_json::json!(["pa/1@v9", "pb/1@v1"])] {
+            let (status, body) = approve(picked);
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(body["error"].as_str().unwrap().contains("Nothing is approved"), "{body}");
+            assert!(change("2026-09-21-pb", 1).decision.is_none(), "{body}");
+        }
+        let (status, body) = approve(serde_json::json!(["pb/1@v1", "pa/1@v1"]));
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(change("2026-09-21-pa", 1).decision.is_some() && change("2026-09-21-pb", 1).decision.is_some());
+    }
+
     /// What the page goes by: the reason when there is one, nothing when there isn't.
     #[test]
     fn a_changes_page_is_given_its_reason_for_no_evidence() {

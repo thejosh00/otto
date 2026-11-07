@@ -1200,6 +1200,11 @@ pub fn withdraw(r: &ChangeRef, reason: &str) -> Result<Change, OttoError> {
 }
 
 fn refuse_unless(c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
+    refuse_named(&format!("change {}", c.n), c, allowed, doing)
+}
+
+/// `refuse_unless`, calling the change what the caller knows it by.
+fn refuse_named(name: &str, c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
     if allowed.contains(&c.state) {
         return Ok(());
     }
@@ -1216,7 +1221,7 @@ fn refuse_unless(c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(),
         ChangeState::Merged => "its pull request was merged".to_string(),
         ChangeState::Closed => "its pull request was closed".to_string(),
     };
-    Err(OttoError::conflict(format!("change {} can't be {doing}: {why}", c.n)))
+    Err(OttoError::conflict(format!("{name} can't be {doing}: {why}")))
 }
 
 fn moved(path: &Path, c: &Change, by: &str, what: &str) -> Result<(), OttoError> {
@@ -1293,11 +1298,81 @@ impl Looked {
     }
 }
 
+/// How approving one change would land it, once every rule for approving it has passed.
+struct Approval {
+    chosen: How,
+    process: crate::config::Process,
+    updates_its_pr: bool,
+    overridden: bool,
+}
+
+/// Every rule for approving this change: a refusal here is why it can't be approved. Writes nothing.
+fn check_approval(c: &Change, looked: &Looked, how: Option<How>, config: &crate::config::Config) -> Result<Approval, OttoError> {
+    let r = &looked.r;
+    refuse_named(&r.display(), c, &[ChangeState::Review], "approved")?;
+    let latest = c.latest().k;
+    match looked.version {
+        None => {
+            return Err(OttoError::usage(format!(
+                "say which version of {} you approve: its latest is v{latest} — `otto changes approve {}@v{latest}`",
+                r.display(),
+                r.display()
+            )))
+        }
+        Some(k) if k == latest => {}
+        Some(k) if k < latest => {
+            return Err(OttoError::conflict(format!(
+                "v{latest} of {} arrived since you looked at v{k} — look at it (`otto changes show {}`), then approve {}@v{latest}",
+                r.display(),
+                r.display(),
+                r.display()
+            )))
+        }
+        Some(k) => return Err(OttoError::usage(format!("{} has no v{k}: its latest is v{latest}", r.display()))),
+    }
+    let process = config.process_for(&c.repo);
+    // A change with a pull request stays on it, whatever its process says: the lander can
+    // only update it, and the code would otherwise be on the base with the pull request open.
+    let chosen = match (&c.pr, how) {
+        (Some(_), Some(How { mode: LandMode::Push, .. })) => {
+            return Err(OttoError::usage(format!(
+                "{} is on its pull request, so approving updates that: merge it there, or drop it and start again to push it",
+                r.display()
+            )))
+        }
+        (Some(pr), _) => How { mode: LandMode::Pr, merge_when_ready: pr.auto_merge },
+        (None, Some(how)) => how,
+        (None, None) => How { mode: process.mode, merge_when_ready: process.merge_when_ready },
+    };
+    if chosen.mode == LandMode::Pr && git(Path::new(&c.repo), &["remote"]).unwrap_or_default().trim().is_empty() {
+        return Err(OttoError::usage(format!(
+            "{} has no remote to open a pull request on — land it with --push, or have the repository push straight to \
+             its base: `otto config project {} --process {}`",
+            home_relative(&c.repo),
+            home_relative(&c.repo),
+            crate::config::DIRECT_PROCESS
+        )));
+    }
+    let updates_its_pr = c.pr.is_some();
+    let overridden = !updates_its_pr && (chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready);
+    Ok(Approval { chosen, process, updates_its_pr, overridden })
+}
+
+/// A change as it is on disk, without taking its run's lock: writes are atomic, so it is whole.
+fn read_change(r: &ChangeRef) -> Result<Change, OttoError> {
+    let state = crate::state::read_run(&r.run)?;
+    let dir = crate::paths::run_dir(&r.run)?;
+    read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))
+}
+
 /// Approve the version of each change the person looked at, to land as its repository's process
-/// says — or as `how` says, when the person chose. A compare-and-swap: a version that isn't its
-/// latest any more (a newer one arrived since they looked) is refused, and nothing is decided.
-/// Refused whole when there is no lander to land them, and each one refused that isn't waiting for
-/// review.
+/// says — or as `how` says, when the person chose. All or nothing: every named change is checked
+/// before any is written, so one refusal leaves them all waiting for review and says so. A
+/// compare-and-swap too: a version that isn't its latest any more is refused, and each change is
+/// checked again under its run's lock as it is written, because the first look holds no lock. If
+/// that or saving fails partway, the error names what is already approved, since that stands and
+/// the lander will land it.
+/// Refused whole when there is no lander to land them.
 pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<Vec<Decided>, OttoError> {
     if how.is_some_and(|h| h.merge_when_ready && h.mode != LandMode::Pr) {
         return Err(OttoError::usage("merging when ready is for a pull request: approve it with --pr"));
@@ -1310,57 +1385,19 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
         ));
     }
     let note = check_say(note, "--note")?;
+    for (i, looked) in refs.iter().enumerate() {
+        let checked = if refs[..i].iter().any(|earlier| earlier.r == looked.r) {
+            Err(OttoError::usage(format!("{} is named twice", looked.r.display())))
+        } else {
+            read_change(&looked.r).and_then(|c| check_approval(&c, looked, how, &config).map(|_| ()))
+        };
+        checked.map_err(|e| OttoError::new(format!("{}. Nothing is approved", e.message), e.code))?;
+    }
     let mut out = Vec::new();
     for looked in refs {
         let r = &looked.r;
-        out.push(with_change(r, |path, _state, c| {
-            refuse_unless(c, &[ChangeState::Review], "approved")?;
-            let latest = c.latest().k;
-            match looked.version {
-                None => {
-                    return Err(OttoError::usage(format!(
-                        "say which version of {} you approve: its latest is v{latest} — `otto changes approve {}@v{latest}`",
-                        r.display(),
-                        r.display()
-                    )))
-                }
-                Some(k) if k == latest => {}
-                Some(k) if k < latest => {
-                    return Err(OttoError::conflict(format!(
-                        "v{latest} of {} arrived since you looked at v{k}: nothing is approved — look at it (`otto changes show {}`), then \
-                         approve {}@v{latest}",
-                        r.display(),
-                        r.display(),
-                        r.display()
-                    )))
-                }
-                Some(k) => return Err(OttoError::usage(format!("{} has no v{k}: its latest is v{latest}", r.display()))),
-            }
-            let process = config.process_for(&c.repo);
-            // A change with a pull request stays on it, whatever its process says: the lander can
-            // only update it, and the code would otherwise be on the base with the pull request open.
-            let chosen = match (&c.pr, how) {
-                (Some(_), Some(How { mode: LandMode::Push, .. })) => {
-                    return Err(OttoError::usage(format!(
-                        "{} is on its pull request, so approving updates that: merge it there, or drop it and start again to push it",
-                        r.display()
-                    )))
-                }
-                (Some(pr), _) => How { mode: LandMode::Pr, merge_when_ready: pr.auto_merge },
-                (None, Some(how)) => how,
-                (None, None) => How { mode: process.mode, merge_when_ready: process.merge_when_ready },
-            };
-            if chosen.mode == LandMode::Pr && git(Path::new(&c.repo), &["remote"]).unwrap_or_default().trim().is_empty() {
-                return Err(OttoError::usage(format!(
-                    "{} has no remote to open a pull request on — land it with --push, or have the repository push straight to \
-                     its base: `otto config project {} --process {}`",
-                    home_relative(&c.repo),
-                    home_relative(&c.repo),
-                    crate::config::DIRECT_PROCESS
-                )));
-            }
-            let updates_its_pr = c.pr.is_some();
-            let overridden = !updates_its_pr && (chosen.mode != process.mode || chosen.merge_when_ready != process.merge_when_ready);
+        let decided = with_change(r, |path, _state, c| {
+            let Approval { chosen, process, updates_its_pr, overridden } = check_approval(c, looked, how, &config)?;
             let v = c.latest().clone();
             c.decision = Some(Decision {
                 mode: chosen.mode,
@@ -1392,9 +1429,25 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
             c.moment("you", &what);
             moved(path, c, "person", &what)?;
             Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: Some(how), wake: None })
-        })?);
+        });
+        match decided {
+            Ok(decided) => out.push(decided),
+            Err(e) => return Err(stopped_partway(refs, e)),
+        }
     }
     Ok(out)
+}
+
+/// Approving stopped after the checks passed, so some may have been written. What the error says
+/// is read back from disk, not from what the loop finished: a run's state can fail to save after
+/// its change was.
+fn stopped_partway(refs: &[Looked], e: OttoError) -> OttoError {
+    let approved: Vec<String> =
+        refs.iter().filter(|l| read_change(&l.r).is_ok_and(|c| c.state == ChangeState::Approved)).map(|l| l.r.display()).collect();
+    if approved.is_empty() {
+        return e;
+    }
+    OttoError::new(format!("{}. Stopped partway: {} approved, and the lander lands that at its next wake; the rest were not", e.message, approved.join(", ")), e.code)
 }
 
 /// Ask its author for changes. The author is told, in the person's words.

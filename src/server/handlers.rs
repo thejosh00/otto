@@ -535,7 +535,7 @@ pub async fn change_evidence(Path((id, n, k, name)): Path<(String, u32, u32, Str
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApproveBody {
     /// `<run>/<number>@v<k>`, one or more: each with the version the page showed. One a newer
-    /// version arrived for since is refused (409), and nothing is approved for it.
+    /// version arrived for since is refused (409), and none of them is approved.
     changes: Vec<String>,
     #[serde(default)]
     note: Option<String>,
