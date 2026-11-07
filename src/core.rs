@@ -66,6 +66,10 @@ pub fn start_wake(id: &str, strategy: Strategy, answer: Option<&str>, cause: Wak
     let before = crate::spawner::wake_number(id);
     let handle = crate::spawner::start(id, strategy, answer, cause, &mut exec)?;
     if !crate::spawner::wait_for_hold(id, before) {
+        // Refused, and the reason is on record: better than guessing at why it exited.
+        if let Some(blocked) = read_run(id).ok().and_then(|s| s.blocked).filter(|b| b.sandbox) {
+            return Err(OttoError::conflict(format!("{id} wasn't started: {}", blocked.detail.unwrap_or_default())));
+        }
         let container = match &handle.session {
             Some(session) => format!("started tmux session {session}"),
             None => "started a detached wake".to_string(),
@@ -218,7 +222,7 @@ pub fn todo_left_open(state: &RunState, todo: Option<&crate::todo::Counts>) -> b
 /// cause says whether that is even the right place to look.
 pub fn status_label(state: &RunState) -> String {
     if state.status == Status::Blocked {
-        format!("blocked ({})", blocked_record(state).0.cause.label())
+        format!("blocked ({})", blocked_record(state).0.label())
     } else {
         crate::state::commands::status_str(state.status).to_string()
     }
@@ -783,6 +787,10 @@ pub fn blocked_explanation(state: &RunState, short: &str) -> String {
     let (blocked, inferred) = blocked_record(state);
     let detail = blocked.detail.as_deref();
     let line = match blocked.cause {
+        _ if blocked.sandbox => format!(
+            "blocked: its run.json disagrees with its sandbox record, so nothing starts: {} — {gate}",
+            detail.unwrap_or("no detail was kept")
+        ),
         BlockedCause::WakeFailures => format!(
             "blocked: {} wake(s) in a row did not finish{} — `otto logs {short}` for what happened, \
              `otto wake {short} --watch` to retry one in this terminal, or {gate}",
@@ -819,7 +827,7 @@ pub fn blocked_explanation(state: &RunState, short: &str) -> String {
 pub fn blocked_record(state: &RunState) -> (Blocked, bool) {
     match &state.blocked {
         Some(blocked) => (blocked.clone(), false),
-        None => (Blocked { cause: state.inferred_block_cause(), detail: None, at: state.updated_at }, true),
+        None => (Blocked { cause: state.inferred_block_cause(), detail: None, at: state.updated_at, sandbox: false }, true),
     }
 }
 

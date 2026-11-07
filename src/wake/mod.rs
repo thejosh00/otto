@@ -224,7 +224,18 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         println!("{} is {:?} — nothing to do", args.id, state.status);
         return Ok(());
     }
-    let launcher = launcher::resolve(&state)?;
+    let resolved = launcher::resolve(&state);
+    if let Some(why) = crate::sandbox::disagreement(&run_path, &state, resolved.as_ref()) {
+        return Err(crate::sandbox::refuse(&args.id, &why, args.dry_run));
+    }
+    // It agrees now, and a person is here to start it: the question about that is over.
+    let state = if !args.dry_run && state.blocked.as_ref().is_some_and(|b| b.sandbox) {
+        crate::sandbox::lift_refusal(&args.id, &state)?;
+        crate::state::read_run(&args.id)?
+    } else {
+        state
+    };
+    let launcher = resolved?;
     if let Some(why) = budget_exceeded(&state) {
         return block_on_budget(&args.id, &why);
     }
@@ -1344,6 +1355,125 @@ mod tests {
         let blocked = state.blocked.as_ref().expect("a blocked run says why");
         assert_eq!(blocked.cause, crate::state::BlockedCause::Budget);
         assert_eq!(blocked.detail.as_deref(), Some("wake budget spent: 2 of 2"));
+    }
+
+    /// A record for this run that agrees with what `test_init` gave it, so that a test can disagree on purpose.
+    fn place_record(id: &str) {
+        let dir = crate::sandbox::dir().join("runs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = read_run(id).unwrap();
+        let record = json!({"launcher": state.launcher.kind, "workdir": crate::config::workdir_for(&state), "write": state.launcher.repos});
+        std::fs::write(dir.join(format!("{id}.json")), record.to_string()).unwrap();
+    }
+
+    fn sandbox_refusals(id: &str) -> usize {
+        let journal = std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap();
+        journal.matches("sandbox-refused").count()
+    }
+
+    /// A run widening its own next wake: nothing spawns, the journal says what differed, and it waits on a
+    /// person where poke leaves it alone, rather than failing to start over and over.
+    #[test]
+    fn a_run_that_disagrees_with_its_record_is_refused_and_says_why() {
+        let _h = TempHome::new();
+        test_init("w-sbx", "a goal").unwrap();
+        place_record("w-sbx");
+        transaction("w-sbx", |_p, state| {
+            state.launcher.repos.push("~/.ssh".into());
+            state.spawn_attempts = 3;
+            Ok(())
+        })
+        .unwrap();
+
+        let mut exec = FakeExec::new();
+        let err = run_wake(&WakeArgs { dry_run: true, ..args("w-sbx") }, &mut exec).expect_err("a dry run says so too");
+        assert_eq!(err.code, 2);
+        assert_eq!(sandbox_refusals("w-sbx"), 0, "a dry run records nothing");
+        assert!(read_run("w-sbx").unwrap().gate.is_none());
+
+        let err = run_wake(&args("w-sbx"), &mut exec).expect_err("must refuse");
+        assert_eq!(err.code, 2);
+        assert!(err.message.contains(".ssh"), "{}", err.message);
+        assert!(exec.calls.borrow().is_empty(), "nothing may start");
+        assert_eq!(sandbox_refusals("w-sbx"), 1);
+        let state = read_run("w-sbx").unwrap();
+        assert_eq!(state.status, Status::Blocked);
+        assert_eq!(state.spawn_attempts, 0, "not a crash to retry");
+        assert!(state.wake.is_none(), "no wake was started, or counted");
+        assert_eq!(state.gate.as_ref().map(|g| g.slug.as_str()), Some("sandbox-record"));
+        let blocked = state.blocked.as_ref().unwrap();
+        assert!(blocked.sandbox && blocked.detail.as_deref().is_some_and(|d| d.contains(".ssh")));
+        // What an older binary reads: a cause it knows.
+        let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(crate::paths::run_dir("w-sbx").unwrap().join("run.json")).unwrap()).unwrap();
+        assert_eq!(on_disk["blocked"]["cause"], "instructions");
+
+        // Trying again changes nothing but the journal, and asks only once.
+        run_wake(&args("w-sbx"), &mut exec).expect_err("must refuse");
+        assert_eq!(sandbox_refusals("w-sbx"), 2);
+        assert!(exec.calls.borrow().is_empty());
+    }
+
+    /// Fixed by hand, and started by hand: no question left over for that wake to ask again.
+    #[test]
+    fn a_refused_run_that_agrees_again_goes_back_to_how_it_ran() {
+        let _h = TempHome::new();
+        test_init("w-back", "a goal").unwrap();
+        place_record("w-back");
+        transaction("w-back", |_p, state| {
+            state.launcher.repos.push("~/.ssh".into());
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        run_wake(&args("w-back"), &mut exec).expect_err("must refuse");
+        transaction("w-back", |_p, state| {
+            state.launcher.repos.pop();
+            Ok(())
+        })
+        .unwrap();
+        // The status is what the wake is told, so see what it was as the child starts.
+        let mut exec = FakeExec::new();
+        exec.on_exec(|| {
+            let state = read_run("w-back").unwrap();
+            assert_eq!(state.status, Status::Running);
+            assert!(state.gate.is_none() && state.blocked.is_none());
+        });
+        let _ = run_wake(&args("w-back"), &mut exec);
+        assert_eq!(exec.calls.borrow().len(), 1, "it starts");
+    }
+
+    /// With a question of someone else's open, the wake that's refused leaves it as it was.
+    #[test]
+    fn a_refusal_leaves_a_question_already_open_alone() {
+        let _h = TempHome::new();
+        test_init("w-asked", "a goal").unwrap();
+        place_record("w-asked");
+        crate::state::ops::open_gate("w-asked", "theirs", "Which?", None).unwrap();
+        transaction("w-asked", |_p, state| {
+            state.launcher.kind = "gone".into();
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        run_wake(&args("w-asked"), &mut exec).expect_err("must refuse");
+        assert_eq!(read_run("w-asked").unwrap().gate.unwrap().slug, "theirs");
+        assert!(exec.calls.borrow().is_empty());
+    }
+
+    /// Without a record, none of it applies: the launcher's own refusal, and no trail, as before.
+    #[test]
+    fn a_run_with_no_record_is_refused_only_as_it_always_was() {
+        let _h = TempHome::new();
+        test_init("w-none", "a goal").unwrap();
+        transaction("w-none", |_p, state| {
+            state.launcher.kind = "gone".into();
+            Ok(())
+        })
+        .unwrap();
+        let err = run_wake(&args("w-none"), &mut FakeExec::new()).expect_err("no such launcher");
+        assert!(err.message.contains("no launcher"), "{}", err.message);
+        assert_eq!(sandbox_refusals("w-none"), 0);
+        assert_ne!(read_run("w-none").unwrap().status, Status::Blocked);
     }
 
     /// Tokens add up across wakes, as `otto usage` totals them, and a spent token budget stops the

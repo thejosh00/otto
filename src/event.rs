@@ -254,7 +254,8 @@ pub enum Event {
     UsageUnavailable {
         note: String,
     },
-    /// The sandbox wrapper wouldn't start anything, and why. No token, or any of a token, in `why`.
+    /// The sandbox wrapper wouldn't start anything, or `otto wake` or `otto chat` wouldn't because the run
+    /// disagrees with its record, and why. No token, or any of a token, in `why`.
     SandboxRefused {
         why: String,
     },

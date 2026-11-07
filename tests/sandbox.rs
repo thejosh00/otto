@@ -504,6 +504,88 @@ fn a_wake_started_from_inside_stays_inside() {
     assert!(!escaped.exists(), "a child of a sandbox wrote outside it: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// Check 3 of the plan's: each way of editing `run.json` to widen the next wake, through the commands themselves.
+/// None of this enters a profile, so it runs inside a sandbox too.
+#[test]
+fn a_run_edited_past_its_record_starts_nothing_until_it_agrees() {
+    let s = Scratch::new(|home| serde_json::json!({"launcher": "claude", "workdir": home.join("workspace"), "write": [home.join("workspace/repo")]}));
+    let started = s.root.join("started-a-wake");
+    // The other run in this home has wakes of its own to retry, and they aren't what's being watched.
+    write_exec(&s.root.join("stub"), &format!("#!/bin/sh\n[ \"$OTTO_RUN_ID$OTTO_CHAT\" = '{}' ] && touch '{}'\nexit 0\n", s.id, started.display()));
+    let config = s.otto_home().join("config.json");
+    let mut with_second: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    with_second["launchers"].as_array_mut().unwrap().push(serde_json::json!({"name": "second", "command": s.root.join("stub").display().to_string()}));
+    std::fs::write(&config, with_second.to_string()).unwrap();
+
+    let run_json = s.otto_home().join("runs").join(&s.id).join("run.json");
+    let original = std::fs::read_to_string(&run_json).unwrap();
+    let edit = |change: &dyn Fn(&mut serde_json::Value)| {
+        let mut run: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap();
+        change(&mut run);
+        std::fs::write(&run_json, run.to_string()).unwrap();
+    };
+    let run = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(&run_json).unwrap()).unwrap() };
+    let ssh = s.home().join(".ssh").display().to_string();
+    let elsewhere = s.home().join("workspace/other").display().to_string();
+    let edits: Vec<(&str, Box<dyn Fn(&mut serde_json::Value)>)> = vec![
+        ("second", Box::new(|r| r["launcher"]["kind"] = "second".into())),
+        (".ssh", Box::new(move |r| r["launcher"]["repos"] = serde_json::json!([ssh.clone()]))),
+        ("workspace/other", Box::new(move |r| r["launcher"]["workdir"] = elsewhere.clone().into())),
+    ];
+    for (word, change) in &edits {
+        std::fs::write(&run_json, &original).unwrap();
+        edit(&**change);
+        let before = s.journal().matches("sandbox-refused").count();
+
+        let out = s.otto().args(["wake", &s.id]).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stderr).to_string();
+        assert_eq!(out.status.code(), Some(2), "wake: {said}");
+        assert!(said.contains(word), "the refusal says what differed: {said}");
+
+        let out = s.otto().args(["chat", &s.id, "hello"]).stdin(std::process::Stdio::null()).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "chat: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(!started.exists(), "{word}: something started");
+
+        assert_eq!(s.journal().matches("sandbox-refused").count(), before + 2, "both are in the journal");
+        assert!(s.journal().contains(word));
+        assert_eq!(run()["status"], "blocked");
+        assert_eq!(run()["gate"]["slug"], "sandbox-record");
+
+        let poked = s.otto().args(["poke", "--verbose", "--grace", "0"]).output().unwrap();
+        let poked = String::from_utf8_lossy(&poked.stdout);
+        assert!(poked.lines().any(|l| l.contains(&s.id) && l.contains("awaiting a person")), "{poked}");
+        assert_eq!(run()["status"], "blocked", "poke leaves it visibly stopped");
+        assert_eq!(run()["spawnAttempts"], 0, "and spends nothing retrying");
+        assert!(!started.exists());
+
+        let listed = s.otto().arg("ls").output().unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(listed.contains("blocked (sandbox)"), "{listed}");
+        let shown = s.otto().args(["show", &s.id]).output().unwrap();
+        let shown = String::from_utf8_lossy(&shown.stdout);
+        assert!(shown.contains("sandbox record") && shown.contains(word), "{shown}");
+
+        // Its launcher put back, the rest as it stands, and it runs: no answer needed.
+        let launcher: serde_json::Value = serde_json::from_str::<serde_json::Value>(&original).unwrap()["launcher"].clone();
+        edit(&|r| r["launcher"] = launcher.clone());
+        assert!(!started.exists());
+        let out = s.otto().args(["wake", &s.id]).output().unwrap();
+        assert!(started.exists(), "{word}: agreeing again, it starts: {}", String::from_utf8_lossy(&out.stderr));
+        assert_ne!(run()["status"], "blocked");
+        std::fs::remove_file(&started).unwrap();
+    }
+
+    // Out of the sandbox: no record, and the launcher a person chose.
+    std::fs::write(&run_json, &original).unwrap();
+    edit(&|r| r["launcher"]["kind"] = "second".into());
+    assert!(!s.otto().args(["wake", &s.id]).status().unwrap().success());
+    std::fs::remove_file(s.record_path()).unwrap();
+    let out = s.otto().args(["wake", &s.id]).output().unwrap();
+    assert!(started.exists(), "with no record it runs as any run does: {}", String::from_utf8_lossy(&out.stderr));
+    assert_ne!(run()["status"], "blocked");
+    assert!(run()["gate"].is_null());
+}
+
 /// Every way the wrapper can fail: nothing starts, and it says so where it will be seen.
 #[test]
 fn the_wrapper_fails_closed_and_says_why() {

@@ -35,7 +35,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `wake-started` | `wake`, `deadlineAt`, `launcher`, `session`, `cause` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under `~/.claude/projects/`); absent on wakes from before it was recorded. `cause` is [what started it](#why-a-wake-started); absent on wakes from before it was recorded, which `otto logs` shows as `not recorded` |
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
-| `sandbox-refused` | `why` | [The sandbox wrapper](../guides/sandboxing.md#otto-s-own-sandbox) wouldn't start anything, and why |
+| `sandbox-refused` | `why` | [The sandbox wrapper](../guides/sandboxing.md#otto-s-own-sandbox) wouldn't start anything, or `otto wake` or `otto chat` wouldn't because the run [disagrees with its record](../guides/sandboxing.md#a-run-that-disagrees-with-its-record), and why |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
 | `handoff-refused` | `reason` | `otto state handoff` refused a handoff — past its cap, or with otto's own words in `Where this is` or `Needs` — and the wake has to write it again |
 | `wake-complete` | `status`, `progress` | The wake passed the [contract](../concepts.md#the-contract). `progress`: it changed something otto can see, or said `tick --progress` |

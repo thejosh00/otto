@@ -92,7 +92,11 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
             "there is no terminal to chat in — give it a question, `otto chat <run> \"…\"`, and it is answered once",
         ));
     }
-    let launcher_def = launcher::resolve(&state)?;
+    let resolved = launcher::resolve(&state);
+    if let Some(why) = crate::sandbox::disagreement(&dir, &state, resolved.as_ref()) {
+        return Err(crate::sandbox::refuse(&id, &why, args.dry_run));
+    }
+    let launcher_def = resolved?;
     let started = Timestamp::now();
     let session = transcript::chat_session_id(&id, &started.to_string());
     let opening = Opening {

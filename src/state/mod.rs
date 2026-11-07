@@ -111,6 +111,22 @@ pub struct Blocked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub at: crate::clock::Timestamp,
+    /// It was refused for disagreeing with its sandbox record (`crate::sandbox::refuse`). A flag and not a
+    /// `BlockedCause`, whose `cause` stays `instructions` on disk: an older binary fails on a cause it
+    /// doesn't know, which would make the run unreadable after a rollback, and it ignores this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sandbox: bool,
+}
+
+impl Blocked {
+    /// What `blocked (…)` says.
+    pub fn label(&self) -> &'static str {
+        if self.sandbox {
+            "sandbox"
+        } else {
+            self.cause.label()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
@@ -1145,7 +1161,7 @@ impl RunState {
     pub fn block(&mut self, cause: BlockedCause, detail: Option<String>) {
         self.status = Status::Blocked;
         self.next_wake_at = None;
-        self.blocked = Some(Blocked { cause, detail, at: crate::clock::Timestamp::now() });
+        self.blocked = Some(Blocked { cause, detail, at: crate::clock::Timestamp::now(), sandbox: false });
     }
 
     /// The cause `set-status --status blocked` means when the wake did not say: the stall guard,

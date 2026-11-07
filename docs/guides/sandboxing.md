@@ -114,7 +114,31 @@ clear what would carry a credential in (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SO
 anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; exec
 `sandbox-exec` with the command after its `--`.
 
-**Anything wrong and nothing starts.** No record, a bad record, no sign-in, a profile that won't compile: it says
+### A run that disagrees with its record
+
+A wake has to write its own `run.json`, so nothing in it can be allowed to choose the next wake's sandbox. Before
+`otto wake` or `otto chat` starts anything, it compares the run to its record, on the same state its command line
+is built from: the launcher as `config.json` resolves it, the working directory the wake would actually start in
+(the config's default, for a run that doesn't record one), and each repo, which has to be listed in `read` or
+`write`. Paths compare as the kernel sees them, so a trailing slash or `~` doesn't matter and a link counts as
+where it goes. `id` is compared too, since `OTTO_RUN_ID` comes from it and is how the wrapper finds a record.
+
+`permission.*` isn't compared: it goes after the wrapper's `--`, so whatever it says reaches only what is already
+inside the profile. Nor is `launcher.detach`, an enum choosing how `otto wake` itself starts, outside the sandbox,
+with the wrapper still in front of its child. A run with no record isn't compared at all; a record that can't be
+read is a refusal.
+
+If they differ, nothing starts, and:
+
+- the journal has a [`sandbox-refused`](../reference/journal.md) line saying what differed;
+- the run is `blocked (sandbox)` with a question, so poke leaves it alone and spends no retries on it;
+- an older binary reads all of this, seeing `blocked (instructions)` with the same reason.
+
+**The way back** is to make them agree, by putting `run.json` back or changing the record. Then answer the question,
+or `otto wake` it. To take a run out of the sandbox, delete the record and put its launcher back to one that isn't
+the wrapper. Answering while they still differ gets the same refusal and the same question.
+
+**In the wrapper, too, anything wrong and nothing starts.** No record, a bad record, no sign-in, a profile that won't compile: it says
 why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md), and never runs the command
 outside the sandbox. Keeping the token fresh isn't built yet (1.8), so a run left alone long enough stops with
 a sign-in message.
@@ -150,7 +174,8 @@ Not a promise past the list above:
 - **Signals.** A wake can kill other processes of yours.
 - **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
   the record lists them.
-- **Comparing `run.json` to the record** before a wake starts, and what's listed under 1.3 to 1.5, are separate work.
+- **What's listed under 1.3 to 1.5** is separate work.
+- **A rollback past this comparison.** An older binary ignores the record, so `run.json` decides again until it's reinstalled.
 
 ## Permission mode
 

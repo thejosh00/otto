@@ -72,8 +72,8 @@ pub fn due(state: &RunState, now: OffsetDateTime, elapsed_hours: f64, short: &st
         };
         let why = match &state.blocked {
             Some(b) => match &b.detail {
-                Some(detail) => format!(" ({}): {}", b.cause.label(), crate::exec::truncate(detail, DETAIL_MAX_CHARS)),
-                None => format!(" ({})", b.cause.label()),
+                Some(detail) => format!(" ({}): {}", b.label(), crate::exec::truncate(detail, DETAIL_MAX_CHARS)),
+                None => format!(" ({})", b.label()),
             },
             None => String::new(),
         };
@@ -329,7 +329,7 @@ mod tests {
         let mut state = test_run_state("r");
         state.status = Status::Blocked;
         state.gate = Some(gate("004", 0));
-        state.blocked = Some(Blocked { cause: BlockedCause::Stall, detail: None, at: Timestamp::at(now()) });
+        state.blocked = Some(Blocked { cause: BlockedCause::Stall, detail: None, at: Timestamp::at(now()), sandbox: false });
         let notices = due(&state, now(), 0.0, "r");
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].key, "blocked:004");

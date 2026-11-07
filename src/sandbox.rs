@@ -16,7 +16,9 @@
 //! and last what no record can open. A record listing a directory above `.git/hooks` opens the
 //! directory and not the hooks.
 
+use crate::config::LauncherDef;
 use crate::error::OttoError;
+use crate::state::RunState;
 use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -156,8 +158,7 @@ pub enum Mode {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Record {
-    /// The launcher this run must be under. Read by what compares a run to its record before starting it.
-    #[allow(dead_code)]
+    /// The launcher this run must be under (`disagreement`).
     pub launcher: String,
     /// Where it starts. Being listed here opens nothing: this is the one directory a wake is in without
     /// being able to read it, since `~/workspace` as a working directory would otherwise open every project.
@@ -504,10 +505,14 @@ fn run_from_env() -> Option<String> {
     std::env::var("OTTO_RUN_ID").ok().or_else(|| std::env::var(crate::chat::CHAT_ENV).ok()).filter(|id| !id.is_empty())
 }
 
+fn record_path(run_id: &str) -> PathBuf {
+    dir().join("runs").join(format!("{run_id}.json"))
+}
+
 /// Read the record for this run. Missing is a refusal too: being under this launcher with nothing it
 /// could open isn't a sandbox.
 pub fn read_record(run_id: &str) -> Result<Record, String> {
-    let path = dir().join("runs").join(format!("{run_id}.json"));
+    let path = record_path(run_id);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) => return Err(format!("no sandbox record for run {run_id} at {}: {e}", path.display())),
@@ -637,6 +642,156 @@ fn command_after_grants(args: &[String]) -> Result<&[String], String> {
     }
 }
 
+/// The gate a refused run waits on.
+const REFUSED_GATE: &str = "sandbox-record";
+
+/// A value out of `run.json` as text a person reads: quoted, so a wake can't write lines into the question
+/// it's asked about (or an option under its `## Options`), and short.
+fn shown(value: &str) -> String {
+    let short: String = value.chars().take(200).collect();
+    format!("{short:?}")
+}
+
+/// What's different between a run and its record, on the state its command line is built from. Each field of
+/// `run.json` that reaches that command line, and why it's here or isn't:
+///
+/// - `id`: compared. `OTTO_RUN_ID` is made from it and is how the wrapper finds a record, so it would be a way
+///   to another run's.
+/// - `launcher.kind`, `launcher.workdir`, `launcher.repos`: compared, resolved as they would be used.
+/// - `permission.mode`, `permission.allowedTools`, `permission.disallowedTools`: not compared. They go after the
+///   wrapper's `--`, so whatever they say, even a flag, reaches only a process already inside the profile. `mode`
+///   is an enum too.
+/// - `launcher.detach`: not compared. An enum, choosing how `otto wake` starts, and that's outside the sandbox and
+///   starts its child under the wrapper either way.
+/// - The prompt is made from much of the rest, and is one argument after the same `--`.
+fn differences(id: &str, state: &RunState, launcher: Result<&LauncherDef, &OttoError>, record: &Record, home: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    if state.id != id {
+        found.push(format!("its run.json says it is run {}, and it is run {id}", shown(&state.id)));
+    }
+    let wanted = crate::config::launcher(&record.launcher);
+    match (launcher, &wanted) {
+        (Ok(have), Ok(want)) if have.name == want.name => {}
+        (Ok(have), Ok(want)) => found.push(format!("its run.json names the launcher {}, and the record names {}", shown(&have.name), shown(&want.name))),
+        (Err(_), _) => found.push(format!("its run.json names the launcher {}, which doesn't exist", shown(&state.launcher.kind))),
+        (_, Err(e)) => found.push(format!("the record names the launcher {}: {e}", shown(&record.launcher))),
+    }
+    let place = |path: &Path| normalize(&path.display().to_string(), home).unwrap_or_else(|_| path.to_path_buf());
+    let workdir = crate::config::workdir_for(state).map(|dir| place(&dir));
+    let recorded = record.workdir.as_deref().map(|dir| normalize(dir, home));
+    match (&workdir, &recorded) {
+        (None, None) => {}
+        (Some(have), Some(Ok(want))) if have == want => {}
+        (_, Some(Err(e))) => found.push(format!("the record's workdir: {e}")),
+        (have, want) => {
+            let say = |dir: Option<&PathBuf>| dir.map_or("none".to_string(), |d| shown(&d.display().to_string()));
+            found.push(format!("it would start in {}, and the record says {}", say(have.as_ref()), say(want.as_ref().and_then(|w| w.as_ref().ok()))));
+        }
+    }
+    let mut listed = Vec::new();
+    for path in record.read.iter().chain(&record.write) {
+        match normalize(path, home) {
+            Ok(path) => listed.push(path),
+            Err(e) => found.push(format!("the record lists {e}")),
+        }
+    }
+    let unlisted: Vec<&String> = state.launcher.repos.iter().filter(|repo| !normalize(repo, home).is_ok_and(|repo| listed.contains(&repo))).collect();
+    for repo in unlisted.iter().take(10) {
+        found.push(format!("its run.json lists the repo {}, and the record doesn't", shown(repo)));
+    }
+    if unlisted.len() > 10 {
+        found.push(format!("and {} more repos the record doesn't list", unlisted.len() - 10));
+    }
+    found
+}
+
+/// Why this run must not start, if it has a sandbox record and disagrees with it. A wake can write its
+/// `run.json` and can't write the record: otherwise its next wake could leave the sandbox. No record means
+/// nothing to compare, as for every run that isn't sandboxed; one that can't be read is a refusal, never that.
+/// `dir` is the run's directory, the one thing about its identity that `run.json` doesn't say.
+pub fn disagreement(dir: &Path, state: &RunState, launcher: Result<&LauncherDef, &OttoError>) -> Option<String> {
+    let id = dir.file_name()?.to_string_lossy().to_string();
+    // `symlink_metadata`: a dangling link is a record that can't be read, not the absence of one.
+    if record_path(&id).symlink_metadata().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return None;
+    }
+    match read_record(&id) {
+        Err(why) => Some(why),
+        Ok(record) => {
+            let found = differences(&id, state, launcher, &record, &crate::paths::home_dir());
+            (!found.is_empty()).then(|| found.join("; "))
+        }
+    }
+}
+
+fn refused_question(id: &str, why: &str) -> String {
+    let differences: String = why.split("; ").map(|d| format!("- {d}\n")).collect();
+    let short = crate::paths::short_id(id);
+    format!(
+        "Run `{id}` has a sandbox record, and what its `run.json` says doesn't match it, so otto started nothing: \
+         no wake, no chat, nothing spent.\n\n{differences}\n\
+         A wake can write its own `run.json` and can't write the record, so this is what a wake trying to widen its next \
+         sandbox looks like. It's also what a person editing `run.json` by hand looks like. Worth reading before \
+         undoing: `otto logs {short}`, and {record}.\n\n\
+         To go on, make them agree: put `run.json` back, or change the record if the change was yours. To take the run \
+         out of the sandbox, delete the record and put the launcher back to one that isn't the wrapper. To end it, `otto stop {short}`.\n\n\
+         ## Options\n\n\
+         - **Fixed** *(default)* — they agree now. It's compared again before the next wake, and refused again if they don't.\n",
+        record = record_path(id).display(),
+    )
+}
+
+/// Refuse to start a run that `disagreement` found against, and leave its trail: the journal says what differed,
+/// and the run is blocked with a question, which poke leaves alone rather than retrying as a crash. A dry run
+/// starts nothing and records nothing. If the trail can't be written the refusal still stands.
+pub fn refuse(id: &str, why: &str, dry_run: bool) -> OttoError {
+    let refusal = OttoError::conflict(format!("{id}: not starting anything, it disagrees with its sandbox record: {why}"));
+    if dry_run {
+        return refusal;
+    }
+    let trail = crate::state::transaction(id, |path, state| {
+        state.block(crate::state::BlockedCause::Instructions, Some(why.to_string()));
+        if let Some(blocked) = state.blocked.as_mut() {
+            blocked.sandbox = true;
+        }
+        state.spawn_attempts = 0;
+        crate::event::record(path, &crate::event::Event::SandboxRefused { why: why.to_string() })?;
+        Ok(state.gate.is_none())
+    });
+    let asked = match trail {
+        Ok(true) => crate::state::ops::open_gate(id, REFUSED_GATE, &refused_question(id, why), None).map(|_| ()),
+        Ok(false) => Ok(()),
+        Err(e) => Err(e),
+    };
+    match asked {
+        Ok(()) => refusal,
+        Err(e) => OttoError::conflict(format!("{}, and recording that failed: {e}", refusal.message)),
+    }
+}
+
+/// A run refused for disagreeing, which agrees now, goes back to how it was: `otto wake` after a person fixed
+/// it, with no question left for that wake to ask again. Only a refusal's own question is closed.
+pub fn lift_refusal(id: &str, state: &RunState) -> Result<(), OttoError> {
+    use crate::state::Status;
+    const AGREES: &str = "(otto) run.json and the sandbox record agree now, or the record is gone.";
+    if state.gate.as_ref().is_some_and(|g| g.slug == REFUSED_GATE) {
+        return crate::state::ops::close_gate(id, Some(AGREES), Status::Sleeping);
+    }
+    crate::state::transaction(id, |path, state| {
+        state.status = if state.gate.is_some() { Status::AwaitingHuman } else { Status::Sleeping };
+        crate::event::record(
+            path,
+            &crate::event::Event::StatusChanged {
+                from: "blocked".to_string(),
+                to: crate::state::commands::status_str(state.status).to_string(),
+                reason: Some(AGREES.to_string()),
+                because: None,
+                left_open: vec![],
+            },
+        )
+    })
+}
+
 /// `otto sandbox wrap`. Only returns on a refusal: otherwise it has become the sandboxed command.
 pub fn wrap(args: &[String]) -> Result<(), OttoError> {
     let run_id = run_from_env();
@@ -709,6 +864,111 @@ mod tests {
 
     /// In Seatbelt the last matching rule wins, so a grant has to come before what no record may open.
     /// A record listing a directory above `.git/hooks` opens the directory, and not the hooks.
+    /// A run and a record that agree, on a scratch home, with this launcher configured.
+    fn agreeing(h: &crate::paths::test_support::TempHome) -> (RunState, Record, PathBuf) {
+        let root = h.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("work/repo")).unwrap();
+        std::fs::write(crate::paths::otto_home().join("config.json"), r#"{"launchers":[{"name":"sandbox","command":"/w"},{"name":"nono (x)","command":"/n"}]}"#).unwrap();
+        let mut state = crate::state::test_run_state("r1");
+        state.launcher.kind = "sandbox".into();
+        state.launcher.workdir = Some(root.join("work").display().to_string());
+        state.launcher.repos = vec![root.join("work/repo").display().to_string()];
+        let record = Record { launcher: "sandbox".into(), workdir: state.launcher.workdir.clone(), read: vec![], write: state.launcher.repos.clone(), mode: Mode::Enforce };
+        (state, record, root)
+    }
+
+    fn differs(state: &RunState, record: &Record, root: &Path) -> Vec<String> {
+        let resolved = crate::wake::launcher::resolve(state);
+        differences("r1", state, resolved.as_ref(), record, root)
+    }
+
+    #[test]
+    fn a_run_that_agrees_with_its_record_has_no_differences_however_its_paths_are_written() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (mut state, record, root) = agreeing(&h);
+        assert_eq!(differs(&state, &record, &root), Vec::<String>::new());
+        state.launcher.kind = "SANDBOX".into();
+        state.launcher.repos = vec![format!("{}/work/repo/", root.display()), "~/work/repo".into()];
+        state.launcher.workdir = Some(format!("{}/work/", root.display()));
+        std::os::unix::fs::symlink(root.join("work/repo"), root.join("link")).unwrap();
+        state.launcher.repos.push(root.join("link").display().to_string());
+        assert_eq!(differs(&state, &record, &root), Vec::<String>::new());
+    }
+
+    #[test]
+    fn each_field_that_decides_a_sandbox_is_compared() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (state, record, root) = agreeing(&h);
+        let said = |change: &dyn Fn(&mut RunState), word: &str| {
+            let mut changed = state.clone();
+            change(&mut changed);
+            let found = differs(&changed, &record, &root).join("; ");
+            assert!(found.contains(word), "{word} in {found:?}");
+        };
+        said(&|s| s.launcher.kind = "claude".into(), "launcher");
+        said(&|s| s.launcher.kind = "gone".into(), "doesn't exist");
+        said(&|s| s.launcher.repos.push("~/.ssh".into()), ".ssh");
+        said(&|s| s.launcher.repos.push("relative".into()), "relative");
+        said(&|s| s.launcher.workdir = Some("/elsewhere".into()), "start in");
+        said(&|s| s.launcher.workdir = None, "start in");
+        said(&|s| s.id = "another".into(), "another");
+    }
+
+    /// A link to somewhere else is judged by where it goes, not by what it's called.
+    #[test]
+    fn a_repo_that_is_a_link_to_something_unlisted_is_not_listed() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (mut state, mut record, root) = agreeing(&h);
+        std::fs::create_dir_all(root.join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(root.join(".ssh"), root.join("work/innocent")).unwrap();
+        state.launcher.repos = vec![root.join("work/innocent").display().to_string()];
+        record.read = vec![];
+        assert_eq!(differs(&state, &record, &root).len(), 1);
+    }
+
+    /// What a wake writes in `run.json` ends up in a question to a person, so it can't add lines to it.
+    #[test]
+    fn what_differed_can_not_write_lines_into_the_question() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (mut state, record, root) = agreeing(&h);
+        state.launcher.repos.push("/x\n\n## Options\n\n- **Approve**".into());
+        for line in differs(&state, &record, &root) {
+            assert!(!line.contains('\n'), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_run_with_no_record_has_nothing_to_compare_and_a_bad_record_is_a_refusal() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (state, _, _) = agreeing(&h);
+        let run = crate::paths::runs_dir().join("r1");
+        let resolved = crate::wake::launcher::resolve(&state);
+        assert_eq!(disagreement(&run, &state, resolved.as_ref()), None);
+        std::fs::create_dir_all(dir().join("runs")).unwrap();
+        std::fs::write(record_path("r1"), "{ not json").unwrap();
+        assert!(disagreement(&run, &state, resolved.as_ref()).unwrap().contains("can't be used"));
+        std::fs::remove_file(record_path("r1")).unwrap();
+        std::os::unix::fs::symlink("/no/such/file", record_path("r1")).unwrap();
+        assert!(disagreement(&run, &state, resolved.as_ref()).is_some(), "a link to nothing isn't no record");
+    }
+
+    /// Everything in `permission` goes after the wrapper's `--`, so the wrapper never reads it as its own.
+    #[test]
+    fn permissions_and_the_prompt_only_ever_reach_what_is_inside() {
+        let h = crate::paths::test_support::TempHome::new();
+        let (mut state, _, _) = agreeing(&h);
+        state.permission.allowed_tools = vec!["--settings=/tmp/evil.json".into()];
+        state.permission.disallowed_tools = vec!["--".into()];
+        let wrapper = LauncherDef { name: "sandbox".into(), command: "/w -- claude".into(), grant_flag: Some("--allow".into()) };
+        let argv = crate::wake::launcher::argv(&state, &wrapper, "--allow /evil -- /bin/sh", "sid");
+        let at = argv.iter().position(|w| w == "/w").unwrap();
+        let command = command_after_grants(&argv[at + 1..]).unwrap();
+        assert_eq!(command[0], "claude");
+        for hostile in ["--settings=/tmp/evil.json", "--allow /evil -- /bin/sh"] {
+            assert!(command.iter().any(|w| w == hostile), "{hostile} is inside");
+        }
+    }
+
     #[test]
     fn what_no_record_can_open_comes_after_the_record() {
         let text = generated(&record());
