@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 const LABEL: &str = "com.joshuahill.otto-poke";
 const SERVICE_LABEL: &str = "com.joshuahill.otto-serve";
 
+/// How long a refused `launchctl bootstrap` is retried, and how often.
+const BOOTSTRAP_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+const BOOTSTRAP_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
+
 fn launch_agents_dir() -> PathBuf {
     crate::paths::home_dir().join("Library").join("LaunchAgents")
 }
@@ -140,6 +144,29 @@ pub struct Started {
     pub log: String,
 }
 
+/// Load a job, waiting out launchd if it is still removing the last one. `bootout` can return first,
+/// and a `bootstrap` in that gap is refused. Giving up there leaves the job unloaded, where
+/// `KeepAlive` can't bring it back, so a refusal only counts once it has lasted.
+fn bootstrap(domain: &str, plist_path: &Path) -> Result<(), OttoError> {
+    let give_up_at = std::time::Instant::now() + BOOTSTRAP_PATIENCE;
+    loop {
+        let output = std::process::Command::new("launchctl")
+            .args(["bootstrap", domain, &plist_path.display().to_string()])
+            .output()
+            .map_err(|e| OttoError::usage(format!("cannot run launchctl: {e}")))?;
+        if output.status.success() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= give_up_at {
+            return Err(OttoError::usage(format!(
+                "launchctl bootstrap failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        std::thread::sleep(BOOTSTRAP_RETRY);
+    }
+}
+
 /// Write (or rewrite) a job's plist and ensure launchd has it registered and running.
 fn install(job: &Job, log_path: PathBuf) -> Result<Started, OttoError> {
     let binary = crate::paths::current_exe()?;
@@ -153,16 +180,7 @@ fn install(job: &Job, log_path: PathBuf) -> Result<Started, OttoError> {
     // Idempotent by construction: unload first (fine if it wasn't loaded), then load
     // fresh from the plist we just wrote.
     let _ = std::process::Command::new("launchctl").args(["bootout", &target]).output();
-    let bootstrap = std::process::Command::new("launchctl")
-        .args(["bootstrap", &domain, &plist_path.display().to_string()])
-        .output()
-        .map_err(|e| OttoError::usage(format!("cannot run launchctl: {e}")))?;
-    if !bootstrap.status.success() {
-        return Err(OttoError::usage(format!(
-            "launchctl bootstrap failed: {}",
-            String::from_utf8_lossy(&bootstrap.stderr).trim()
-        )));
-    }
+    bootstrap(&domain, &plist_path)?;
     let _ = std::process::Command::new("launchctl").args(["enable", &target]).output();
     Ok(Started {
         target,
