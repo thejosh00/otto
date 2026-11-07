@@ -1200,13 +1200,13 @@ pub fn set_check(args: SetCheckArgs) -> Result<(), OttoError> {
 /// `rearm`: a no-change result the run should sleep on — the wake it stood in front of is put
 /// off by the check's retry gap (else the period). False when the safety net is about to wake the
 /// run anyway, so the due time stays due.
-pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: bool) -> Result<(), OttoError> {
+pub fn record_check(id: &str, result: CheckResult, note: Option<String>, rearm: bool, at: Timestamp) -> Result<(), OttoError> {
     transaction(id, |path, state| {
         let period_due = Timestamp::at(state.policy.period_due(crate::clock::now()));
         let armed = state.wake_armed_timer();
         let mut rearm_to = None;
         let Some(check) = state.check.as_mut() else { return Ok(()) };
-        check.last_at = Some(Timestamp::now());
+        check.last_at = Some(at);
         check.last_note = note.clone();
         match result {
             CheckResult::NoChange => {
@@ -2284,7 +2284,7 @@ mod tests {
         })
         .unwrap();
         let before = read_run("run-check-5").unwrap().next_wake_at.unwrap();
-        record_check("run-check-5", CheckResult::NoChange, Some("quiet".to_string()), true).unwrap();
+        record_check("run-check-5", CheckResult::NoChange, Some("quiet".to_string()), true, Timestamp::now()).unwrap();
         let state = read_run("run-check-5").unwrap();
         // Slept again for the same gap it was armed with, from now.
         assert!(state.next_wake_at.unwrap().dt() >= before.dt(), "a no-change result puts the wake off");
@@ -2312,8 +2312,8 @@ mod tests {
             give_up_after: None,
         })
         .unwrap();
-        record_check("run-check-6", CheckResult::NoChange, None, true).unwrap();
-        record_check("run-check-6", CheckResult::Changed, Some("3 new comments".to_string()), true).unwrap();
+        record_check("run-check-6", CheckResult::NoChange, None, true, Timestamp::now()).unwrap();
+        record_check("run-check-6", CheckResult::Changed, Some("3 new comments".to_string()), true, Timestamp::now()).unwrap();
         let check = read_run("run-check-6").unwrap().check.unwrap();
         assert_eq!(check.consecutive_no_change, 0, "a real change resets the no-change streak");
         assert_eq!(check.last_result, Some(CheckResult::Changed));

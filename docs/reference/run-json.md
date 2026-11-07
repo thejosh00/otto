@@ -70,6 +70,12 @@ what the ideas mean.
 | `noChangeTotal` | Every "nothing new" result since the check was set — each a wake not spent |
 | `lastResult`, `lastAt`, `lastNote` | The last result (`no-change`, `changed`, `error`), when, and the start of what the script printed |
 
+Only the last result is here. Earlier ones are in `check-history.jsonl` beside `run.json`, one JSON
+object per pass poke ran the script, oldest first, the newest 700 kept: `{at, code, timedOut, result,
+note}`, `note` absent when the script printed nothing. Its latest `at`, `result` and `note` are this
+section's `lastAt`, `lastResult` and `lastNote`. `otto check`'s trial run and `otto poke --dry-run`
+add nothing.
+
 ## Engine bookkeeping
 
 Kept at the top level rather than in `facts`, because a wake re-recording its facts would

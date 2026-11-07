@@ -15,7 +15,7 @@ When the run's wake comes due, poke runs your script **instead of** waking the r
 
 | The script | What happens |
 |---|---|
-| exits `0` — nothing new | No wake. The run sleeps another period, and nothing is journaled |
+| exits `0` — nothing new | No wake. The run sleeps another period, and nothing is journaled (the [check history](#check-history) has it) |
 | exits `1` — something changed | A real wake, as if there were no check |
 | exits anything else, crashes, or runs past 10s | A real wake too — otto fails open rather than trust a broken script |
 
@@ -89,6 +89,15 @@ otto check my-run --off                 # remove it; every wake is a full one ag
 When you set a check, otto runs it once on the spot and tells you what it returned — without
 acting on it — so a broken script shows immediately rather than at the next wake. The web UI's
 run page shows the same information in its **Check script** panel.
+
+## Check history
+
+Every pass poke runs the script adds a line to `check-history.jsonl` in the run's directory, "nothing
+new" included: the time, the exit code, whether it timed out, the result and the start of what it
+printed. The newest 700 are kept, about a week at a 15-minute period, so "why didn't it wake?" still
+has an answer days later. The trial run when you set a check and `otto poke --dry-run` add nothing,
+and none of it counts as the run making progress. The format is in
+[`run.json`'s `check` section](../reference/run-json.md#check).
 
 ## The run's own check
 

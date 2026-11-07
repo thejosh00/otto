@@ -596,8 +596,16 @@ targets the cheap-tick case above, not a general poke plugin system.
 
 **The script gets no `otto state` access.** Same reasoning as §5.3 — every write goes through
 `otto state`, and a check script is not a wake. Its only channel out is its exit code and a
-capped stdout snippet (journaled and shown in `otto show`, never accumulated). It cannot open a
-gate, set a status, or touch `run.json` directly.
+capped stdout snippet (journaled and shown in `otto show`). It cannot open a gate, set a status, or
+touch `run.json` directly.
+
+**What each pass said is kept, but not in the journal.** "Nothing new" stays out of the journal and
+`run.json` keeps only the last result, so poke also adds a line per pass to the run's
+`check-history.jsonl`: time, exit code, whether it timed out, result, note. It holds the newest 700
+passes, about a week at a 15-minute period, and is what answers "why didn't it wake?" days later. It
+is evidence and nothing else: a failed write changes no decision, it isn't part of what counts as the
+run moving, a dry run or `otto check`'s trial adds nothing, and the script can't reach it by any
+channel it didn't already have.
 
 **The safety net: `wakeAfter`.** With the check deciding every wake, a script that is wrong without
 failing — exits 0 when something did change — would keep a run asleep forever, and nothing would

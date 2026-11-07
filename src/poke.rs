@@ -410,7 +410,15 @@ fn run_check(
     let CheckRun { result, note, code, timed_out } = execute_check(&run_id, state, script, exec);
     let streak = check.consecutive_no_change + 1;
     let safety_net = result == CheckResult::NoChange && check.wake_after > 0 && streak >= check.wake_after;
-    let _ = crate::state::commands::record_check(&run_id, result, note, !safety_net);
+    // Evidence, so it comes first and nothing depends on it: a poke dying next still leaves what
+    // the script said, and a write that fails changes nothing below. One time for both, so the
+    // history's latest and `check.lastAt` agree.
+    let at = Timestamp::now();
+    let record = crate::check_history::Record { at, code, timed_out, result, note: note.as_deref() };
+    if let Err(e) = crate::check_history::add(&run_id, &record) {
+        eprintln!("otto poke: {run_id}: could not add to its check history: {e}");
+    }
+    let _ = crate::state::commands::record_check(&run_id, result, note, !safety_net, at);
 
     match result {
         CheckResult::NoChange if safety_net => spawn_or_back_off(

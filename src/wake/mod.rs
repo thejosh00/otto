@@ -2206,7 +2206,7 @@ mod tests {
         test_init("w-check", "a goal").unwrap();
         crate::core::set_check("w-check", "#!/bin/sh\nexit 0\n", 24).unwrap();
         for _ in 0..3 {
-            crate::state::commands::record_check("w-check", crate::state::CheckResult::NoChange, None, true).unwrap();
+            crate::state::commands::record_check("w-check", crate::state::CheckResult::NoChange, None, true, crate::clock::Timestamp::now()).unwrap();
         }
         assert_eq!(read_run("w-check").unwrap().check.unwrap().consecutive_no_change, 3);
         let mut exec = FakeExec::new();

@@ -618,6 +618,7 @@ for a wake's report. That's all the driver gets: it can't approve, land or close
     journal.jsonl                every event, append-only — see reference/journal.md
     wake.lock                    held by a wake for its whole life — how otto knows it's running
     wake-holder.json             who took that lock last: pid, wake number, time. Stays after they've gone
+    check-history.jsonl          what the check script said, each pass poke ran it: the newest 700
     gates/NNN-<slug>.md          questions, and their answers verbatim
     notes/NNN.md                 notes, verbatim
     messages/NNN-<slug>.md|.json messages it sent you: the body verbatim, and the rest

@@ -1,6 +1,7 @@
 mod agents;
 mod changes;
 mod chat;
+mod check_history;
 mod cleanup;
 mod cli;
 mod clock;

@@ -56,7 +56,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `policy-set` | `set`, `previous` | A person changed policy keys with `otto policy`: what each was set to, and what it was (`null` for none) |
 | `check-set` | `script`, `wakeAfter`, `by` | A standing check script was set, by a `person` (`otto check`) or a `wake` (`set-check`) |
 | `check-cleared` | `script`, `by` | The standing check was removed, by a `person` or a `wake` |
-| `check-ran` | `result`, `consecutiveNoChange`, `note` | A check script reported a change or an error. "Nothing new" is never journaled — see `check` in `run.json` |
+| `check-ran` | `result`, `consecutiveNoChange`, `note` | A check script reported a change or an error. "Nothing new" is never journaled — see `check` in `run.json`, and `check-history.jsonl` for every pass |
 
 ## People
 
