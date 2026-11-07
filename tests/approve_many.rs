@@ -172,13 +172,13 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-/// Step 1 of the report, in both orders: A@v1 is stale. It says nothing is approved, and that's true.
+/// Step 1 of the report, in both orders: A@v1 is stale. It says nothing new is approved, and that's true.
 #[test]
 fn a_stale_version_anywhere_in_the_list_approves_nothing() {
     let s = Scratch::new();
     for list in [[s.b(), s.a("v1")], [s.a("v1"), s.b()]] {
         let said = s.refused(&["changes", "approve", &list[0], &list[1]], 2);
-        assert!(said.contains("v2 of") && said.contains("Nothing is approved"), "{said}");
+        assert!(said.contains("v2 of") && said.contains("Nothing new is approved"), "{said}");
         s.all_in_review(&said);
     }
 }
@@ -212,7 +212,7 @@ fn one_not_in_review_leaves_the_rest_in_review_in_either_order_and_is_named_in_f
     let c = format!("{}/3", s.author);
     for list in [[s.b(), s.c()], [s.c(), s.b()]] {
         let said = s.refused(&["changes", "approve", &list[0], &list[1], "--no-wake"], 2);
-        assert!(said.contains(&format!("{c} can't be approved")) && said.contains("Nothing is approved"), "{said}");
+        assert!(said.contains(&format!("{c} can't be approved")) && said.contains("Nothing new is approved"), "{said}");
         assert_eq!(s.state_and_decision(&s.author, 2), ("review".to_string(), false), "B after: {said}");
         assert_eq!(s.due(), 1, "only C, from before: {said}");
     }
@@ -231,7 +231,7 @@ fn every_refusal_in_the_checks_approves_nothing() {
     ];
     for (bad, expect, code) in &refusals {
         let said = s.refused(&["changes", "approve", &s.b(), bad, "--no-wake"], *code);
-        assert!(said.contains(expect) && said.contains("Nothing is approved"), "{bad}: {said}");
+        assert!(said.contains(expect) && said.contains("Nothing new is approved"), "{bad}: {said}");
         s.all_in_review(&said);
     }
     // Refused as the list is read, before any change is looked at.
@@ -251,13 +251,13 @@ fn a_pull_request_with_nowhere_to_go_approves_nothing() {
     s.submit(&other, "with-remote", "d", "D");
     let d = format!("{other}/1@v1");
     let said = s.refused(&["changes", "approve", &d, &s.b(), "--pr", "--no-wake"], 1);
-    assert!(said.contains("no remote") && said.contains("Nothing is approved"), "{said}");
+    assert!(said.contains("no remote") && said.contains("Nothing new is approved"), "{said}");
     assert_eq!(s.state_and_decision(&other, 1), ("review".to_string(), false), "{said}");
     s.all_in_review(&said);
 }
 
 /// Saving fails after the first is written: what is approved stands, so the error names it, and it
-/// mustn't say nothing is approved.
+/// mustn't say nothing new is approved.
 #[test]
 fn a_failure_while_saving_names_what_is_approved() {
     let s = Scratch::new();
@@ -272,7 +272,7 @@ fn a_failure_while_saving_names_what_is_approved() {
     let said = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(!output.status.success(), "{said}");
     assert!(said.contains(&format!("{}/2 approved", s.author)) && said.contains("the lander lands"), "{said}");
-    assert!(!said.to_lowercase().contains("nothing is approved"), "{said}");
+    assert!(!said.to_lowercase().contains("nothing new is approved"), "{said}");
     assert_eq!(s.state_and_decision(&s.author, 2), ("approved".to_string(), true));
     assert_eq!(s.state_and_decision(&other, 1), ("review".to_string(), false));
     assert_eq!(s.due(), 1);

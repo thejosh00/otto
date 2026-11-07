@@ -339,7 +339,7 @@ mod tests {
         for picked in [serde_json::json!(["pb/1@v1", "pa/1@v9"]), serde_json::json!(["pa/1@v9", "pb/1@v1"])] {
             let (status, body) = approve(picked);
             assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-            assert!(body["error"].as_str().unwrap().contains("Nothing is approved"), "{body}");
+            assert!(body["error"].as_str().unwrap().contains("Nothing new is approved"), "{body}");
             assert!(change("2026-09-21-pb", 1).decision.is_none(), "{body}");
         }
         let (status, body) = approve(serde_json::json!(["pb/1@v1", "pa/1@v1"]));

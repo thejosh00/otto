@@ -1391,7 +1391,7 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
         } else {
             read_change(&looked.r).and_then(|c| check_approval(&c, looked, how, &config).map(|_| ()))
         };
-        checked.map_err(|e| OttoError::new(format!("{}. Nothing is approved", e.message), e.code))?;
+        checked.map_err(|e| OttoError::new(format!("{}. Nothing new is approved", e.message), e.code))?;
     }
     let mut out = Vec::new();
     for looked in refs {
