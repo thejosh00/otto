@@ -10,6 +10,8 @@ Ideas to consider for v4. Nothing here is decided or scheduled. Commands and fie
 changes, 2026-11-07, against `4363745`. [The diagrams and notes](https://claude.ai/artifact/GoPtPt1uD5nnco1uhuf7Ug)
 are on a private page.
 
+**Now:** Phase 5 of [the v4 draft](v4.md). The detail stays here.
+
 A change can carry a small picture of the order things now happen in, and otto checks each step
 against the code.
 
