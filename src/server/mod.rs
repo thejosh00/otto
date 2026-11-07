@@ -684,6 +684,23 @@ mod tests {
         }
     }
 
+    /// A change waiting for approval used to show only as a small number on the Changes link, and
+    /// not at all in the tab, so a tab saying plain "otto" could have changes waiting behind it.
+    #[test]
+    fn changes_to_approve_show_in_the_top_right_and_in_the_tab() {
+        let html = include_str!("../../web/index.html");
+        let right = &html[html.find(r#"class="top-right""#).expect("the top right of the bar")..];
+        assert!(right.contains(r##"<a class="to-approve" id="to-approve" href="#/changes" hidden>"##), "a link to Changes, hidden until there is one");
+
+        let js = include_str!("../../web/app.js");
+        let at = js.find("async function refreshChrome").unwrap();
+        let chrome = &js[at..at + js[at..].find("let lastHealth").unwrap()];
+        assert!(chrome.contains("${changes.textContent} to approve"), "it says what it counts");
+        assert!(chrome.contains("toApprove.hidden = !inbox.changes"), "and goes away when none wait");
+        assert!(chrome.contains("const waiting = inbox.open + inbox.changes"), "the tab counts changes as well as the inbox");
+        assert!(chrome.contains("document.title = waiting ?"), "the tab's count is that sum");
+    }
+
     /// The reason the guard exists: another site in the same browser must not be able to stop,
     /// wake or start anything.
     #[test]

@@ -376,10 +376,15 @@ async function refreshChrome() {
     count.hidden = inbox.open === 0;
     document.getElementById("inbox-btn").title = inbox.open ? `${inbox.open} waiting for you` : "Nothing waiting for you";
     // the tab says it too, for when otto is one tab among many
-    document.title = inbox.open ? `(${count.textContent}) otto` : "otto";
+    const waiting = inbox.open + inbox.changes;
+    document.title = waiting ? `(${waiting > 99 ? "99+" : waiting}) otto` : "otto";
     const changes = document.getElementById("changes-count");
     changes.textContent = inbox.changes > 99 ? "99+" : String(inbox.changes);
     changes.hidden = !inbox.changes;
+    const toApprove = document.getElementById("to-approve");
+    toApprove.textContent = `${changes.textContent} to approve`;
+    toApprove.hidden = !inbox.changes;
+    toApprove.title = inbox.changes === 1 ? "1 change is waiting on you" : `${inbox.changes} changes are waiting on you`;
   } catch { /* the server is down; the next refresh says so */ }
   try {
     const health = await api("/health");

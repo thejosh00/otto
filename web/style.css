@@ -392,6 +392,8 @@ details summary { cursor: pointer; color: var(--ink-2); font-size: 14px; }
 .health:hover { background: var(--surface-2); }
 .health.bad { color: var(--warn); font-weight: 600; background: var(--warn-soft); }
 .health.bad::before { background: var(--accent); }
+.to-approve { font-size: 13px; font-weight: 600; color: var(--accent-ink); background: var(--accent); text-decoration: none; padding: 4px 10px; border-radius: var(--cut-xs); corner-shape: bevel; white-space: nowrap; }
+.to-approve:hover { filter: brightness(1.1); }
 .inbox-btn { position: relative; display: inline-grid; place-items: center; width: 38px; height: 34px; border-radius: var(--cut-sm); corner-shape: bevel; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2); text-decoration: none; }
 .inbox-btn:hover { color: var(--ink); border-color: var(--ink-3); }
 .inbox-btn.active { background: var(--surface-2); color: var(--ink); }
