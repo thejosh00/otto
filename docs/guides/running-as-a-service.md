@@ -10,7 +10,8 @@ installed with one command and both safe to re-run.
 
 `./install.sh` installs the reviver; `./install.sh --service` installs the web service too. While the
 web service is running, `./install.sh` and `./install.sh --rollback` restart it, so it serves the
-binary they leave in place. One you stopped stays stopped.
+binary they leave in place. One you stopped stays stopped. To see what is installed, `otto --version`
+names the commit it was built from.
 
 ## The reviver
 

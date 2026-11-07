@@ -6,6 +6,8 @@ Every command and flag, exactly as `--help` prints it. For what the commands are
 
 Every `<ID>` takes the run number (`otto show 7`), its name, or a unique prefix of the name (`otto show leg`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.
 
+`otto --version` names the commit the binary was built from, `-dirty` if a tracked file differed from it and `commit unknown` if it wasn't built from a git checkout, so it answers whether a fix is installed.
+
 ## `otto run`
 
 ```text

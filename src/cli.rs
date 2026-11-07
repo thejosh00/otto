@@ -10,7 +10,7 @@ use crate::state::commands::{
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
 
 #[derive(Parser, Debug)]
-#[command(name = "otto", version, about = "Durable long-horizon agent runs: wrap a skill, a runbook, or a goal")]
+#[command(name = "otto", version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("OTTO_BUILD_COMMIT"), ")"), about = "Durable long-horizon agent runs: wrap a skill, a runbook, or a goal")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -267,7 +267,10 @@ mod reference {
              Every command and flag, exactly as `--help` prints it. For what the commands are *for*, \
              start with [concepts](../concepts.md) and the [guides](../README.md#guides).\n\n\
              Every `<ID>` takes the run number (`otto show 7`), its name, or a unique prefix of the \
-             name (`otto show leg`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.\n\n",
+             name (`otto show leg`). Exit codes: `0` ok, `1` usage, `2` state conflict, `3` no such run.\n\n\
+             `otto --version` names the commit the binary was built from, `-dirty` if a tracked file \
+             differed from it and `commit unknown` if it wasn't built from a git checkout, so it \
+             answers whether a fix is installed.\n\n",
         );
         for sub in cmd.get_subcommands() {
             section(&mut out, sub, &format!("otto {}", sub.get_name()), 2);
