@@ -24,7 +24,7 @@ use std::path::Path;
 /// its file. Not the whole file: the run/phase/asked-at header and the answer (once closed)
 /// aren't part of the question a person is answering.
 pub fn read_question(dir: &Path, gate: &Gate) -> Result<String, OttoError> {
-    let text = std::fs::read_to_string(dir.join(&gate.file))
+    let text = crate::state::links::read_to_string(dir.join(&gate.file))
         .map_err(|e| OttoError::conflict(format!("gate file {} is unreadable: {e}", gate.file)))?;
     let after_heading = text.split("## Question").nth(1).unwrap_or(text.as_str());
     let question = after_heading.split("## Answer").next().unwrap_or(after_heading);

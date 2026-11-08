@@ -200,7 +200,7 @@ struct Entry {
 }
 
 fn entries(dir: &Path) -> Vec<Entry> {
-    let Ok(text) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    let Ok(text) = crate::state::links::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
     text.lines()
         .filter_map(|line| {
             let value: Value = serde_json::from_str(line).ok()?;
@@ -356,7 +356,7 @@ fn first_line(text: &str, max: usize) -> String {
 
 fn gate_title(dir: &Path, gate: &str, slug: &str) -> String {
     let file = dir.join("gates").join(format!("{gate}-{slug}.md"));
-    let question = std::fs::read_to_string(file)
+    let question = crate::state::links::read_to_string(file)
         .ok()
         .map(|text| {
             let after = text.split("## Question").nth(1).unwrap_or(&text).to_string();
@@ -425,7 +425,7 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "gate-closed" => happening("answered", format!("You answered: {}", first_line(str_of(v, "answer").unwrap_or(""), 200))),
             "gate-expired" => happening("answered", "No answer came before the question's deadline".to_string()),
             "note-added" => {
-                let text = str_of(v, "file").and_then(|f| std::fs::read_to_string(dir.join(f)).ok()).unwrap_or_default();
+                let text = str_of(v, "file").and_then(|f| crate::state::links::read_to_string(dir.join(f)).ok()).unwrap_or_default();
                 let standing = v.get("standing").and_then(Value::as_bool).unwrap_or(false);
                 // A reply to a message is told as the reply, by `message-done`.
                 // Likewise what was said about a change is told by `change-moved`.

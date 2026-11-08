@@ -158,6 +158,24 @@ why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md)
 outside the sandbox. Keeping the token fresh isn't built yet (1.8), so a run left alone long enough stops with
 a sign-in message.
 
+### Links in a run directory
+
+A wake can write its own run directory, and otto, outside the sandbox, writes there too. So otto never writes
+through a link there: if the file, or any folder between the run directory and it, is a link — `journal.jsonl`,
+`run.json`, `handoff.md`, `gates/`, `notes/`, `changes/`, `outputs/`, `messages/`, `wake.log`, a lock — it
+refuses with "a link was found in the run directory and was not followed" and writes nothing. The journal is
+also opened with `O_NOFOLLOW`. The same goes for what otto reads to decide what to do: `run.json`, the journal,
+gates, notes, check scripts, indexes. That error is the sign of a wake trying to aim otto at a file of the
+person's (a journal linked to `~/.zshenv`); look at where the link points before removing it.
+
+Three things otto only *shows* the person still follow a link, and only when, fully resolved, it lands in the
+run's own directory, its workdir, or a repo it may write (the sandbox record's `write` list if it has one, else
+`launcher.repos`): `artifacts/todo.md`, a message's attachments, and a file given to `otto state publish --file`.
+A link anywhere else isn't shown.
+
+Values a refusal quotes out of `run.json`, like the launcher's name, are quoted with escapes, so they can't carry
+a newline into a question or a log.
+
 ### What's closed
 
 | | |

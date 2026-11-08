@@ -36,7 +36,7 @@ pub fn gate_is_answered(run_path: &Path, gate_id: &str) -> Result<(bool, String)
     let Some(entry) = matches.first() else {
         return Ok((false, format!("no gate file for {gate_id}")));
     };
-    let body = std::fs::read_to_string(entry.path())?;
+    let body = crate::state::links::read_to_string(entry.path())?;
     if body.contains("_unanswered_") {
         return Ok((false, format!("gate {gate_id} is still unanswered")));
     }

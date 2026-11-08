@@ -1352,7 +1352,17 @@ pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
     // where a relative path can mean.
     let read_text = |file: &str| -> Result<String, OttoError> {
         let given = std::path::Path::new(file);
-        let found = if given.is_file() { given.to_path_buf() } else { crate::paths::run_dir(&id)?.join(given) };
+        let run_dir = crate::paths::run_dir(&id)?;
+        let found = if given.is_file() { given.to_path_buf() } else { run_dir.join(given) };
+        // Shown to the person, so a link is followed, and only to somewhere the run already has.
+        let linked = found.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink())
+            || crate::state::links::link_in_run_dir(&found).is_some();
+        if linked && !crate::state::links::in_reach(&run_dir, &crate::state::read_state(&run_dir)?, &found) {
+            return Err(OttoError::usage(format!(
+                "cannot publish {file}: it is a link that leads outside the run directory, the run's workdir and the \
+                 repos it may write — copy the file in instead"
+            )));
+        }
         let bytes = std::fs::read(&found).map_err(|e| OttoError::usage(format!("cannot read {file}: {e}")))?;
         String::from_utf8(bytes)
             .map_err(|_| OttoError::usage(format!("{file} is not text — publish text a person reads, or --link to where the file lives")))
@@ -1650,7 +1660,7 @@ pub struct TailArgs {
 
 pub fn tail(args: TailArgs) -> Result<(), OttoError> {
     let path = crate::paths::run_dir(&args.id)?;
-    let text = std::fs::read_to_string(path.join("journal.jsonl"))?;
+    let text = crate::state::links::read_to_string(path.join("journal.jsonl"))?;
     let lines: Vec<&str> = text.lines().collect();
     let start = lines.len().saturating_sub(args.lines);
     for line in &lines[start..] {

@@ -221,11 +221,11 @@ impl Config {
         match matching.as_slice() {
             [one] if !wanted.is_empty() => Ok((*one).clone()),
             [] | [_] => Err(OttoError::usage(format!(
-                "no launcher called \"{input}\" — known: {}. Add one to {}",
+                "no launcher called {input:?} — known: {}. Add one to {}",
                 names(),
                 config_path().display()
             ))),
-            _ => Err(OttoError::usage(format!("\"{input}\" matches more than one launcher: {}", names()))),
+            _ => Err(OttoError::usage(format!("{input:?} matches more than one launcher: {}", names()))),
         }
     }
 }
@@ -485,6 +485,15 @@ mod tests {
         for i in 0..8 {
             assert!(names.contains(&format!("l{i}")), "edit {i} was lost: {names:?}");
         }
+    }
+
+    #[test]
+    fn an_unknown_launcher_is_quoted_escaped_in_the_refusal() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let kind = "$(touch /tmp/ran)\necho hi";
+        let err = load().unwrap().launcher(kind).unwrap_err();
+        assert!(!err.message.contains('\n'), "no raw newline: {}", err.message);
+        assert!(err.message.contains(r#""$(touch /tmp/ran)\necho hi""#), "quoted and escaped: {}", err.message);
     }
 
     #[test]

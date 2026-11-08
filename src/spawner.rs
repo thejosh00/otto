@@ -116,7 +116,7 @@ pub fn start(id: &str, strategy: Strategy, answer: Option<&str>, cause: WakeCaus
             // exiting seconds later. Output goes to the run directory rather than being discarded:
             // a wake that dies before it can journal anything leaves its reason only here.
             let log_path = crate::paths::run_dir(id)?.join("wake.log");
-            let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+            let log = crate::state::links::open_append(&log_path)?;
             let errlog = log.try_clone()?;
             use std::os::unix::process::CommandExt;
             std::process::Command::new(&argv[0])

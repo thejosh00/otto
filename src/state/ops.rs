@@ -194,7 +194,7 @@ fn close(id: &str, answer: Option<&str>, status: Status, by_person: bool) -> Res
         };
         let answered = Timestamp::now();
         let gate_file = path.join(&gate.file);
-        let body = std::fs::read_to_string(&gate_file)
+        let body = crate::state::links::read_to_string(&gate_file)
             .map_err(|e| OttoError::conflict(format!("gate file {} is unreadable: {e}", gate.file)))?;
         let body = body.replacen("## Answer\n\n_unanswered_\n", "## Answer\n", 1);
         write_atomic(

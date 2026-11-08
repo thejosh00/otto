@@ -245,7 +245,7 @@ struct Transcripts {
 /// the journal named them is still on record.
 fn wake_transcripts(dir: &Path, state: &RunState) -> Transcripts {
     let mut sessions: Vec<(u64, String, String)> = Vec::new();
-    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap_or_default();
+    let journal = crate::state::links::read_to_string(dir.join("journal.jsonl")).unwrap_or_default();
     for line in journal.lines().filter(|l| l.contains("\"wake-started\"")) {
         let Some(line) = crate::core::parse_line(line) else { continue };
         let v = &line.value;
@@ -275,7 +275,7 @@ fn wake_transcripts(dir: &Path, state: &RunState) -> Transcripts {
 /// The ids of the notes left since `since`, read from the journal — so a note a wake delivered
 /// while the chat was still open counts as much as one still waiting.
 fn notes_left_since(dir: &Path, since: Timestamp) -> Vec<String> {
-    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap_or_default();
+    let journal = crate::state::links::read_to_string(dir.join("journal.jsonl")).unwrap_or_default();
     journal
         .lines()
         .filter(|l| l.contains("\"note-added\""))

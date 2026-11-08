@@ -467,6 +467,7 @@ dependencies = [
  "clap",
  "fs4",
  "futures-util",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

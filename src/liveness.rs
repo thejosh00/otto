@@ -109,7 +109,7 @@ fn open_lock_file(path: &Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::OpenOptions::new().create(true).append(true).open(path)
+    crate::state::links::open_append(path)
 }
 
 /// Try for the lock and immediately give it back. Acquiring it proves nobody held it at

@@ -161,18 +161,17 @@ fn check_attachment(run_dir: &Path, state: &crate::state::RunState, path: &str) 
     }
     if !readable(run_dir, state, rel) {
         return Err(OttoError::usage(format!(
-            "--attach {path}: it links outside the run directory and the run's workdir — copy the file in instead"
+            "--attach {path}: it links outside the run directory, the run's workdir and the repos it may write — copy the file in instead"
         )));
     }
     Ok(path.trim_start_matches("./").to_string())
 }
 
-/// Whether `rel`, followed through any links, is inside the run directory or the run's workdir.
-/// Asked again when a message is read, since a link can be re-pointed after it was sent.
+/// Whether `rel`, followed through any links, is inside the run directory, the run's workdir or a
+/// repo it may write (`state::links::reach`). Asked again when a message is read, since a link can
+/// be re-pointed after it was sent.
 fn readable(run_dir: &Path, state: &crate::state::RunState, rel: &Path) -> bool {
-    let Ok(target) = run_dir.join(rel).canonicalize() else { return false };
-    let roots = [Some(run_dir.to_path_buf()), crate::config::workdir_for(state)];
-    roots.into_iter().flatten().filter_map(|root| root.canonicalize().ok()).any(|root| target.starts_with(root))
+    crate::state::links::in_reach(run_dir, state, &run_dir.join(rel))
 }
 
 /// Send a message: write it, add it to the run's inbox index, and journal it. Poke notifies the
@@ -255,7 +254,7 @@ pub fn normalise_id(which: &str) -> String {
 }
 
 fn read_meta(run_dir: &Path, file: &str) -> Result<MessageMeta, OttoError> {
-    let text = std::fs::read_to_string(run_dir.join(file))
+    let text = crate::state::links::read_to_string(run_dir.join(file))
         .map_err(|e| OttoError::conflict(format!("message file {file} is unreadable: {e}")))?;
     serde_json::from_str(&text).map_err(|e| OttoError::conflict(format!("message file {file} is not valid: {e}")))
 }
@@ -304,7 +303,7 @@ pub fn read(run_id: &str, which: Option<&str>) -> Result<MessageView, OttoError>
 }
 
 fn view(dir: &Path, state: &crate::state::RunState, meta: MessageMeta, open: bool) -> MessageView {
-    let text = std::fs::read_to_string(dir.join(&meta.body)).unwrap_or_else(|_| format!("(message body {} is missing)", meta.body));
+    let text = crate::state::links::read_to_string(dir.join(&meta.body)).unwrap_or_else(|_| format!("(message body {} is missing)", meta.body));
     let attached = meta
         .attachments
         .iter()

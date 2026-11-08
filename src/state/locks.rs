@@ -91,7 +91,7 @@ pub fn repoint(from: &str, to: &str) {
 /// resolves that, deliberately.
 fn holder_is_gone(run_id: &str) -> (bool, String) {
     let run_json = crate::paths::runs_dir().join(run_id).join("run.json");
-    let value: Value = match std::fs::read_to_string(&run_json)
+    let value: Value = match crate::state::links::read_to_string(&run_json)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
     {

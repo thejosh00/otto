@@ -4,6 +4,7 @@
 pub mod authorize;
 pub mod change;
 pub mod commands;
+pub mod links;
 pub mod locks;
 pub mod ops;
 
@@ -937,7 +938,12 @@ pub fn emit(value: &Value) {
 
 /// Write via temp file in the same directory, then rename. A rename within a directory
 /// is atomic, so a reader never observes a half-written file, whatever happens mid-write.
+///
+/// In a run directory, refused if the file or any directory on the way to it is a link: the rename would
+/// replace a link to the file rather than follow it, but a linked directory would be followed, and
+/// otto says so rather than quietly undo what a wake planted (`links`).
 pub fn write_atomic(path: &Path, text: &str) -> Result<(), OttoError> {
+    links::refuse_links(path)?;
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(dir)?;
     let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
@@ -979,7 +985,7 @@ impl Flock {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+        let file = links::open_append(path)?;
         fs4::fs_std::FileExt::lock_exclusive(&file)?;
         Ok(Self { file })
     }
@@ -1010,6 +1016,7 @@ impl RunLock {
 
 pub(crate) fn read_state(path: &Path) -> Result<RunState, OttoError> {
     let run_json = path.join("run.json");
+    links::refuse_links(&run_json)?;
     let text = match std::fs::read_to_string(&run_json) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1189,14 +1196,7 @@ pub fn read_run(run_id: &str) -> Result<RunState, OttoError> {
 /// lives in exactly one place.
 pub(crate) fn append_journal_line(path: &Path, value: &Value) -> Result<(), OttoError> {
     let line = serde_json::to_string(value)? + "\n";
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path.join("journal.jsonl"))?;
-    file.write_all(line.as_bytes())?;
-    file.flush()?;
-    file.sync_all()?;
-    Ok(())
+    links::append(&path.join("journal.jsonl"), line.as_bytes())
 }
 
 /// Appends one journal line. `ts`/`event` in `fields` are dropped (the frame always

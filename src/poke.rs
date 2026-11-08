@@ -239,7 +239,7 @@ fn asked_for(run_id: &str, state: &RunState, decided: WakeCause) -> WakeCause {
     }
     let Some(due) = state.next_wake_at else { return decided };
     let Ok(dir) = crate::paths::run_dir(run_id) else { return decided };
-    let Ok(journal) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return decided };
+    let Ok(journal) = crate::state::links::read_to_string(dir.join("journal.jsonl")) else { return decided };
     journal
         .lines()
         .rev()
@@ -403,6 +403,9 @@ fn run_check(
         Ok(dir) => dir.join(&check.script),
         Err(e) => return Decision::base(&run_id, Action::Error, format!("cannot resolve check script: {e}")),
     };
+    if let Err(e) = crate::state::links::refuse_links(&script) {
+        return Decision::base(&run_id, Action::Error, format!("not running its check script: {e}"));
+    }
     let Some(script) = script.to_str() else {
         return Decision::base(&run_id, Action::Error, "check script path is not valid UTF-8".to_string());
     };
@@ -1139,6 +1142,21 @@ mod tests {
         assert!(check.last_at.is_some());
         let journal = std::fs::read_to_string(crate::paths::run_dir("p-check-none").unwrap().join("journal.jsonl")).unwrap();
         assert!(!journal.contains("check-ran"), "a no-change result must not spam the journal");
+    }
+
+    #[test]
+    fn a_check_script_that_is_a_link_is_not_run() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let entry = init_with_check("p-check-link", a_check(24));
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::write(elsewhere.path().join("theirs.sh"), "#!/bin/sh\nexit 1\n").unwrap();
+        let dir = crate::paths::run_dir("p-check-link").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("theirs.sh"), dir.join("artifacts/check.sh")).unwrap();
+        let mut exec = FakeExec::new();
+        let decisions = pass(entry, &mut exec);
+        assert_eq!(decisions[0].action, Action::Error, "{:?}", decisions[0]);
+        assert!(decisions[0].reason.contains("a link was found in the run directory"), "{}", decisions[0].reason);
+        assert!(exec.calls.borrow().is_empty(), "nothing ran: {:?}", exec.calls.borrow());
     }
 
     #[test]

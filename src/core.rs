@@ -309,7 +309,7 @@ pub fn last_run(dir: &std::path::Path, state: &RunState) -> Option<LastRun> {
 /// finish at all.
 fn last_wake(dir: &std::path::Path) -> Option<LastRun> {
     const ENDS: &[&str] = &["wake-complete", "wake-incomplete", "usage-limited", "wake-killed"];
-    let text = std::fs::read_to_string(dir.join("journal.jsonl")).ok()?;
+    let text = crate::state::links::read_to_string(dir.join("journal.jsonl")).ok()?;
     let lines: Vec<Value> = text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
     let event = |v: &Value| v.get("event").and_then(Value::as_str).unwrap_or_default().to_string();
     let end = lines.iter().rposition(|v| ENDS.contains(&event(v).as_str()))?;
@@ -347,7 +347,7 @@ pub const ACTIVITY_SHOWN: usize = 20;
 /// recorded with `otto state log`. A run that watches or repeats has no todo to tick off, and this
 /// is its progress instead (`harness/wake.md`, "Activity").
 pub fn activity(dir: &std::path::Path, limit: usize) -> Vec<ActivityLine> {
-    let Ok(text) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    let Ok(text) = crate::state::links::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
     text.lines()
         .rev()
         .filter_map(|line| {
@@ -497,7 +497,7 @@ pub fn list_runs(all: bool) -> Result<LsView, OttoError> {
         let todo = dir.as_deref().and_then(crate::todo::read).map(|t| t.counts);
         let said = dir
             .as_ref()
-            .and_then(|d| std::fs::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
+            .and_then(|d| crate::state::links::read_to_string(d.join(crate::state::commands::HANDOFF_FILE)).ok())
             .and_then(|handoff| where_this_is(&handoff));
         let quiet = running.then(|| quiet_minutes(&state)).flatten();
         let glance = crate::story::glance(&state, running, quiet, question_title.as_deref(), said.as_deref());
@@ -718,13 +718,13 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
             id: gate.id.clone(),
             slug: gate.slug.clone(),
             file: gate.file.clone(),
-            text: std::fs::read_to_string(dir.join(&gate.file)).ok(),
+            text: crate::state::links::read_to_string(dir.join(&gate.file)).ok(),
             question,
             options,
             default,
         }
     });
-    let handoff = std::fs::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok();
+    let handoff = crate::state::links::read_to_string(dir.join(crate::state::commands::HANDOFF_FILE)).ok();
     let notes = note_views(&dir, &state);
     let check = check_view(&dir, &state);
     let wake_cost = wake_cost(&dir);
@@ -1043,7 +1043,7 @@ pub struct WakeCost {
 
 pub fn check_view(dir: &std::path::Path, state: &RunState) -> Option<CheckView> {
     let check = state.check.as_ref()?;
-    let text = std::fs::read_to_string(dir.join(&check.script)).ok().map(|t| {
+    let text = crate::state::links::read_to_string(dir.join(&check.script)).ok().map(|t| {
         if t.len() > CHECK_SHOW_MAX_BYTES {
             let mut cut = CHECK_SHOW_MAX_BYTES;
             while !t.is_char_boundary(cut) {
@@ -1071,7 +1071,7 @@ pub fn check_view(dir: &std::path::Path, state: &RunState) -> Option<CheckView> 
 
 /// Averages over the last few `wake-spent` lines, or `None` before the first wake.
 pub fn wake_cost(dir: &std::path::Path) -> Option<WakeCost> {
-    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).ok()?;
+    let journal = crate::state::links::read_to_string(dir.join("journal.jsonl")).ok()?;
     let spent: Vec<Value> = journal
         .lines()
         .filter(|l| l.contains("\"wake-spent\""))
@@ -2331,7 +2331,7 @@ impl TokenTotals {
 /// Every `wake-spent`, `usage-unavailable` and `chat-ended` line in one run's journal, with its
 /// instant.
 fn usage_lines(dir: &std::path::Path) -> Vec<Line> {
-    let Ok(journal) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    let Ok(journal) = crate::state::links::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
     journal
         .lines()
         .filter(|l| l.contains("\"wake-spent\"") || l.contains("\"usage-unavailable\"") || l.contains("\"chat-ended\""))
@@ -2630,7 +2630,7 @@ pub struct LogCursor {
 impl LogCursor {
     /// Lines written since the last read.
     pub fn poll(&mut self) -> Vec<LogLine> {
-        let text = std::fs::read_to_string(&self.path).unwrap_or_default();
+        let text = crate::state::links::read_to_string(&self.path).unwrap_or_default();
         if text.len() <= self.seen {
             return Vec::new();
         }
@@ -2670,7 +2670,7 @@ pub fn read_logs(id: &str, query: &LogQuery, offset: time::UtcOffset) -> Result<
     // `since` says where to start, so it shows everything from there unless `lines` says otherwise.
     let limit = query.lines.unwrap_or(if filter.since.is_some() { usize::MAX } else { 40 });
 
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let text = crate::state::links::read_to_string(&path).unwrap_or_default();
     let kept: Vec<Line> = text.lines().filter_map(parse_line).filter(|l| filter.keeps(l)).collect();
     let start = kept.len().saturating_sub(limit);
     let mut cursor = LogCursor { path, filter, renderer: Renderer::new(offset), seen: text.len() };
@@ -2738,7 +2738,7 @@ pub fn live_view(id: &str, exec: &mut dyn crate::exec::Exec) -> LiveView {
         return LiveView::Pane(pane);
     }
     if LockLiveness.probe(id).is_busy() {
-        if let Ok(text) = crate::paths::run_dir(id).and_then(|d| Ok(std::fs::read_to_string(d.join("wake.log"))?)) {
+        if let Ok(text) = crate::paths::run_dir(id).and_then(|d| Ok(crate::state::links::read_to_string(d.join("wake.log"))?)) {
             let lines: Vec<&str> = text.lines().collect();
             let start = lines.len().saturating_sub(LIVE_LOG_LINES);
             return LiveView::Log(lines[start..].join("\n"));

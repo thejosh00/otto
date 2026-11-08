@@ -34,7 +34,7 @@ pub const STANDING_MAX_BYTES: usize = 4096;
 /// The note's text, as the person wrote it. A missing file is said, not skipped: a note the run
 /// thinks it has but cannot read is worth a person noticing.
 pub fn read_text(run_dir: &Path, note: &Note) -> String {
-    std::fs::read_to_string(run_dir.join(&note.file))
+    crate::state::links::read_to_string(run_dir.join(&note.file))
         .unwrap_or_else(|_| format!("(note file {} is missing)", note.file))
 }
 

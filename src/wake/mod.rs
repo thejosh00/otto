@@ -771,7 +771,7 @@ fn open_stuck_gate(id: &str, why: &str, consecutive: u32) -> Result<(), OttoErro
 /// contract and changed nothing it can see (`progress`). Nothing failed, so the question is only
 /// whether to keep looking.
 fn open_stall_gate(id: &str, run_dir: &std::path::Path, wakes: u32) -> Result<(), OttoError> {
-    let handoff = std::fs::read_to_string(run_dir.join(crate::state::commands::HANDOFF_FILE)).unwrap_or_default();
+    let handoff = crate::state::links::read_to_string(run_dir.join(crate::state::commands::HANDOFF_FILE)).unwrap_or_default();
     let stands = crate::core::where_this_is(&handoff)
         .map(|said| format!("\n\nWhere it stands, as I last put it: {said}"))
         .unwrap_or_default();

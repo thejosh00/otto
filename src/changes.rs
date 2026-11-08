@@ -367,8 +367,10 @@ fn keep_evidence(run_dir: &Path, dir: &str, k: u32, found: &[Found]) -> Result<V
         let rel = format!("{dir}/v{k}.evidence/{}", f.name);
         let to = run_dir.join(&rel);
         if let Some(parent) = to.parent() {
+            crate::state::links::refuse_links(parent)?;
             std::fs::create_dir_all(parent)?;
         }
+        crate::state::links::refuse_links(&to)?;
         std::fs::copy(&f.from, &to).map_err(|e| OttoError::new(format!("could not keep {}: {e}", f.from.display()), 4))?;
         kept.push(Evidence { name: f.name.clone(), path: rel, bytes: f.bytes, kind: f.kind });
     }
@@ -592,7 +594,7 @@ impl Change {
 // ---------------------------------------------------------------------------
 
 pub fn read_index(run_dir: &Path) -> Result<Index, OttoError> {
-    match std::fs::read_to_string(run_dir.join(INDEX_FILE)) {
+    match crate::state::links::read_to_string(run_dir.join(INDEX_FILE)) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| OttoError::conflict(format!("{INDEX_FILE} is not valid: {e}"))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
         Err(e) => Err(e.into()),
@@ -994,10 +996,10 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 let ignored = !s.evidence.is_empty() && !fill;
                 // So can the whole of what it says, or a better summary of that. Its whole write-up,
                 // once there, stays as it was too.
-                let kept = latest.file.as_ref().and_then(|f| std::fs::read_to_string(path.join(f)).ok());
+                let kept = latest.file.as_ref().and_then(|f| crate::state::links::read_to_string(path.join(f)).ok());
                 let file_ignored = file.is_some_and(|t| kept.as_ref().is_some_and(|old| old.trim_end() != t));
                 let new_file = if kept.is_none() { file } else { None };
-                let same_summary = std::fs::read_to_string(path.join(&latest.summary)).is_ok_and(|old| old.trim_end() == summary);
+                let same_summary = crate::state::links::read_to_string(path.join(&latest.summary)).is_ok_and(|old| old.trim_end() == summary);
                 let new_summary = file.is_some() && !file_ignored && !same_summary;
                 let summary_ignored = file.is_none() && !same_summary;
                 let c = &mut index.changes[i];
@@ -1597,7 +1599,7 @@ pub struct Due {
 /// what a fix says is what the fix did, not what the change is.
 fn pr_body(dir: &Path, c: &Change) -> PathBuf {
     let v = c.versions.iter().rev().find(|v| v.by != "babysitter").unwrap_or_else(|| c.latest());
-    let fits = |f: &&String| std::fs::read_to_string(dir.join(f)).is_ok_and(|text| text.chars().count() <= PR_BODY_MAX_CHARS);
+    let fits = |f: &&String| crate::state::links::read_to_string(dir.join(f)).is_ok_and(|text| text.chars().count() <= PR_BODY_MAX_CHARS);
     dir.join(v.file.as_ref().filter(fits).unwrap_or(&v.summary))
 }
 
@@ -2744,7 +2746,7 @@ pub fn evidence_file(r: &ChangeRef, k: u32, name: &str) -> Result<(Evidence, Vec
     let change = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
     let v = change.version(k).ok_or_else(|| OttoError::not_found(format!("change {} has no version {k}", r.display())))?;
     let e = v.evidence.iter().find(|e| e.name == name).cloned().ok_or_else(|| OttoError::not_found(format!("v{k} of change {} has no evidence called {name}", r.display())))?;
-    let bytes = std::fs::read(dir.join(&e.path)).map_err(|err| OttoError::not_found(format!("{name}: {err}")))?;
+    let bytes = crate::state::links::read(dir.join(&e.path)).map_err(|err| OttoError::not_found(format!("{name}: {err}")))?;
     Ok((e, bytes))
 }
 
@@ -2758,9 +2760,9 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
         Some(k) => change.version(k).cloned().ok_or_else(|| OttoError::not_found(format!("change {} has no version {k}", r.display())))?,
         None => change.latest().clone(),
     };
-    let patch = v.patch.as_ref().and_then(|p| std::fs::read_to_string(dir.join(p)).ok());
-    let summary = std::fs::read_to_string(dir.join(&v.summary)).unwrap_or_default();
-    let text = v.file.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
+    let patch = v.patch.as_ref().and_then(|p| crate::state::links::read_to_string(dir.join(p)).ok());
+    let summary = crate::state::links::read_to_string(dir.join(&v.summary)).unwrap_or_default();
+    let text = v.file.as_ref().and_then(|f| crate::state::links::read_to_string(dir.join(f)).ok());
     let evidence = v
         .evidence
         .iter()
@@ -2770,7 +2772,7 @@ pub fn read(r: &ChangeRef, version: Option<u32>) -> Result<Detail, OttoError> {
             bytes: e.bytes,
             file: dir.join(&e.path).display().to_string(),
             text: (e.kind == EvidenceKind::Text && e.bytes as usize <= EVIDENCE_SHOW_MAX_BYTES)
-                .then(|| std::fs::read_to_string(dir.join(&e.path)).ok())
+                .then(|| crate::state::links::read_to_string(dir.join(&e.path)).ok())
                 .flatten(),
         })
         .collect();

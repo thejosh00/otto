@@ -34,7 +34,7 @@ pub struct Record<'a> {
 /// is a few hundred KB at most, and this happens once per pass.
 pub fn add(run_id: &str, record: &Record) -> Result<(), OttoError> {
     let path = crate::paths::run_dir(run_id)?.join(FILE);
-    let held = match std::fs::read(&path) {
+    let held = match crate::state::links::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         // Not "nothing there": replacing what can't be read would lose it.

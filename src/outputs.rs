@@ -157,7 +157,7 @@ impl Output {
 // ---------------------------------------------------------------------------
 
 pub fn read_index(run_dir: &Path) -> Result<Index, OttoError> {
-    match std::fs::read_to_string(run_dir.join(INDEX_FILE)) {
+    match crate::state::links::read_to_string(run_dir.join(INDEX_FILE)) {
         Ok(text) => serde_json::from_str(&text).map_err(|e| OttoError::conflict(format!("{INDEX_FILE} is not valid: {e}"))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Index::default()),
         Err(e) => Err(e.into()),
@@ -341,7 +341,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
         if let Some(i) = existing {
             let latest = index.outputs[i].latest().clone();
             let same_text = match (&text, &latest.file) {
-                (Some((t, _)), Some(file)) => std::fs::read_to_string(path.join(file)).is_ok_and(|old| old.trim_end() == t),
+                (Some((t, _)), Some(file)) => crate::state::links::read_to_string(path.join(file)).is_ok_and(|old| old.trim_end() == t),
                 (None, None) => true,
                 _ => false,
             };
@@ -351,7 +351,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
                 // nor does a summary — it is of the text, and the text is the same.
                 let summary_added = match &summary {
                     Some(s) => {
-                        let same = latest.summary.as_ref().is_some_and(|f| std::fs::read_to_string(path.join(f)).is_ok_and(|old| old.trim_end() == s));
+                        let same = latest.summary.as_ref().is_some_and(|f| crate::state::links::read_to_string(path.join(f)).is_ok_and(|old| old.trim_end() == s));
                         if !same {
                             write_summary(path, &key, latest.n, s)?;
                         }
@@ -691,8 +691,8 @@ pub fn read(run_id: &str, key: &str, n: Option<u32>) -> Result<VersionView, Otto
         Some(n) => output.version(n).cloned().ok_or_else(|| OttoError::not_found(format!("{key} has no version {n}")))?,
         None => output.latest().clone(),
     };
-    let text = version.file.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
-    let summary = version.summary.as_ref().and_then(|f| std::fs::read_to_string(dir.join(f)).ok());
+    let text = version.file.as_ref().and_then(|f| crate::state::links::read_to_string(dir.join(f)).ok());
+    let summary = version.summary.as_ref().and_then(|f| crate::state::links::read_to_string(dir.join(f)).ok());
     Ok(VersionView { output, version, text, summary })
 }
 

@@ -163,8 +163,19 @@ fn heading(line: &str) -> Option<(usize, &str)> {
 
 /// The run's todo, or `None` when it keeps none: no file, or a file with no items in it, which has
 /// no progress to show.
+///
+/// Only shown, so a link is followed — run 17 keeps its todo elsewhere in its own run directory — but
+/// only when it leads somewhere the run already has (`state::links::reach`): a wake can write the link,
+/// and the person reads what's at the other end.
 pub fn read(run_dir: &Path) -> Option<Todo> {
-    let todo = Todo::parse(&std::fs::read_to_string(run_dir.join(TODO_FILE)).ok()?);
+    let file = run_dir.join(TODO_FILE);
+    if crate::state::links::link_in_run_dir(&file).is_some() {
+        let state = crate::state::read_state(run_dir).ok()?;
+        if !crate::state::links::in_reach(run_dir, &state, &file) {
+            return None;
+        }
+    }
+    let todo = Todo::parse(&std::fs::read_to_string(file).ok()?);
     (todo.counts.total > 0).then_some(todo)
 }
 

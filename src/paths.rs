@@ -181,7 +181,7 @@ pub struct RunNaming {
 }
 
 pub fn run_naming(id: &str) -> RunNaming {
-    let json = std::fs::read_to_string(runs_dir().join(id).join("run.json"))
+    let json = crate::state::links::read_to_string(runs_dir().join(id).join("run.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
     let field = |key: &str| {

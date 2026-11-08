@@ -255,7 +255,7 @@ fn poke_lines(window: Window, ids: &[&str]) -> Found {
 /// is counted, not read.
 fn check_lines(dir: &Path, window: Window) -> Found {
     let mut found = Found::default();
-    let Ok(bytes) = std::fs::read(dir.join(crate::check_history::FILE)) else {
+    let Ok(bytes) = crate::state::links::read(dir.join(crate::check_history::FILE)) else {
         found.said.push("check results   not recorded: no history for this run".to_string());
         return found;
     };
@@ -390,7 +390,7 @@ fn account(id: &str, wanted: Option<u64>) -> Result<String, OttoError> {
     let dir = crate::paths::run_dir(id)?;
     let state: Option<RunState> = crate::state::read_run(id).ok();
     let label = state.as_ref().map(RunState::label).unwrap_or_else(|| id.to_string());
-    let journal = std::fs::read(dir.join("journal.jsonl")).ok();
+    let journal = crate::state::links::read(dir.join("journal.jsonl")).ok();
     let journal_text = journal.as_deref().map(String::from_utf8_lossy).unwrap_or_default();
     // In the file's order, so the window is positions, and what a garbled line sits in is known.
     let lines: Vec<Option<Line>> = journal_text.lines().map(|raw| parse_line(raw).filter(|line| line.at.is_some())).collect();

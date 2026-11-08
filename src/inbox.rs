@@ -110,7 +110,7 @@ pub fn inbox(all: bool) -> Result<Inbox, OttoError> {
 /// The questions a run has had answered (or let expire), newest first: (gate, answered at, title,
 /// answer, asked at) — read from the journal, which has every one verbatim.
 fn answered_questions(dir: &std::path::Path) -> Vec<(String, Timestamp, String, String, Timestamp)> {
-    let Ok(text) = std::fs::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
+    let Ok(text) = crate::state::links::read_to_string(dir.join("journal.jsonl")) else { return Vec::new() };
     let mut out = Vec::new();
     for line in text.lines().rev() {
         if !line.contains("\"gate-closed\"") && !line.contains("\"gate-expired\"") {
@@ -122,7 +122,7 @@ fn answered_questions(dir: &std::path::Path) -> Vec<(String, Timestamp, String, 
         let (gate, slug) = (s("gate"), s("slug"));
         let Some(asked) = ts("askedAt") else { continue };
         let answered = ts("answeredAt").unwrap_or(asked);
-        let question = std::fs::read_to_string(dir.join("gates").join(format!("{gate}-{slug}.md")))
+        let question = crate::state::links::read_to_string(dir.join("gates").join(format!("{gate}-{slug}.md")))
             .ok()
             .map(|t| t.split("## Question").nth(1).unwrap_or("").split("## Answer").next().unwrap_or("").to_string())
             .unwrap_or_default();
