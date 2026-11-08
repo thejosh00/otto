@@ -213,6 +213,8 @@ a newline into a question or a log.
 | **otto's** | `config.json`, `feedback-driver`, `sandbox/` (but for the run's own `sandbox/caches/<id>` and `sandbox/claude/<id>`), all closed to writes whatever a record says |
 | **Shared caches** | Read-only: the shared tool caches (see above). `~/.cache/oh-my-zsh`, which your shell sources, and `/private/tmp/tmux-<uid>`, the real tmux server's directory, are closed to writes whatever a record says |
 | **Credentials** | The Keychain and a list of files, listed in `src/sandbox.rs`; `gh` doesn't work, even for public reads. An app's own secrets (`.config/cloudgpu`, `.config/wrangler`, `.omnifactum/token`) are closed unless the record lists them |
+| **Your terminals** | Writes to every terminal device but the wake's own: the wrapper learns that one outside the sandbox (its stdin's, stdout's or stderr's name, under tmux the pane's pty) and writes it into the profile by name. With no terminal, none is open. `/dev/tty` stays open. New ptys still work: opening `/dev/ptmx` gives the process an extension for the one pty it got back, and only that one (claude's Bash tool, `script`, test suites) |
+| **Your clipboard** | Both ways: `com.apple.pasteboard.1`, the service behind `pbpaste`, `pbcopy` and every named pasteboard |
 | **Acting from outside** | `launchctl`, `open`, `osascript`, `security`, the services behind them, the real tmux server, the ssh agent, docker's socket, and **otto's own web page**, which approves changes for anyone who asks |
 
 `tests/sandbox.rs` tries each of these against the real `sandbox-exec`, on a scratch home. `test/sandbox/real-wake.sh`

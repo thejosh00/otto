@@ -49,6 +49,7 @@ echo "== the wake's journal"; sed -E 's/"(message|note)":"[^"]{200,}"/"\1":"…"
 echo "== the worktree and branch"; git -C "$REPO" log --oneline -1 sandbox-try; git -C "$REPO" show --stat --format=%s sandbox-try | tail -2
 echo "== the change"; "$OTTO" changes --all 2>&1 | head -4 | cut -c1-120
 echo "== handoff written?"; ls -la "$OTTO_HOME/runs/$ID/handoff.md" | cut -c30-
+echo "== the profile's terminal devices: /dev/tty, new ptys, and the wake's own terminal by name if it has one"; grep -h 'dev/tty\|ptmx' "$OTTO_HOME"/sandbox/profiles/"$ID".*.sb | sort -u
 echo "== the probes"; cp "$REPO/.probes.txt" "$OUT/probes.txt"; cat "$OUT/probes.txt"
 echo "== a chat, under the same profile"
 "$OTTO" chat "$ID" "Reply with the single word pong, and run nothing." </dev/null 2>&1 | tail -6 | cut -c1-200
@@ -74,5 +75,11 @@ ok "it found a skill of the person's, through the link ($KNOWN named of those in
 ok "its transcripts landed in its own folder" "$([ "$SESSIONS" -gt 0 ] && echo yes || echo no)"
 ok "no credentials file in its own folder" "$([ -e "$C/.credentials.json" ] && echo no || echo yes)"
 ok "every write probe of ~/.claude and the links was refused" "$(sed -n '/^== writing/,/^== reading/p' "$OUT/probes.txt" | grep -q 'OPEN$' && echo no || echo yes)"
+# A wake has no terminal (stdin /dev/null, output on pipes), so its profile names none; a chat in a pane has one, and it's named.
+NAMED=$(grep -ho '(literal "/dev/ttys[0-9]*")' "$OTTO_HOME"/sandbox/profiles/"$ID".*.sb | sort -u | wc -l | tr -d ' ')
+FOUND=$(sed -n 's/^its own terminal, found *//p' "$OUT/probes.txt")
+ok "its profile names at most one terminal ($NAMED), and its own, if found ($FOUND), opened" "$( { [ "$NAMED" -le 1 ] && { [ "$FOUND" = none ] || grep -q '^its own terminal, /dev/ttys[0-9]* *(append, no bytes) *exit 0$' "$OUT/probes.txt"; }; } && echo yes || echo no)"
+ok "it could still make new ptys" "$([ "$(grep -c '^a new pty.*exit 0$' "$OUT/probes.txt")" = 2 ] && echo yes || echo no)"
+ok "the clipboard read nothing" "$(grep '^pbpaste' "$OUT/probes.txt" | grep -qv ' 0 bytes$' && echo no || echo yes)"
 ok "the wrapper refused nothing" "$([ "$(grep -c sandbox-refused "$J")" = 0 ] && echo yes || echo no)"
 exit $FAILED

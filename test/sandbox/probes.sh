@@ -26,6 +26,14 @@ e() { # <what> <command...>: its exit code, its output dropped
 	"$@" >/dev/null 2>&1 </dev/null
 	printf '%-44s exit %s\n' "$what" "$?"
 }
+# The wake's own terminal, the first one up its line of parents (claude's Bash tool itself has none), and one
+# that isn't, the person's: opened for an empty append only, so nothing ever appears on anyone's screen.
+OWN_TTY=; p=$$
+while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+	t=$(ps -o tty= -p "$p" 2>/dev/null | tr -d ' '); case $t in ttys[0-9]*) OWN_TTY=/dev/$t; break;; esac
+	p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+done
+OTHER_TTY=; for t in /dev/ttys[0-9][0-9][0-9]; do [ -e "$t" ] && [ "$t" != "$OWN_TTY" ] && { OTHER_TTY=$t; break; }; done
 echo "== credentials: every one of these should be 0"
 n 'gh auth token' gh auth token
 n 'git credential fill' sh -c "printf 'protocol=https\nhost=github.com\n\n' | git credential fill"
@@ -33,6 +41,8 @@ n 'security: gh' /usr/bin/security find-generic-password -s gh:github.com -w
 n 'security: claude' /usr/bin/security find-generic-password -s 'Claude Code-credentials' -w
 n 'the login Keychain file' cat "$HOME/Library/Keychains/login.keychain-db"
 n 'ssh-add -l' ssh-add -l
+n 'pbpaste, the clipboard' pbpaste
+n 'pbpaste -pboard find' pbpaste -pboard find
 for f in .ssh/id_ed25519 .ssh/mini.pem .config/gh/hosts.yml .git-credentials .config/cloudgpu/secrets.env .config/cloudgpu/capacity.secrets.env .config/wrangler/config.json .docker/config.json .omnifactum/token .ollama/id_ed25519 .conda/aau_token .zsh_history .bash_history; do
 	n "~/$f" cat "$HOME/$f"
 done
@@ -63,6 +73,9 @@ w "the real otto's run" "$HOME/.otto/runs/12/run.json"
 w "a hook in its repo" "$REPO/.git/hooks/pre-commit"
 w "its repo's .git/config" "$REPO/.git/config"
 w "another project" "$HOME/workspace/otto/README.md"
+w "another terminal, ${OTHER_TTY:-none found}" "${OTHER_TTY:-/dev/ttys000}"
+# Empty input, and to the find pasteboard, not the one the person pastes from: if it wrongly works, that's all it changes.
+x "pbcopy -pboard find, empty" pbcopy -pboard find
 # The person's own Claude folder: what their claude sources (snapshots, session-env) and reads as it starts (memory).
 OTHER_ENV=$(ls "$HOME/.claude/session-env" 2>/dev/null | head -1)
 c "another session's session-env" "$HOME/.claude/session-env/$OTHER_ENV"
@@ -101,6 +114,10 @@ e 'reading its own run.json' cat "$O/runs/$OTTO_RUN_ID/run.json"
 e 'reading its repo' git -C "$REPO" status
 e 'a repo lock' otto state lock "$OTTO_RUN_ID" --repo "$REPO"
 e 'unlocking it' otto state unlock "$OTTO_RUN_ID"
+printf '%-44s %s\n' 'its own terminal, found' "${OWN_TTY:-none}"
+[ -n "$OWN_TTY" ] && e "its own terminal, $OWN_TTY (append, no bytes)" sh -c ": >>'$OWN_TTY'"
+e 'a new pty (script)' script -q /dev/null /usr/bin/true
+e 'a new pty (python pty.openpty)' python3 -c 'import pty; pty.openpty()'
 e 'filing feedback' sh -c ": >>'$O/feedback.jsonl'"
 printf '%-44s %s\n' 'CLAUDE_CONFIG_DIR is its own folder' "$([ "$CLAUDE_CONFIG_DIR" = "$C" ] && echo yes || echo no)"
 e "its own Claude folder" sh -c ": >'$C/otto-sandbox-probe' && rm '$C/otto-sandbox-probe'"

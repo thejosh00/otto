@@ -163,6 +163,9 @@ const OUTSIDE_SERVICES: &[&str] = &[
     "com.apple.coreservices.appleevents",
     "com.apple.coreservices.launchservicesd",
     "com.apple.coreservices.quarantine-resolver",
+    // The person's clipboard, both ways: `pbpaste` hands out whatever they last copied, and `pbcopy` swaps in
+    // what they paste next. Every pasteboard, the general one and `-pboard find` alike, is behind this one.
+    "com.apple.pasteboard.1",
 ];
 
 /// Enforcing, or (1.7's observing) allowing the same things and logging each.
@@ -207,6 +210,8 @@ pub struct Machine {
     /// Ports on this machine that act as the person: otto's own web page approves changes for anyone
     /// who asks over HTTP.
     pub web_ports: Vec<u16>,
+    /// The wake's own terminal (`own_terminal`): the one terminal device it may open by name. None with no terminal.
+    pub terminal: Option<PathBuf>,
 }
 
 impl Machine {
@@ -225,8 +230,28 @@ impl Machine {
             projects,
             temp,
             web_ports: crate::launchd::web_ports(),
+            terminal: own_terminal(),
         }
     }
+}
+
+/// The terminal the wrapper was started on, learned from outside: its stdin's, stdout's or stderr's. Under tmux
+/// that's the pane's pty. Only a pty slave's name (`/dev/ttysN`) is taken, so nothing else can be passed off as one.
+fn own_terminal() -> Option<PathBuf> {
+    (0..3).find_map(|fd| {
+        let mut buf = [0 as libc::c_char; 128];
+        // SAFETY: `buf` is as long as said, and `ttyname_r` writes a NUL-terminated name within it or fails.
+        if unsafe { libc::ttyname_r(fd, buf.as_mut_ptr(), buf.len()) } != 0 {
+            return None;
+        }
+        // SAFETY: on success the buffer holds a NUL-terminated string.
+        let name = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) }.to_str().ok()?.to_string();
+        is_pty_slave(&name).then(|| PathBuf::from(name))
+    })
+}
+
+fn is_pty_slave(name: &str) -> bool {
+    name.strip_prefix("/dev/ttys").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// `/private/tmp`, `$TMPDIR`, and beside it the `C` that compilers and git use on a mac (`/var/folders/…/T`
@@ -406,8 +431,15 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
         "(literal \"/dev/urandom\")".to_string(),
         "(literal \"/dev/tty\")".to_string(),
         "(literal \"/dev/dtracehelper\")".to_string(),
-        "(regex #\"^/dev/(fd/|ttys[0-9]+$|ptmx$|pty)\")".to_string(),
+        "(regex #\"^/dev/fd/\")".to_string(),
+        // New ptys (claude's Bash tool, `script`, test suites): opening `/dev/ptmx` gives this process a sandbox
+        // extension for the one `/dev/ttysN` it got back, and only that one opens by this rule.
+        "(literal \"/dev/ptmx\")".to_string(),
+        "(require-all (regex #\"^/dev/ttys[0-9]+$\") (extension \"com.apple.sandbox.pty\"))".to_string(),
     ];
+    // The person's other terminals stay closed: a write to one puts text or escape sequences on a screen
+    // they're typing in. The wake's own is open, by name, and only if it has one.
+    open.extend(machine.terminal.iter().filter(|t| is_pty_slave(&t.to_string_lossy())).map(|t| literal(t)));
     let mut temp: Vec<PathBuf> = machine.temp.iter().map(|t| real(t.clone())).collect();
     temp.sort();
     temp.dedup();
@@ -1119,7 +1151,51 @@ mod tests {
     }
 
     fn machine() -> Machine {
-        Machine { home: "/u".into(), otto_home: "/u/.otto".into(), projects: vec!["/w/space".into()], temp: vec!["/private/tmp".into()], web_ports: vec![7878] }
+        Machine { home: "/u".into(), otto_home: "/u/.otto".into(), projects: vec!["/w/space".into()], temp: vec!["/private/tmp".into()], web_ports: vec![7878], terminal: None }
+    }
+
+    /// The `file-write*` rules that open something: every `(allow file-write*` block's lines.
+    fn write_openings(text: &str) -> String {
+        text.split("\n(").filter(|b| b.starts_with("allow file-write*")).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn only_the_wakes_own_terminal_is_open() {
+        let mine = Machine { terminal: Some("/dev/ttys007".into()), ..machine() };
+        let text = profile("r1", &record(), &mine).unwrap();
+        let open = write_openings(&text);
+        assert!(open.contains(r#"(literal "/dev/ttys007")"#), "{text}");
+        // No rule that would open another terminal by its name: only one handed out by /dev/ptmx to this process.
+        for line in open.lines().filter(|l| l.contains("ttys")) {
+            assert!(line.contains(r#"(literal "/dev/ttys007")"#) || line.contains(r#"(extension "com.apple.sandbox.pty")"#), "{line}");
+        }
+        assert!(!open.contains("|pty)"), "{text}");
+        assert!(open.contains(r#"(literal "/dev/tty")"#), "{text}");
+    }
+
+    #[test]
+    fn with_no_terminal_none_is_open() {
+        let open = write_openings(&generated(&record()));
+        for line in open.lines().filter(|l| l.contains("ttys")) {
+            assert!(line.contains(r#"(require-all (regex #"^/dev/ttys[0-9]+$") (extension "com.apple.sandbox.pty"))"#), "{line}");
+        }
+    }
+
+    #[test]
+    fn only_a_pty_slave_is_taken_for_the_terminal() {
+        assert!(is_pty_slave("/dev/ttys000") && is_pty_slave("/dev/ttys12"));
+        for bad in ["/dev/ttys", "/dev/console", "/dev/tty", "/dev/ttys0\")(allow default", "/dev/ttysa", "/u/x"] {
+            assert!(!is_pty_slave(bad), "{bad}");
+            let text = profile("r1", &record(), &Machine { terminal: Some(bad.into()), ..machine() }).unwrap();
+            assert!(!text.contains(&format!("(literal {})", quoted(Path::new(bad)))) || bad == "/dev/tty", "{bad}: {text}");
+        }
+    }
+
+    #[test]
+    fn the_clipboard_is_closed_both_ways() {
+        let text = generated(&record());
+        let services = text.split("\n(").find(|b| b.starts_with("deny mach-lookup")).unwrap_or_default();
+        assert!(services.contains(r#"(global-name "com.apple.pasteboard.1")"#), "{text}");
     }
 
     /// The session the wrapper was told about, as otto passes it.
