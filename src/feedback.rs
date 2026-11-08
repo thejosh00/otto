@@ -294,7 +294,9 @@ fn change_wants_its_author(report: &Report) -> bool {
 }
 
 /// Its change is out. Refused while another is, which is how `next`'s one-at-a-time holds for a run
-/// that didn't ask it first.
+/// that didn't ask it first. Said again of a report being built, or one whose change landed, it
+/// points the report at this change: one built as several changes in turn follows the latest, so
+/// a first part landing doesn't read as the whole of it wanting verifying.
 pub fn building(id: u32, change: &str) -> Result<Report, OttoError> {
     // The run's whole id, not its short form: what's unambiguous today may not stay so.
     let change = crate::changes::ChangeRef::parse(change)?;
@@ -304,7 +306,9 @@ pub fn building(id: u32, change: &str) -> Result<Report, OttoError> {
             return Err(OttoError::conflict(format!("report {} is being built already — one at a time", other.id)));
         }
         let i = index_of(reports, id)?;
-        require(&reports[i], Status::Open)?;
+        if !matches!(reports[i].status, Status::Building | Status::Landed) {
+            require(&reports[i], Status::Open)?;
+        }
         reports[i].status = Status::Building;
         reports[i].change = Some(change);
         Ok(reports[i].clone())
@@ -893,6 +897,33 @@ mod tests {
         assert_eq!(done.status, Status::Verified);
         assert!(done.handled_at.is_some());
         assert_eq!(due(), None);
+    }
+
+    /// One report built as several changes in turn: once the first lands, the wake points the
+    /// report at the next, and `due` stops calling a landed first part a report to verify.
+    #[test]
+    fn a_report_built_in_several_changes_follows_the_latest() {
+        use crate::changes::tests::{sh, submit_fix};
+        use crate::changes::Submit;
+        let _h = TempHome::new();
+        let repo = report_whose_change_landed("f-parts");
+        assert!(due().unwrap().contains("landed and wants verifying"));
+
+        let wt2 = repo.main.parent().unwrap().join("wt2");
+        sh(&repo.main, &["worktree", "add", "--quiet", "-b", "fix2", wt2.to_str().unwrap()]);
+        std::fs::write(wt2.join("b.txt"), "ALPHA\n").unwrap();
+        sh(&wt2, &["commit", "--quiet", "-am", "shout alpha"]);
+        crate::changes::submit("f-parts", &Submit { branch: "fix2", ..submit_fix(&repo, "second part") }).unwrap();
+
+        let moved = building(1, "f-parts/2").unwrap();
+        assert_eq!((moved.status, moved.change.as_deref()), (Status::Building, Some("f-parts/2")));
+        assert_eq!(due(), None, "the second part is with the person");
+        assert!(verified(1).is_err(), "not over until the last part lands");
+
+        add("another").unwrap();
+        assert!(building(2, "f-parts/2").is_err(), "still one report at a time");
+        close(2, "only here to be refused", None).unwrap();
+        assert!(building(2, "f-parts/2").is_err(), "an item that's over isn't building again");
     }
 
     /// The step still works for a wake that takes it.

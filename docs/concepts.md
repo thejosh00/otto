@@ -587,7 +587,9 @@ otto feedback split 12 --part "…" --part "…"   # too big for one change
 
 `next` is the oldest item, after anything reopened, and nothing at all while an item is being built,
 so a run can't get ahead of your review. A split item's parts take its place in the queue, in order,
-and it's over when they are.
+and it's over when they are. An item built as several changes one after another follows
+the latest: `building` again with the next change points it there, so its first part landing isn't
+taken for the whole of it wanting verifying.
 
 Each report is stamped by otto with the run, the wake, what the run wraps and which harness it was
 given (one from before the current harness says so). They're about otto, not the run's work, so they
