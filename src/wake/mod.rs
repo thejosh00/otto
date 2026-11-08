@@ -353,9 +353,9 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
     let output = exec.exec_in(&argv_refs, workdir.as_deref(), Duration::from_secs(deadline_minutes * 60));
     // The child has exited, so its transcript is finished being written.
     let result = WakeResult {
-        usage: transcript::usage_for(&session),
+        usage: transcript::usage_for(&args.id, &session),
         // A limit ends claude with a non-zero exit, so a clean one never needs the second read.
-        limit: if output.code != 0 { transcript::limit_for(&session) } else { None },
+        limit: if output.code != 0 { transcript::limit_for(&args.id, &session) } else { None },
     };
 
     finish_wake(&id, &run_path, started_at, &output, &result)

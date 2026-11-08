@@ -2711,7 +2711,7 @@ pub const QUIET_AFTER_MINUTES: u64 = 5;
 /// `~/.claude` must not make every wake look silent.
 pub fn quiet_minutes(state: &RunState) -> Option<u64> {
     let session = state.wake.as_ref().filter(|w| w.outcome.is_none())?.session.as_deref()?;
-    let path = crate::wake::transcript::find_transcript(session)?;
+    let path = crate::wake::transcript::find_transcript(&state.id, session)?;
     let silent = std::fs::metadata(path).ok()?.modified().ok()?.elapsed().ok()?;
     let minutes = silent.as_secs() / 60;
     (minutes >= QUIET_AFTER_MINUTES).then_some(minutes)
@@ -2724,7 +2724,7 @@ pub fn live_activity(id: &str) -> Option<Vec<crate::wake::transcript::Activity>>
         return None;
     }
     let session = read_run(id).ok()?.wake?.session?;
-    let path = crate::wake::transcript::find_transcript(&session)?;
+    let path = crate::wake::transcript::find_transcript(id, &session)?;
     crate::wake::transcript::activity(&path).ok()
 }
 

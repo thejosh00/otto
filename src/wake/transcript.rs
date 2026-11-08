@@ -84,18 +84,47 @@ fn uuid_from(seed: &str) -> String {
     format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
 }
 
-/// Find the transcript for a session id.
+/// Find the transcript for one of a run's sessions.
 ///
 /// Searched rather than derived. The file sits under a directory named for the wake's working
 /// directory with the separators mangled (`/Users/me/w/otto` becomes `-Users-me-w-otto`), and the
 /// exact escaping of anything less ordinary is claude's business, not otto's. One readdir over a
 /// couple of dozen project directories costs nothing and cannot be wrong about the rule.
-pub fn find_transcript(session_id: &str) -> Option<PathBuf> {
+///
+/// The run's own Claude folder (`paths::run_claude_dir`) first, where a sandboxed wake's claude
+/// writes, then the person's `~/.claude/projects`, where everything else's does. Only this run's
+/// folder: another run's wakes can write theirs, and must not be able to answer for this one.
+/// A wake can write its own folder too, so nothing there is read through a link: what is found
+/// is a real file in a real directory, or it isn't found.
+pub fn find_transcript(run_id: &str, session_id: &str) -> Option<PathBuf> {
     let file = format!("{session_id}.jsonl");
-    let projects = std::fs::read_dir(crate::paths::claude_projects_dir()).ok()?;
-    for entry in projects.flatten() {
-        let candidate = entry.path().join(&file);
-        if candidate.is_file() {
+    let id = crate::paths::resolve_run_id(run_id).unwrap_or_else(|_| run_id.to_string());
+    let own = crate::paths::run_claude_dir(&id);
+    if is_real_dir(&own) && is_real_dir(&own.join("projects")) {
+        if let Some(found) = search(&own.join("projects"), &file, true) {
+            return Some(found);
+        }
+    }
+    search(&crate::paths::claude_projects_dir(), &file, false)
+}
+
+/// `path` is a directory, and not a link to one.
+fn is_real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// `projects/<any>/<file>`. `no_links` refuses a link at either level, for a folder a wake can write.
+fn search(projects: &Path, file: &str, no_links: bool) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(projects).ok()?.flatten() {
+        let candidate = entry.path().join(file);
+        if no_links {
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if std::fs::symlink_metadata(&candidate).is_ok_and(|m| m.is_file()) {
+                return Some(candidate);
+            }
+        } else if candidate.is_file() {
             return Some(candidate);
         }
     }
@@ -271,8 +300,8 @@ pub fn activity(path: &Path) -> std::io::Result<Vec<Activity>> {
 
 /// Usage for a session, or `None` when there is no readable transcript. The caller journals the
 /// absence and carries on — see the module doc on why this is never fatal.
-pub fn usage_for(session_id: &str) -> Option<Usage> {
-    let path = find_transcript(session_id)?;
+pub fn usage_for(run_id: &str, session_id: &str) -> Option<Usage> {
+    let path = find_transcript(run_id, session_id)?;
     read_usage(&path).ok()
 }
 
@@ -323,8 +352,8 @@ pub fn read_limit(path: &Path) -> Option<UsageLimit> {
 }
 
 /// The usage limit a session ended on, or `None` — including when there is no transcript to read.
-pub fn limit_for(session_id: &str) -> Option<UsageLimit> {
-    read_limit(&find_transcript(session_id)?)
+pub fn limit_for(run_id: &str, session_id: &str) -> Option<UsageLimit> {
+    read_limit(&find_transcript(run_id, session_id)?)
 }
 
 #[cfg(test)]
@@ -371,11 +400,11 @@ mod tests {
         let _home = crate::paths::test_support::TempHome::new();
         let id = "33333333-3333-4333-8333-333333333333";
         write_transcript(id, "-Users-me-w", &[&assistant(10, 5, 0, 0), &limit_entry(1_792_107_600)]);
-        let limit = limit_for(id).expect("the limit is in the transcript");
+        let limit = limit_for("r1", id).expect("the limit is in the transcript");
         assert_eq!(limit.resets_at.unwrap().to_string(), "2026-10-15T23:40:00Z");
         assert_eq!(limit.kind.as_deref(), Some("five_hour"));
         // The entry is still an assistant turn, and still counted as one.
-        assert_eq!(usage_for(id).unwrap().turns, 2);
+        assert_eq!(usage_for("r1", id).unwrap().turns, 2);
     }
 
     #[test]
@@ -387,8 +416,8 @@ mod tests {
         })
         .to_string();
         write_transcript(id, "-Users-me-w", &[&assistant(10, 5, 0, 0), &rate_limited]);
-        assert_eq!(limit_for(id), None, "a plain rate limit is the backoff's to handle");
-        assert_eq!(limit_for("55555555-5555-4555-8555-555555555555"), None, "no transcript, no limit");
+        assert_eq!(limit_for("r1", id), None, "a plain rate limit is the backoff's to handle");
+        assert_eq!(limit_for("r1", "55555555-5555-4555-8555-555555555555"), None, "no transcript, no limit");
     }
 
     #[test]
@@ -435,7 +464,7 @@ mod tests {
             "-Users-me-w-otto",
             &[&assistant(100, 10, 900, 80), &assistant(200, 20, 1000, 0)],
         );
-        let usage = usage_for(id).expect("transcript is there");
+        let usage = usage_for("r1", id).expect("transcript is there");
         assert_eq!(usage.turns, 2);
         assert_eq!(usage.input_tokens, 300);
         assert_eq!(usage.output_tokens, 30);
@@ -460,7 +489,7 @@ mod tests {
         })
         .to_string();
         write_transcript(id, "-w", &[&assistant(1, 1, 0, 0), &failed, &fine]);
-        let usage = usage_for(id).expect("transcript is there");
+        let usage = usage_for("r1", id).expect("transcript is there");
         assert_eq!(usage.tool_errors, 1);
         assert_eq!(usage.turns, 1);
     }
@@ -480,7 +509,7 @@ mod tests {
                 &assistant(5, 5, 0, 0),
             ],
         );
-        let usage = usage_for(id).expect("transcript is there");
+        let usage = usage_for("r1", id).expect("transcript is there");
         assert_eq!(usage.turns, 1);
         assert_eq!(usage.input_tokens, 5);
     }
@@ -491,7 +520,7 @@ mod tests {
         let _home = crate::paths::test_support::TempHome::new();
         let id = "44444444-4444-4444-8444-444444444444";
         write_transcript(id, "-w", &[&assistant(7, 3, 0, 0), r#"{"type":"assist"#]);
-        let usage = usage_for(id).expect("still readable");
+        let usage = usage_for("r1", id).expect("still readable");
         assert_eq!(usage.turns, 1);
         assert_eq!(usage.input_tokens, 7);
     }
@@ -529,7 +558,7 @@ mod tests {
     #[test]
     fn a_missing_transcript_is_none_rather_than_an_error() {
         let _home = crate::paths::test_support::TempHome::new();
-        assert!(usage_for("55555555-5555-4555-8555-555555555555").is_none());
+        assert!(usage_for("r1", "55555555-5555-4555-8555-555555555555").is_none());
     }
 
     #[test]
@@ -538,6 +567,63 @@ mod tests {
         let id = "66666666-6666-4666-8666-666666666666";
         write_transcript("unrelated-session", "-Users-me-w-other", &[&assistant(1, 1, 0, 0)]);
         let expected = write_transcript(id, "-Users-me-w-deeply-nested-thing", &[&assistant(1, 1, 0, 0)]);
-        assert_eq!(find_transcript(id), Some(expected));
+        assert_eq!(find_transcript("r1", id), Some(expected));
+    }
+
+    /// Writes a transcript where a sandboxed wake's claude would: under the run's own Claude folder.
+    fn write_run_transcript(run: &str, session_id: &str, lines: &[&str]) -> PathBuf {
+        let dir = crate::paths::run_claude_dir(run).join("projects").join("-Users-me-w-otto");
+        std::fs::create_dir_all(&dir).expect("project dir");
+        let path = dir.join(format!("{session_id}.jsonl"));
+        std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("write transcript");
+        path
+    }
+
+    /// Plan "each sandboxed run gets its own Claude folder", part 1: a sandboxed wake's transcript
+    /// sits in its run's folder, and it is found and counted there, limit and all.
+    #[test]
+    fn a_transcript_in_the_runs_own_claude_folder_is_found_and_counted() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let id = "77777777-7777-4777-8777-777777777777";
+        let expected = write_run_transcript("r1", id, &[&assistant(10, 20, 30, 40), &limit_entry(1_790_000_000)]);
+        assert_eq!(find_transcript("r1", id), Some(expected));
+        let usage = usage_for("r1", id).expect("counted from the run's folder");
+        assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read, usage.cache_creation), (10, 20, 30, 40));
+        assert!(limit_for("r1", id).is_some(), "the limit it hit is seen too");
+    }
+
+    /// The run's own folder wins over `~/.claude/projects`, and no other run's folder answers.
+    #[test]
+    fn only_the_runs_own_folder_is_searched_and_it_comes_first() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let id = "88888888-8888-4888-8888-888888888888";
+        write_transcript(id, "-Users-me-w-otto", &[&assistant(1, 1, 0, 0)]);
+        let own = write_run_transcript("r1", id, &[&assistant(2, 2, 0, 0)]);
+        assert_eq!(find_transcript("r1", id), Some(own), "its own folder first");
+        let other = "99999999-9999-4999-8999-999999999999";
+        write_run_transcript("r2", other, &[&assistant(5, 5, 0, 0)]);
+        assert_eq!(find_transcript("r1", other), None, "another run's folder can't answer for this one");
+    }
+
+    /// A wake can write its run's folder, so a link there is never read through: not the project
+    /// directory, not the transcript, not `projects` itself.
+    #[test]
+    fn nothing_in_the_runs_folder_is_read_through_a_link() {
+        let _home = crate::paths::test_support::TempHome::new();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let target = elsewhere.path().join("p");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join(format!("{id}.jsonl")), format!("{}\n", assistant(9, 9, 0, 0))).unwrap();
+
+        let projects = crate::paths::run_claude_dir("r1").join("projects");
+        std::fs::create_dir_all(projects.join("-file-link")).unwrap();
+        std::os::unix::fs::symlink(target.join(format!("{id}.jsonl")), projects.join("-file-link").join(format!("{id}.jsonl"))).unwrap();
+        std::os::unix::fs::symlink(&target, projects.join("-dir-link")).unwrap();
+        assert_eq!(find_transcript("r1", id), None, "a linked transcript or project directory isn't followed");
+
+        std::fs::remove_dir_all(&projects).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), &projects).unwrap();
+        assert_eq!(find_transcript("r1", id), None, "nor a linked projects directory");
     }
 }

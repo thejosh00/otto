@@ -123,7 +123,7 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
     }
     let ran = run_chat(&argv, crate::config::workdir_for(&state).as_deref(), attended);
     // The session is over whichever way it ended, so its end is journaled before any error is.
-    let used = transcript::usage_for(&session);
+    let used = transcript::usage_for(&id, &session);
     let notes = notes_left_since(&dir, started);
     crate::state::log_event(
         &id,
@@ -265,7 +265,7 @@ fn wake_transcripts(dir: &Path, state: &RunState) -> Transcripts {
             found.more = sessions.len() - i;
             break;
         }
-        if let Some(path) = transcript::find_transcript(session) {
+        if let Some(path) = transcript::find_transcript(&state.id, session) {
             found.listed.push(WakeTranscript { wake: *wake, started: started.clone(), path });
         }
     }

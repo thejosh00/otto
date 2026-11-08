@@ -56,6 +56,13 @@ pub fn claude_projects_dir() -> PathBuf {
     home_dir().join(".claude").join("projects")
 }
 
+/// A sandboxed run's own Claude config folder, `$OTTO_HOME/sandbox/claude/<id>`: where its wakes'
+/// claude keeps transcripts, shell snapshots and the rest once it starts with `CLAUDE_CONFIG_DIR`
+/// set there, so nothing a wake writes lands in the person's `~/.claude`. `id` is a resolved run id.
+pub fn run_claude_dir(id: &str) -> PathBuf {
+    otto_home().join("sandbox/claude").join(id)
+}
+
 /// A specific run's directory. Errors (exit code 3) if it does not exist — mirrors
 /// `bin/otto-state`'s `run_dir()`. Resolves `run_id` first (see `resolve_run_id`), so every
 /// caller of this — `transaction`, `read_run`, `WakeLock::acquire`, `LockLiveness::probe` — takes

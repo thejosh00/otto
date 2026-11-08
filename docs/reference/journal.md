@@ -32,7 +32,7 @@ the budget events, the wake failures, and `usage-limited`.
 
 | Event | Fields | When |
 |---|---|---|
-| `wake-started` | `wake`, `deadlineAt`, `launcher`, `session`, `cause` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under `~/.claude/projects/`); absent on wakes from before it was recorded. `cause` is [what started it](#why-a-wake-started); absent on wakes from before it was recorded, which `otto logs` shows as `not recorded` |
+| `wake-started` | `wake`, `deadlineAt`, `launcher`, `session`, `cause` | A wake began. `session` is the claude session it runs as, which names its transcript (`<session>.jsonl` under the run's own Claude folder, `$OTTO_HOME/sandbox/claude/<id>/projects/`, or else `~/.claude/projects/`); absent on wakes from before it was recorded. `cause` is [what started it](#why-a-wake-started); absent on wakes from before it was recorded, which `otto logs` shows as `not recorded` |
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `sandbox-refused` | `why` | [The sandbox wrapper](../guides/sandboxing.md#otto-s-own-sandbox) wouldn't start anything, or `otto wake` or `otto chat` wouldn't because the run [disagrees with its record](../guides/sandboxing.md#a-run-that-disagrees-with-its-record), and why |

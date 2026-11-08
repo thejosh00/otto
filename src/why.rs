@@ -376,11 +376,11 @@ fn no_ending(dir: &Path, id: &str, wake: u64, is_latest: bool, deadline: Option<
     }
 }
 
-fn transcript_line(session: Option<&str>) -> String {
+fn transcript_line(id: &str, session: Option<&str>) -> String {
     let Some(session) = session else {
         return "session not recorded".to_string();
     };
-    match crate::wake::transcript::find_transcript(session) {
+    match crate::wake::transcript::find_transcript(id, session) {
         Some(path) => path.display().to_string(),
         None => format!("session {session}: no longer on disk"),
     }
@@ -449,7 +449,7 @@ fn account(id: &str, wanted: Option<u64>) -> Result<String, OttoError> {
         out.push_str(&fit(&format!("{:<15} {line}", if i == 0 { "ended" } else { "then" })));
         out.push('\n');
     }
-    out.push_str(&format!("transcript      {}\n", transcript_line(session.as_deref())));
+    out.push_str(&format!("transcript      {}\n", transcript_line(id, session.as_deref())));
     let output = dir.join(format!("wake-{n}-output.txt"));
     if output.is_file() {
         out.push_str(&format!("output          {}\n", output.display()));
