@@ -173,7 +173,8 @@ fn what_a_wake_needs_still_works() {
     let s = Scratch::new(one_repo);
     s.allowed("writing in the granted repo", "echo x > \"$H/workspace/repo/new\" && cat \"$H/workspace/repo/tracked\"");
     s.allowed("a temporary file", "echo x > \"$TMPDIR/f\"");
-    s.allowed("the transcript directory", "echo x > \"$H/.claude/projects/t\"");
+    let own = format!("mkdir -p \"$O/sandbox/claude/{}/projects/p\" && echo x > \"$O/sandbox/claude/{}/projects/p/t.jsonl\"", s.id, s.id);
+    s.allowed("a transcript, in its own Claude folder", &own);
     s.allowed("reading its own record", "cat \"$O/sandbox/runs/\"*.json");
     s.allowed("reading config", "cat \"$O/config.json\"");
     s.allowed("a repo lock's directory", "mkdir -p \"$O/runs/.locks\" && echo x > \"$O/runs/.locks/l\"");
@@ -395,32 +396,98 @@ fn shared_caches_and_the_tmux_directory_can_not_be_written() {
     assert!(!out.status.success() && !made, "a file in the real tmux server's directory");
 }
 
-/// Plan table, "Claude's per-session files". Another claude session, the person's own included, sources the files
-/// in its `session-env/<id>`: a wake writes in its own session's directory, and nothing else there.
+/// Plan table, "Claude's per-session files". Every claude session, the person's own included, sources its shell
+/// snapshot before each Bash command and the files in its `session-env/<id>`, and reads its memory as it starts:
+/// so nothing in `~/.claude` is written from inside. A wake's claude keeps its files in the run's own folder,
+/// where the links to the person's settings and skills can't be replaced, added to, or written through.
 #[test]
-fn another_claude_sessions_files_can_not_be_written() {
+fn the_persons_claude_folder_can_not_be_written() {
     if !can_nest() {
         return;
     }
     let s = Scratch::new(one_repo);
     let other = "11111111-2222-4333-8444-555555555555";
-    let seeded = [format!(".claude/session-env/{other}/hook-1.sh")];
+    let seeded = [
+        format!(".claude/session-env/{other}/hook-1.sh"),
+        "snapshot-zsh-1700000000000-abcdef.sh".to_string(),
+        ".claude/projects/-Users-me-workspace/memory/MEMORY.md".to_string(),
+    ];
+    let seeded: Vec<String> = seeded.iter().map(|p| if p.starts_with('.') { p.clone() } else { format!(".claude/shell-snapshots/{p}") }).collect();
     for path in &seeded {
         std::fs::create_dir_all(s.home().join(path).parent().unwrap()).unwrap();
         std::fs::write(s.home().join(path), "seed\n").unwrap();
     }
     for path in &seeded {
         s.refused(path, &format!("echo x >> \"$H/{path}\""));
-        s.refused(path, &format!("echo x > \"$H/{path}.new\" && mv \"$H/{path}.new\" \"$H/{path}\""));
+        s.refused(path, &format!("echo x > \"$TMPDIR/new\" && mv \"$TMPDIR/new\" \"$H/{path}\""));
     }
-    s.refused("a new file in another session's directory", &format!("echo x > \"$H/.claude/session-env/{other}/new.sh\""));
-    s.refused("a directory for another session", "mkdir \"$H/.claude/session-env/third\"");
+    for (what, script) in [
+        ("a new snapshot", "echo x > \"$H/.claude/shell-snapshots/snapshot-zsh-new.sh\"".to_string()),
+        ("a new memory file", "echo x > \"$H/.claude/projects/-Users-me-workspace/memory/new.md\"".to_string()),
+        ("a new project's memory", "mkdir -p \"$H/.claude/projects/-new/memory\"".to_string()),
+        ("its own session's session-env, there", format!("mkdir -p \"$H/.claude/session-env/{SESSION}\"")),
+        ("a transcript, there", "echo x > \"$H/.claude/projects/t.jsonl\"".to_string()),
+        ("~/.claude.json", "echo x >> \"$H/.claude.json\"".to_string()),
+        // A claude started from inside, told to use the person's folder, writing its snapshot as claude does.
+        ("a nested claude's snapshot in the person's folder", "CLAUDE_CONFIG_DIR=\"$H/.claude\" sh -c 'echo x >> \"$CLAUDE_CONFIG_DIR/shell-snapshots/snapshot-zsh-nested.sh\"'".to_string()),
+    ] {
+        s.refused(what, &script);
+    }
     for path in &seeded {
         assert_eq!(std::fs::read_to_string(s.home().join(path)).unwrap(), "seed\n", "{path}");
     }
-    assert!(!s.home().join(".claude/session-env/third").exists());
-    let own = format!("mkdir -p \"$H/.claude/session-env/{SESSION}\" && echo x > \"$H/.claude/session-env/{SESSION}/f\" && echo y >> \"$H/.claude/session-env/{SESSION}/f\"");
-    s.allowed("its own session's directory", &own);
+    assert!(!s.home().join(".claude/shell-snapshots/snapshot-zsh-nested.sh").exists());
+    assert!(!s.home().join(".claude/projects/-new").exists());
+}
+
+/// The run's own Claude folder, laid out by the wrapper: what claude writes as it works lands there, and its
+/// links to the person's settings and skills stay as they are.
+#[test]
+fn the_runs_own_claude_folder_is_writable_except_its_links() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    // No hooks of the person's, so none is linked and a wake could try adding its own.
+    std::fs::remove_dir_all(s.home().join(".claude/hooks")).unwrap();
+    s.profile();
+    let c = format!("\"$O/sandbox/claude/{}\"", s.id);
+    let dir = s.otto_home().join("sandbox/claude").join(&s.id);
+    assert_eq!(std::fs::read_link(dir.join("skills")).unwrap(), s.home().join(".claude/skills"), "laid out before the token");
+    assert_eq!(std::fs::read_link(dir.join("settings.json")).unwrap(), s.home().join(".claude/settings.json"));
+    assert!(dir.join("hooks").symlink_metadata().is_err(), "nothing where the person has nothing");
+    for (what, script) in [
+        ("a shell snapshot, appended a line at a time", format!("mkdir -p {c}/shell-snapshots && echo a > {c}/shell-snapshots/s.sh && echo b >> {c}/shell-snapshots/s.sh")),
+        ("its session-env", format!("mkdir -p {c}/session-env/{SESSION} && echo x > {c}/session-env/{SESSION}/f")),
+        ("a transcript", format!("mkdir -p {c}/projects/p && echo x >> {c}/projects/p/t.jsonl")),
+        ("its .claude.json, as claude replaces it", format!("echo '{{}}' > {c}/.claude.json.tmp && mv {c}/.claude.json.tmp {c}/.claude.json")),
+        ("reading a skill through the link", format!("ls {c}/skills/ && cat {c}/settings.json")),
+    ] {
+        s.allowed(what, &script);
+    }
+    for (what, script) in [
+        ("replacing the settings.json link", format!("rm -f {c}/settings.json; echo '{{}}' > {c}/settings.json")),
+        ("renaming over the settings.json link", format!("echo '{{}}' > {c}/x.json && mv {c}/x.json {c}/settings.json")),
+        ("writing through the settings.json link", format!("echo x >> {c}/settings.json")),
+        ("replacing the skills link", format!("rm -f {c}/skills; mkdir {c}/skills")),
+        ("a skill through the link", format!("mkdir {c}/skills/evil")),
+        ("moving the skills link aside", format!("mv {c}/skills {c}/s2")),
+        ("adding a hooks folder", format!("mkdir {c}/hooks")),
+        ("adding a hooks folder, in other case", format!("mkdir {c}/HOOKS")),
+        ("adding CLAUDE.md", format!("echo x > {c}/CLAUDE.md")),
+        ("adding agents", format!("mkdir {c}/agents")),
+        ("adding settings.local.json", format!("echo x > {c}/settings.local.json")),
+        ("a hard link to the person's settings", format!("ln \"$H/.claude/settings.json\" {c}/hl.json")),
+        ("moving the folder away", format!("mv {c} \"$TMPDIR/moved\"")),
+    ] {
+        s.refused(what, &script);
+    }
+    assert_eq!(std::fs::read_to_string(s.home().join(".claude/settings.json")).unwrap(), "seed\n");
+    assert_eq!(std::fs::read_link(dir.join("settings.json")).unwrap(), s.home().join(".claude/settings.json"));
+    assert_eq!(std::fs::read_link(dir.join("skills")).unwrap(), s.home().join(".claude/skills"));
+    assert!(!dir.join("hooks").exists() && !s.home().join(".claude/skills/evil").exists());
+    let other = format!("mkdir -p \"$O/sandbox/claude/{id}\" && echo x > \"$O/sandbox/claude/{id}/f\"", id = s.other);
+    s.refused("another run's Claude folder", &other);
 }
 
 /// Plan table: "Other otto state", "The wrapper and profiles". Its own `run.json` is writable, and that's
@@ -783,7 +850,8 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
     let script = "printf 'fd3=%s\\n' \"$(wc -c <&3 | tr -d ' ')\"; printf 'again=%s\\n' \"$(wc -c <&3 2>/dev/null | tr -d ' ')\"; \
                   printf 'fd=%s gh=%s github=%s tmux=%s kept=%s\\n' \"$CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR\" \"${GH_TOKEN:-none}\" \"${GITHUB_TOKEN:-none}\" \"${TMUX:-none}\" \"$KEPT_DIR\"; \
                   printf 'oauth=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; printf 'gitcfg=%s\\n' \"${GIT_CONFIG_COUNT:-none}\"; \
-                  printf 'ghfile=%s\\n' \"$(cat \"$HOME/.config/gh/hosts.yml\" 2>/dev/null | wc -c | tr -d ' ')\"";
+                  printf 'ghfile=%s\\n' \"$(cat \"$HOME/.config/gh/hosts.yml\" 2>/dev/null | wc -c | tr -d ' ')\"; \
+                  printf 'config=%s\\n' \"$CLAUDE_CONFIG_DIR\"";
     let out = Command::new(OTTO)
         .args(["sandbox", "wrap", "--", "/bin/sh", "-c", script])
         .current_dir(&root)
@@ -805,4 +873,7 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
     assert!(said.contains("fd=3 gh=none github=none tmux=none kept=kept"), "{said}");
     assert!(said.contains("oauth=none") && said.contains("gitcfg=none") && said.contains("ghfile=0"), "{said}");
     assert!(!said.contains("planted"), "{said}");
+    let config = otto_home.canonicalize().unwrap().join("sandbox/claude").join(&id);
+    assert!(said.contains(&format!("config={}\n", otto_home.join("sandbox/claude").join(&id).display())) || said.contains(&format!("config={}\n", config.display())), "claude's folder is the run's own: {said}");
+    assert!(config.join(".claude.json").is_file(), "and laid out");
 }

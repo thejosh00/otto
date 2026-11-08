@@ -101,35 +101,16 @@ const CREDENTIALS: &[&str] = &[
 /// (`cloudgpu-build`, `gtd-task-runner`): which runs is the person's call, in the record.
 const APP_SECRETS: &[&str] = &[".config/cloudgpu", ".config/wrangler", ".omnifactum/token"];
 
-/// What claude itself writes under `~/.claude`. A list and not the whole directory, since its
-/// settings, hooks, skills, agents and plugins all run code under whichever claude reads them next,
-/// the person's own included.
-const CLAUDE_WRITES: &[&str] = &[
-    "projects",
-    "todos",
-    "tasks",
-    "plans",
-    // Not closed yet: a wake can still reopen another session's snapshot. claude builds its own by appending to
-    // it a line at a time (`>> "$SNAPSHOT_FILE"`), so a wake allowed only to make new files gets a snapshot of one
-    // line and quietly loses its shell setup. `plans/v3.md`, "Claude's per-session files".
-    "shell-snapshots",
-    "sessions",
-    "file-history",
-    "paste-cache",
-    "debug",
-    "cache",
-    "state",
-    "statsig",
-    "downloads",
-    "backups",
-];
-const CLAUDE_WRITE_FILES: &[&str] = &["history.jsonl", "stats-cache.json"];
-/// `<session id>/`, one per session, whose files that session's claude sources: another's, the person's own
-/// included, is code that runs outside the sandbox. Only the wake's own is writable.
-const CLAUDE_SESSION_ENV: &str = ".claude/session-env";
+/// In a run's own Claude folder (`paths::run_claude_dir`), links to the person's own in `~/.claude`, which
+/// the wrapper makes before each wake. Read-only from inside: no wake can replace one, add one that isn't
+/// there, or write through one, since what they say runs code, or steers claude, in every later wake.
+const CLAUDE_LINKED: &[&str] = &["settings.json", "CLAUDE.md", "skills", "commands", "agents", "plugins", "hooks"];
+/// Closed in that folder too, though nothing of the person's is linked there: settings by another name.
+const CLAUDE_UNLINKED: &[&str] = &["settings.local.json"];
 
 /// The claude session a wrapper was started for, as otto tells it: a wake's or a chat's `--session-id`. Passed
-/// this way because nothing past the launcher's `--` is the wrapper's to read.
+/// this way because nothing past the launcher's `--` is the wrapper's to read. It names the session's profile,
+/// as a wake and a chat of the same run can start together.
 pub const SESSION_ENV: &str = "OTTO_SESSION_ID";
 
 /// A session id as otto makes them (`transcript::session_id`): a lowercase UUID, so nothing else can reach a profile.
@@ -341,6 +322,17 @@ impl Profile {
     }
 }
 
+/// A file name as a regex matching it in any case, since the disk doesn't tell `Skills` from `skills`.
+fn any_case(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            c if c.is_ascii_alphabetic() => format!("[{}{}]", c.to_ascii_lowercase(), c.to_ascii_uppercase()),
+            '.' => "\\.".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
 fn subpath(path: &Path) -> String {
     format!("(subpath {})", quoted(path))
 }
@@ -384,13 +376,9 @@ fn repos_below(dir: &Path, depth: usize) -> Vec<PathBuf> {
 
 /// The whole profile for one run. The same inputs give the same text, and a path never becomes anything
 /// but a quoted string.
-/// `session` is claude's own session, whose `session-env` directory is the one it may write.
-pub fn profile(run_id: &str, session: &str, record: &Record, machine: &Machine) -> Result<String, String> {
+pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<String, String> {
     if !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("the run id {run_id:?} isn't one a profile can carry"));
-    }
-    if !is_session_id(session) {
-        return Err(format!("the session id {} isn't one otto makes", shown(session)));
     }
     let home = &machine.home;
     let otto = &machine.otto_home;
@@ -410,7 +398,7 @@ pub fn profile(run_id: &str, session: &str, record: &Record, machine: &Machine) 
     p.note("Closed by default: writes. New places that run code keep turning up, so this is a list of what's open.");
     p.close("file-write*", &["(subpath \"/\")".to_string()]);
 
-    p.note("Open to every wake: devices, temporary files, what claude keeps, macOS's caches.");
+    p.note("Open to every wake: devices, temporary files, macOS's caches.");
     let mut open = vec![
         "(literal \"/dev/null\")".to_string(),
         "(literal \"/dev/zero\")".to_string(),
@@ -424,8 +412,6 @@ pub fn profile(run_id: &str, session: &str, record: &Record, machine: &Machine) 
     temp.sort();
     temp.dedup();
     open.extend(temp.iter().map(|t| subpath(t)));
-    open.extend(CLAUDE_WRITES.iter().map(|d| subpath(&in_home(".claude").join(d))));
-    open.extend(CLAUDE_WRITE_FILES.iter().map(|f| literal(&in_home(".claude").join(f))));
     open.extend(CACHE_WRITES.iter().map(|d| subpath(&in_home(d))));
     p.open("file-write*", &open);
 
@@ -498,18 +484,22 @@ pub fn profile(run_id: &str, session: &str, record: &Record, machine: &Machine) 
     );
     p.note("Its own caches, where the wrapper points cargo, npm, bun, uv and the rest. Only this run's.");
     p.open("file-write*", &[subpath(&caches_of(&otto_real, run_id))]);
+    p.note("Its own Claude folder, claude's CLAUDE_CONFIG_DIR: what claude writes as it works lands here. Only this run's.");
+    let own_claude = otto_real.join("sandbox/claude").join(run_id);
+    p.open("file-write*", &[subpath(&own_claude)]);
+    p.note("In it, the links to the person's settings, CLAUDE.md, skills, commands, agents, plugins and hooks: none replaced, added or written to, in any case. Nor the folder moved.");
+    // The id is the folder's own name, as the wrapper made it, so the kernel reports it as written here.
+    let names: Vec<String> = CLAUDE_LINKED.iter().chain(CLAUDE_UNLINKED).map(|n| any_case(n)).collect();
+    p.close("file-write*", &[format!("(require-all {} (regex #\"/sandbox/claude/{run_id}/({})(/|$)\"))", subpath(&own_claude), names.join("|"))]);
+    p.close("file-write-unlink", &[literal(&own_claude)]);
 
     p.note("The real tmux server's directory: a file there is one the person's tmux finds. And caches a shell sources.");
     let mut shared = vec!["(regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")".to_string()];
     shared.extend(SOURCED_CACHES.iter().map(|d| subpath(&in_home(d))));
     p.close("file-write*", &shared);
 
-    p.note("What other claude sessions source from session-env: only this session's own is writable.");
-    let session_env = in_home(CLAUDE_SESSION_ENV);
-    p.close("file-write*", &[subpath(&session_env)]);
-    // The directory itself, made if it isn't there yet, as claude makes its own below it.
-    p.open("file-write-create", &[format!("(require-all {} (vnode-type DIRECTORY))", literal(&session_env))]);
-    p.open("file-write*", &[subpath(&session_env.join(session))]);
+    p.note("The person's own Claude folder, whatever the record says: shell snapshots and session-env that their claude sources, memory and settings that steer it.");
+    p.close("file-write*", &[subpath(&in_home(".claude")), literal(&in_home(".claude.json"))]);
 
     p.note("Credentials, and what a person's accounts leave lying around. A list, so it closes what's named and no more.");
     p.close("file-read* file-write*", &CREDENTIALS.iter().map(|s| subpath(&in_home(s))).collect::<Vec<_>>());
@@ -890,19 +880,24 @@ struct Prepared {
     command: Vec<String>,
     /// This run's own caches (`CACHE_ENV`).
     caches: PathBuf,
+    /// This run's own Claude folder, claude's `CLAUDE_CONFIG_DIR` (`lay_out_claude`).
+    claude: PathBuf,
 }
 
-/// `session` is what otto said in `OTTO_SESSION_ID`. Without one there's no telling which `session-env`
-/// directory is claude's own, and claude starting with none it can write is a wake that quietly lacks it, so
-/// that's a refusal like any other.
+/// `session` is what otto said in `OTTO_SESSION_ID`, and it names the profile. Without one, or with one otto
+/// wouldn't make, that's a refusal like any other.
 fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String> {
     let command = command_after_grants(args)?.to_vec();
     if session.is_empty() {
-        return Err(format!("{SESSION_ENV} isn't set, so there's no telling which of claude's session directories is this one's"));
+        return Err(format!("{SESSION_ENV} isn't set, so there's no telling which claude session this profile is for"));
+    }
+    if !is_session_id(session) {
+        return Err(format!("the session id {} isn't one otto makes", shown(session)));
     }
     let id = crate::paths::resolve_run_id(id).map_err(|e| e.to_string())?;
     let record = read_record(&id)?;
-    let text = profile(&id, session, &record, &Machine::here())?;
+    let machine = Machine::here();
+    let text = profile(&id, &record, &machine)?;
     let path = write_profile(&id, session, &text)?;
     try_profile(&path)?;
     // From outside: inside, only what's below this is writable.
@@ -910,9 +905,186 @@ fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String>
     for (_, sub) in CACHE_ENV {
         std::fs::create_dir_all(caches.join(sub)).map_err(|e| format!("couldn't make the run's caches in {}: {e}", caches.display()))?;
     }
+    let claude = lay_out_claude(&id, &record, &machine.home)?;
     let token = read_token()?;
     hand_in(&token)?;
-    Ok(Prepared { profile: path, command, caches })
+    Ok(Prepared { profile: path, command, caches, claude })
+}
+
+/// What `.claude.json` starts as in a run's own Claude folder: enough that claude asks nothing as it starts, and
+/// the run's folders trusted. Nothing of the person's: no MCP servers, no account, no sign-in.
+fn seeded_claude_json(record: &Record, home: &Path) -> String {
+    let mut trusted = serde_json::Map::new();
+    for dir in record.workdir.iter().chain(&record.write) {
+        if let Ok(dir) = normalize(dir, home) {
+            trusted.insert(dir.display().to_string(), serde_json::json!({"hasTrustDialogAccepted": true}));
+        }
+    }
+    serde_json::json!({
+        "hasCompletedOnboarding": true,
+        "bypassPermissionsModeAccepted": true,
+        "skipDangerousModePermissionPrompt": true,
+        "projects": trusted,
+    })
+    .to_string()
+}
+
+/// A run's own Claude folder, laid out from outside before each wake or chat: made if it isn't there, a link to
+/// each of `CLAUDE_LINKED` the person has in `~/.claude` and nothing under the other read-only names, and
+/// `.claude.json` seeded afresh. A wake can write this folder, so nothing here follows a link it may have left:
+/// every step is relative to the folder opened without following one, and a link standing where the folder
+/// should be is removed, not entered.
+fn lay_out_claude(id: &str, record: &Record, home: &Path) -> Result<PathBuf, String> {
+    let dir = crate::paths::run_claude_dir(id);
+    let failed = |what: &str, e: std::io::Error| format!("couldn't {what} in the run's Claude folder {}: {e}", dir.display());
+    let parent = dir.parent().expect("a run's Claude folder has a parent");
+    // Under `sandbox/`, which no wake can write.
+    std::fs::create_dir_all(parent).map_err(|e| failed("make the folder above", e))?;
+    let above = nofollow::Dir::open(parent).map_err(|e| failed("open the folder above", e))?;
+    let folder = above.dir(id).map_err(|e| failed("open the folder", e))?;
+    let ours = home.join(".claude");
+    for name in CLAUDE_LINKED {
+        let target = ours.join(name);
+        let want = target.exists().then_some(target.as_path());
+        folder.link_only(name, want).map_err(|e| failed(&format!("link {name}"), e))?;
+    }
+    for name in CLAUDE_UNLINKED {
+        folder.link_only(name, None).map_err(|e| failed(&format!("clear {name}"), e))?;
+    }
+    folder.replace(".claude.json", seeded_claude_json(record, home).as_bytes()).map_err(|e| failed("seed .claude.json", e))?;
+    Ok(dir)
+}
+
+/// Steps in a directory a wake can write, from outside it, that never follow a link: `*at` calls on a directory
+/// opened with `O_NOFOLLOW`.
+mod nofollow {
+    use std::ffi::CString;
+    use std::io::{Error, ErrorKind, Result, Write as _};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    pub struct Dir(OwnedFd);
+
+    fn c(name: &str) -> Result<CString> {
+        if name.is_empty() || name.contains('/') || name == "." || name == ".." {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("{name:?} isn't a name in a directory")));
+        }
+        CString::new(name).map_err(|_| Error::new(ErrorKind::InvalidInput, "a NUL in a name"))
+    }
+
+    fn checked(rc: libc::c_int) -> Result<libc::c_int> {
+        if rc < 0 {
+            Err(Error::last_os_error())
+        } else {
+            Ok(rc)
+        }
+    }
+
+    const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+
+    impl Dir {
+        /// A directory no wake can write, by its path.
+        pub fn open(path: &Path) -> Result<Dir> {
+            let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error::new(ErrorKind::InvalidInput, "a NUL in a path"))?;
+            // SAFETY: a valid C string, and the descriptor returned is this process's to own.
+            let fd = checked(unsafe { libc::open(path.as_ptr(), DIR_FLAGS) })?;
+            Ok(Dir(unsafe { OwnedFd::from_raw_fd(fd) }))
+        }
+
+        /// `name` in here as a directory, made if it isn't there. Anything else standing there, a link
+        /// included, is removed first, never followed.
+        pub fn dir(&self, name: &str) -> Result<Dir> {
+            let n = c(name)?;
+            for _ in 0..2 {
+                // SAFETY: a descriptor this owns, and a valid C string.
+                match checked(unsafe { libc::mkdirat(self.0.as_raw_fd(), n.as_ptr(), 0o700) }) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                    Err(e) => return Err(e),
+                }
+                // SAFETY: as above; the descriptor returned is this process's to own.
+                match checked(unsafe { libc::openat(self.0.as_raw_fd(), n.as_ptr(), DIR_FLAGS) }) {
+                    Ok(fd) => return Ok(Dir(unsafe { OwnedFd::from_raw_fd(fd) })),
+                    // A link (ELOOP) or a file (ENOTDIR) where the directory should be.
+                    Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENOTDIR)) => self.remove(name)?,
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(Error::other(format!("{name} kept turning into something other than a directory")))
+        }
+
+        /// What `name` is, without following it: `None` if nothing's there.
+        fn kind(&self, n: &CString) -> Result<Option<libc::mode_t>> {
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: a descriptor this owns, a valid C string, and room for the answer.
+            match checked(unsafe { libc::fstatat(self.0.as_raw_fd(), n.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) }) {
+                Ok(_) => Ok(Some(st.st_mode & libc::S_IFMT)),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+
+        /// Whatever is at `name`, gone: a link or a file, or an empty directory. A directory with something in
+        /// it stays, and that's an error, as only the wrapper ever puts one at a name it removes.
+        pub fn remove(&self, name: &str) -> Result<()> {
+            let n = c(name)?;
+            let flags = match self.kind(&n)? {
+                None => return Ok(()),
+                Some(libc::S_IFDIR) => libc::AT_REMOVEDIR,
+                Some(_) => 0,
+            };
+            // SAFETY: a descriptor this owns, and a valid C string.
+            match checked(unsafe { libc::unlinkat(self.0.as_raw_fd(), n.as_ptr(), flags) }) {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            }
+        }
+
+        /// What the link at `name` points to, if it is a link.
+        fn link_target(&self, n: &CString) -> Option<Vec<u8>> {
+            let mut buf = vec![0u8; libc::PATH_MAX as usize];
+            // SAFETY: a descriptor this owns, a valid C string, and a buffer of the length given.
+            let len = unsafe { libc::readlinkat(self.0.as_raw_fd(), n.as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+            (len >= 0).then(|| {
+                buf.truncate(len as usize);
+                buf
+            })
+        }
+
+        /// `name` a link to `target`, and nothing else; with no target, nothing at all.
+        pub fn link_only(&self, name: &str, target: Option<&Path>) -> Result<()> {
+            let n = c(name)?;
+            if let Some(target) = target {
+                if self.link_target(&n).as_deref() == Some(target.as_os_str().as_bytes()) {
+                    return Ok(());
+                }
+            }
+            self.remove(name)?;
+            let Some(target) = target else { return Ok(()) };
+            let t = CString::new(target.as_os_str().as_bytes()).map_err(|_| Error::new(ErrorKind::InvalidInput, "a NUL in a path"))?;
+            // SAFETY: valid C strings and a descriptor this owns.
+            checked(unsafe { libc::symlinkat(t.as_ptr(), self.0.as_raw_fd(), n.as_ptr()) }).map(|_| ())
+        }
+
+        /// `name` replaced by a new file holding `bytes`: written beside it under a name made here, then
+        /// renamed over it, which replaces a link rather than writing through one.
+        pub fn replace(&self, name: &str, bytes: &[u8]) -> Result<()> {
+            let n = c(name)?;
+            let temp = format!(".{name}.otto-{}", std::process::id());
+            self.remove(&temp)?;
+            let t = c(&temp)?;
+            let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+            // SAFETY: a descriptor this owns and a valid C string; the descriptor returned is this process's to own.
+            let fd = checked(unsafe { libc::openat(self.0.as_raw_fd(), t.as_ptr(), flags, 0o600 as libc::c_uint) })?;
+            let mut file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+            file.write_all(bytes)?;
+            drop(file);
+            // SAFETY: a descriptor this owns, twice, and valid C strings.
+            checked(unsafe { libc::renameat(self.0.as_raw_fd(), t.as_ptr(), self.0.as_raw_fd(), n.as_ptr()) }).map(|_| ())
+        }
+    }
 }
 
 impl Prepared {
@@ -930,6 +1102,7 @@ impl Prepared {
             }
         }
         command.env("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", TOKEN_FD.to_string());
+        command.env("CLAUDE_CONFIG_DIR", &self.claude);
         for (name, sub) in CACHE_ENV {
             command.env(name, self.caches.join(sub));
         }
@@ -953,7 +1126,7 @@ mod tests {
     const SESSION: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
 
     fn generated(record: &Record) -> String {
-        profile("r1", SESSION, record, &machine()).unwrap()
+        profile("r1", record, &machine()).unwrap()
     }
 
     /// In Seatbelt the last matching rule wins, so a grant has to come before what no record may open.
@@ -1093,10 +1266,10 @@ mod tests {
         r.write = vec!["/w/back\\slash".into()];
         assert!(generated(&r).contains(r#"(subpath "/w/back\\slash")"#));
         r.write = vec!["/w/line\nbreak".into()];
-        assert!(profile("r1", SESSION, &r, &machine()).unwrap_err().contains("line break"));
+        assert!(profile("r1", &r, &machine()).unwrap_err().contains("line break"));
         r.write = vec!["relative/path".into()];
-        assert!(profile("r1", SESSION, &r, &machine()).unwrap_err().contains("absolute"));
-        assert!(profile("r1\") (allow default", SESSION, &record(), &machine()).is_err(), "the id is in each message");
+        assert!(profile("r1", &r, &machine()).unwrap_err().contains("absolute"));
+        assert!(profile("r1\") (allow default", &record(), &machine()).is_err(), "the id is in each message");
     }
 
     /// Every rule carries the run's id, which is how 1.7's report tells runs apart, and report mode changes
@@ -1211,35 +1384,106 @@ mod tests {
         assert!(omz > closed && omz > grant);
     }
 
-    /// Plan table, "Claude's per-session files": another claude session sources the files in its own
-    /// `session-env/<id>`, so a wake writes only its own, whatever its record says.
+    /// Plan table, "Claude's per-session files": another claude session sources its shell snapshot and its
+    /// `session-env`, and the person's own reads its memory and settings, so nothing in `~/.claude` is written
+    /// from inside, whatever the record says. Claude writes in the run's own folder instead.
     #[test]
-    fn only_this_sessions_own_session_env_is_writable() {
+    fn the_persons_claude_folder_is_closed_and_the_runs_own_is_open() {
         let mut r = record();
         r.write.push("/u/.claude".into());
+        r.write.push("/u".into());
         let text = generated(&r);
         let grant = text.find("(subpath \"/u/.claude\")").expect("the record's grant");
-        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (subpath \"/u/.claude/session-env\")").expect("session-env is closed");
+        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (subpath \"/u/.claude\")\n  (literal \"/u/.claude.json\")").expect("~/.claude is closed");
         assert!(closed > grant, "closed after what opens it");
-        let own = text.find(&format!("(allow file-write*\n  (subpath \"/u/.claude/session-env/{SESSION}\")")).expect("its own session's directory");
-        assert!(own > closed);
-        assert_eq!(text.matches("/u/.claude/session-env").count(), 3, "closed, the directory itself made, and its own: {text}");
+        assert!(!text[closed..].contains("(allow file-write*\n  (subpath \"/u/.claude/"), "nothing in it opens again after: {text}");
+        assert!(!text.contains("/session-env") && !text.contains("/shell-snapshots"), "no exception for any of claude's own: {text}");
+
+        let own = text.find("(allow file-write*\n  (subpath \"/u/.otto/sandbox/claude/r1\")").expect("its own folder is open");
+        assert!(own > text.find("(subpath \"/u/.otto/sandbox\")").unwrap(), "after otto's own closes, or it stays closed");
+        assert!(!text.contains("/u/.otto/sandbox/claude\")"), "not every run's");
+        let links = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (require-all (subpath \"/u/.otto/sandbox/claude/r1\") (regex #\"/sandbox/claude/r1/(").expect("its links are closed");
+        assert!(links > own, "closed after the folder opens");
+        for name in ["[sS][eE][tT][tT][iI][nN][gG][sS]\\.[jJ][sS][oO][nN]", "[cC][lL][aA][uU][dD][eE]\\.[mM][dD]", "[sS][kK][iI][lL][lL][sS]", "[hH][oO][oO][kK][sS]", "[pP][lL][uU][gG][iI][nN][sS]", "[aA][gG][eE][nN][tT][sS]", "[cC][oO][mM][mM][aA][nN][dD][sS]"] {
+            assert!(text[links..].lines().nth(1).unwrap().contains(name), "{name}: {text}");
+        }
+        assert!(text.contains("(deny file-write-unlink (with message \"otto-run-r1\")\n  (literal \"/u/.otto/sandbox/claude/r1\")"), "the folder can't be moved: {text}");
     }
 
-    /// A session id becomes a path in the profile, so only the shape otto makes gets that far.
+    #[test]
+    fn a_name_matches_in_any_case() {
+        assert_eq!(any_case("a.B-1"), "[aA]\\.[bB]-1");
+    }
+
+    /// The folder is laid out from outside, in a place the wake could write: links the person has, nothing at
+    /// the read-only names they don't, `.claude.json` seeded afresh, and nothing a wake left there followed.
+    #[test]
+    fn the_runs_claude_folder_is_laid_out_without_following_a_link() {
+        let h = crate::paths::test_support::TempHome::new();
+        let root = h.path().canonicalize().unwrap();
+        let home = root.join("person");
+        std::fs::create_dir_all(home.join(".claude/skills/s")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+        std::fs::write(home.join(".claude/.credentials.json"), "secret").unwrap();
+        std::fs::write(home.join(".claude.json"), r#"{"mcpServers":{"x":{}}}"#).unwrap();
+        let record = Record { launcher: "s".into(), workdir: Some(root.join("work").display().to_string()), read: vec![], write: vec![root.join("repo").display().to_string()], mode: Mode::Enforce };
+        let dir = crate::paths::run_claude_dir("r1");
+
+        // What a wake might have left: the folder a link to somewhere else.
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &dir).unwrap();
+        assert_eq!(lay_out_claude("r1", &record, &home).unwrap(), dir);
+        assert!(!dir.symlink_metadata().unwrap().file_type().is_symlink(), "the link was removed, not entered");
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0, "nothing was written where the link went");
+        assert_eq!(std::fs::read_link(dir.join("skills")).unwrap(), home.join(".claude/skills"));
+        assert_eq!(std::fs::read_link(dir.join("settings.json")).unwrap(), home.join(".claude/settings.json"));
+        for absent in ["CLAUDE.md", "hooks", "agents", "commands", "plugins", "settings.local.json", ".credentials.json"] {
+            assert!(dir.join(absent).symlink_metadata().is_err(), "{absent}");
+        }
+        let seeded: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(seeded["hasCompletedOnboarding"], true);
+        assert_eq!(seeded["projects"][root.join("repo").display().to_string()]["hasTrustDialogAccepted"], true);
+        assert_eq!(seeded["projects"][root.join("work").display().to_string()]["hasTrustDialogAccepted"], true);
+        assert!(seeded.get("mcpServers").is_none(), "nothing of the person's is copied");
+
+        // A wake's leavings inside: .claude.json a link out, a hooks folder, settings.json pointing elsewhere.
+        let victim = root.join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        std::fs::remove_file(dir.join(".claude.json")).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join(".claude.json")).unwrap();
+        std::fs::create_dir(dir.join("hooks")).unwrap();
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::os::unix::fs::symlink(&victim, dir.join("settings.json")).unwrap();
+        std::fs::write(dir.join("history.jsonl"), "kept\n").unwrap();
+        lay_out_claude("r1", &record, &home).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        assert!(!dir.join(".claude.json").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(dir.join("hooks").symlink_metadata().is_err());
+        assert_eq!(std::fs::read_link(dir.join("settings.json")).unwrap(), home.join(".claude/settings.json"));
+        assert_eq!(std::fs::read_to_string(dir.join("history.jsonl")).unwrap(), "kept\n", "what claude wrote stays");
+
+        // The person makes a hooks folder: the next layout links it.
+        std::fs::create_dir(home.join(".claude/hooks")).unwrap();
+        lay_out_claude("r1", &record, &home).unwrap();
+        assert_eq!(std::fs::read_link(dir.join("hooks")).unwrap(), home.join(".claude/hooks"));
+    }
+
+    /// A session id names a profile file, so only the shape otto makes gets that far.
     #[test]
     fn only_a_session_id_otto_makes_reaches_a_profile() {
         let made = crate::wake::transcript::session_id("r1", 1, "2026-11-07T00:00:00Z");
         assert!(is_session_id(&made) && is_session_id(SESSION), "{made}");
         for bad in ["", "..", "../11111111-2222-4333-8444-555555555555", "0F9A1C2B-3D4E-4F56-8789-ABCDEF012345", "0f9a1c2b-3d4e-4f56-8789-abcdef01234\")", "0f9a1c2b3d4e4f568789abcdef012345"] {
-            assert!(profile("r1", bad, &record(), &machine()).unwrap_err().contains("session id"), "{bad}");
+            assert!(prepare("r1", bad, &["--".into(), "x".into()]).err().unwrap().contains("session"), "{bad}");
         }
     }
 
     /// The wrapper points each tool at the run's own caches.
     #[test]
     fn the_wrapper_points_the_tools_at_the_runs_own_caches() {
-        let prepared = Prepared { profile: "/p.sb".into(), command: vec!["claude".into()], caches: "/u/.otto/sandbox/caches/r1".into() };
+        let prepared = Prepared { profile: "/p.sb".into(), command: vec!["claude".into()], caches: "/u/.otto/sandbox/caches/r1".into(), claude: "/u/.otto/sandbox/claude/r1".into() };
         let command = prepared.sandboxed();
         let envs: std::collections::HashMap<_, _> = command.get_envs().filter_map(|(k, v)| Some((k.to_str()?.to_string(), PathBuf::from(v?)))).collect();
         for (name, sub) in [
@@ -1254,6 +1498,7 @@ mod tests {
             assert_eq!(envs.get(name), Some(&PathBuf::from("/u/.otto/sandbox/caches/r1").join(sub)), "{name}");
         }
         assert_eq!(caches_of(Path::new("/u/.otto"), "r1"), PathBuf::from("/u/.otto/sandbox/caches/r1"));
+        assert_eq!(envs.get("CLAUDE_CONFIG_DIR"), Some(&PathBuf::from("/u/.otto/sandbox/claude/r1")), "claude keeps its files in the run's own folder");
     }
 
     /// The wrapper goes in where no wake can write, and an install says the same thing again harmlessly.

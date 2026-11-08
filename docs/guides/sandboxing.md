@@ -56,7 +56,8 @@ caffeinate -i -s env -u ANTHROPIC_API_KEY -u CLAUDECODE … nono run --profile n
 Beyond the directories otto grants, whatever a wake needs belongs to the sandbox's own profile:
 
 - `~/.claude`, so `--skill` can find its skill and claude can write its session transcript (otto
-  reads token usage from it; without it, a wake's cost shows as unknown, which is harmless).
+  reads token usage from it; without it, a wake's cost shows as unknown, which is harmless). otto's own
+  wrapper (below) gives claude a folder of its own instead, so `~/.claude` can stay closed to writes.
 - The network hosts the work needs — your git host, `gh`'s API host, package registries.
 - Anything a wrapped skill writes outside its repo. Tool caches it has already: its own (see below).
 
@@ -112,7 +113,8 @@ Each time, outside the sandbox: read the record; generate `$OTTO_HOME/sandbox/pr
 reusing one, for the claude session otto names in `OTTO_SESSION_ID` (refusing if there's none); check that `sandbox-exec` takes it; read claude's access token from the Keychain and put it on descriptor 3;
 clear what would carry a credential in (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `GIT_CONFIG*`,
 anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; point
-the tools' caches at the run's own (below); exec `sandbox-exec` with the command after its `--`.
+the tools' caches at the run's own (below); lay out the run's own Claude folder and set `CLAUDE_CONFIG_DIR` to it
+(below); exec `sandbox-exec` with the command after its `--`.
 
 ### Each run's own caches
 
@@ -122,6 +124,30 @@ changed a `build.rs` in the registry would run it outside. Instead each sandboxe
 `$OTTO_HOME/sandbox/caches/<id>/`, made by the wrapper and writable only by that run's wakes, and the wrapper sets
 `CARGO_HOME`, `npm_config_cache`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `GOCACHE` and
 `XDG_CACHE_HOME` to directories in it. Nothing outside the sandbox reads it; later wakes of the same run reuse it.
+
+### Each run's own Claude folder
+
+Every claude session, yours included, sources its shell snapshot before each Bash command, sources the files in its
+`session-env`, and reads its memory under `~/.claude/projects` as it starts. So nothing in `~/.claude` (or
+`~/.claude.json`) is written from inside, whatever the record says. Instead claude starts with
+`CLAUDE_CONFIG_DIR=$OTTO_HOME/sandbox/claude/<id>`, a folder of the run's own that its wakes and chats share and
+nothing else can write. What claude writes as it works lands there: transcripts (`projects/`, where otto reads
+usage from first), shell snapshots, `session-env`, `sessions`, `backups`, `.claude.json` and the rest.
+
+Before each wake or chat, outside the sandbox, the wrapper lays it out:
+
+- **Links to yours**, for each of `settings.json`, `CLAUDE.md`, `skills`, `commands`, `agents`, `plugins` and
+  `hooks` that you have in `~/.claude`, so each wake sees your current settings and skills. They're read-only from
+  inside: a wake can't replace one, write through one, or add one you don't have (nor `settings.local.json`), in
+  any case (`Skills` is `skills` on disk). So no wake changes what the next one runs.
+- **`.claude.json`**, written afresh each time: onboarding done, and the record's `workdir` and `write` trusted.
+  Nothing of yours is copied: no MCP servers, no account, no credentials. Signing in is unchanged: the token
+  arrives on descriptor 3, and claude never looks in the Keychain.
+- Nothing there is followed: the folder is opened without following a link, a link standing where the folder
+  should be is removed rather than entered, and each step is made relative to it. A wake can't move the folder.
+
+The cost: a run's wakes get memory of their own, starting empty, rather than yours (the files stay readable), and
+MCP servers configured in your `~/.claude.json` aren't there.
 
 The cost: a run's first build downloads every crate and package again, and `cargo build --offline` fails until its
 cache has them. Moving `CARGO_HOME` doesn't lose the toolchain (rustup keeps that in `RUSTUP_HOME`) or
@@ -180,10 +206,11 @@ a newline into a question or a log.
 
 | | |
 |---|---|
-| **Writes** | Closed by default. Open: the record's `write`, temporary directories, the run's own caches, `~/Library/Caches`, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`; of `session-env`, only the wake's own session's directory), its own run, repo locks, `feedback.jsonl` |
+| **Writes** | Closed by default. Open: the record's `write`, temporary directories, the run's own caches, the run's own Claude folder (not its links to `settings.json`, `CLAUDE.md`, `skills`, `commands`, `agents`, `plugins` or `hooks`), `~/Library/Caches`, its own run, repo locks, `feedback.jsonl` |
+| **Your Claude folder** | `~/.claude` and `~/.claude.json`, closed to writes whatever a record says: shell snapshots, `session-env`, memory, transcripts, settings. Still readable |
 | **Other projects** | Reads and writes, under the configured working directory and every configured project, unless the record lists them |
 | **In anything writable** | `.git/hooks`, `.git/config`, `config.worktree`, `.claude/settings*.json`, `.claude/hooks`; moving a repository or its `.git`. No record opens these |
-| **otto's** | `config.json`, `feedback-driver`, `sandbox/` (but for the run's own `sandbox/caches/<id>`), all closed to writes whatever a record says |
+| **otto's** | `config.json`, `feedback-driver`, `sandbox/` (but for the run's own `sandbox/caches/<id>` and `sandbox/claude/<id>`), all closed to writes whatever a record says |
 | **Shared caches** | Read-only: the shared tool caches (see above). `~/.cache/oh-my-zsh`, which your shell sources, and `/private/tmp/tmux-<uid>`, the real tmux server's directory, are closed to writes whatever a record says |
 | **Credentials** | The Keychain and a list of files, listed in `src/sandbox.rs`; `gh` doesn't work, even for public reads. An app's own secrets (`.config/cloudgpu`, `.config/wrangler`, `.omnifactum/token`) are closed unless the record lists them |
 | **Acting from outside** | `launchctl`, `open`, `osascript`, `security`, the services behind them, the real tmux server, the ssh agent, docker's socket, and **otto's own web page**, which approves changes for anyone who asks |
@@ -200,10 +227,8 @@ Not a promise past the list above:
   sent. A new credential file is open until someone adds it.
 - **Other local services.** Only otto's page and docker's socket are closed. Anything else listening on the
   machine can be reached.
-- **Other sessions' shell snapshots** (`~/.claude/shell-snapshots`), which each claude sources before every Bash
-  command, its owner's unsandboxed one included. Making them create-only doesn't work: claude builds its own by
-  appending a line at a time, so it would get one line and quietly lose its shell setup. Open for now.
-- **`~/.claude/projects`** holds auto-memory, which steers later sessions in that directory, unsandboxed ones too.
+- **Reading `~/.claude/projects`**, other sessions' transcripts, some with secrets in tool output. Closed to writes
+  now, and still readable.
 - **Files in a writable repo that run later:** `.envrc`, `.vscode/`, `Makefile`, `.mcp.json`. Under a person's
   own tools these run with everything. Give a run its worktree and not the main checkout where that matters.
 - **A worktree's `.git` file** can be pointed at a directory of a wake's own making, with hooks in it, which

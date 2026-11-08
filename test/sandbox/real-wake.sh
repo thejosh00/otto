@@ -33,7 +33,7 @@ JSON
 ids() { "$OTTO" state list --json | python3 -c "import json,sys;print(next(r['id'] for r in json.load(sys.stdin) if r['name']=='$1'))"; }
 OTHER=$(ids other)
 cp "$HERE/probes.sh" "$REPO/.probes.sh"; git -C "$REPO" add .probes.sh; git -C "$REPO" -c user.name=t -c user.email=t@t commit -q -m probes
-GOAL="Do these in order, then stop. (1) Run: bash $REPO/.probes.sh $OTTO_HOME $OTHER > $REPO/.probes.txt 2>&1, where the output is meant to go, as this is a sandbox and little else is writable. Do not read anything it would have refused; don't try to get round a refusal. (2) In $REPO: take the repo lock, make a worktree at $REPO/.wt on a new branch sandbox-try, unlock, add a file hello.txt there saying hello, commit it (use -c user.name=t -c user.email=t@t). (3) Submit it as a change with --no-evidence 'a sandbox test'. (4) Write the handoff, and set the status to done with the reason that the steps ran."
+GOAL="Do these in order, then stop. (0) Write the names of up to three skills you have available, one per line and nothing else, into $REPO/.skills.txt. (1) Run: bash $REPO/.probes.sh $OTTO_HOME $OTHER > $REPO/.probes.txt 2>&1, where the output is meant to go, as this is a sandbox and little else is writable. Do not read anything it would have refused; don't try to get round a refusal. (2) In $REPO: take the repo lock, make a worktree at $REPO/.wt on a new branch sandbox-try, unlock, add a file hello.txt there saying hello, commit it (use -c user.name=t -c user.email=t@t). (3) Submit it as a change with --no-evidence 'a sandbox test'. (4) Write the handoff, and set the status to done with the reason that the steps ran."
 # The record has to be there before the first wake, and an id is only given out at the start: the next is the other's + 1.
 NEXT=$((OTHER + 1))
 python3 - "$OTTO_HOME/sandbox/runs/$NEXT.json" "$HOME" "$REPO" <<'PY'
@@ -53,3 +53,26 @@ echo "== the probes"; cp "$REPO/.probes.txt" "$OUT/probes.txt"; cat "$OUT/probes
 echo "== a chat, under the same profile"
 "$OTTO" chat "$ID" "Reply with the single word pong, and run nothing." </dev/null 2>&1 | tail -6 | cut -c1-200
 echo "== times the wrapper refused, which should be 0: $(grep -c sandbox-refused "$J")"
+# The run's own Claude folder (CLAUDE_CONFIG_DIR): names and sizes only.
+C=$OTTO_HOME/sandbox/claude/$ID
+echo "== the run's own Claude folder: $(ls -A "$C" 2>/dev/null | tr '\n' ' ')"
+echo "links: $(for n in settings.json CLAUDE.md skills commands agents plugins hooks; do [ -L "$C/$n" ] && printf '%s ' "$n"; done)"
+echo "shell snapshots left there after it exited, in bytes: $(ls -l "$C/shell-snapshots" 2>/dev/null | awk 'NR>1{printf "%s ", $5}')"
+# claude removes its snapshot as it exits: the probes measured it while the wake was running.
+BIGGEST=$(sed -n 's/^its shell snapshot, largest, in bytes *//p' "$OUT/probes.txt"); BIGGEST=${BIGGEST:-0}
+SKILLS=$(cat "$REPO/.skills.txt" 2>/dev/null | tr -d '\r' | sed 's/^[-* ]*//; s/`//g' | grep -v '^$')
+echo "skills the wake named: $(echo "$SKILLS" | tr '\n' ' ')"
+KNOWN=0; for n in $SKILLS; do [ -e "$HOME/.claude/skills/$n" ] && KNOWN=$((KNOWN + 1)); done
+SESSIONS=$(ls "$C"/projects/*/*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+echo "transcripts there: $SESSIONS"
+ok() { if [ "$2" = yes ]; then echo "PASS $1"; else echo "FAIL $1"; FAILED=1; fi; }
+FAILED=0
+echo "== checks"
+ok "the wake completed" "$(grep -q '"wake-complete"' "$J" && echo yes || echo no)"
+ok "its shell snapshot was full size in its own folder while it ran (largest $BIGGEST bytes, more than 1000)" "$([ "$BIGGEST" -gt 1000 ] && echo yes || echo no)"
+ok "it found a skill of the person's, through the link ($KNOWN named of those in ~/.claude/skills)" "$([ "$KNOWN" -gt 0 ] && echo yes || echo no)"
+ok "its transcripts landed in its own folder" "$([ "$SESSIONS" -gt 0 ] && echo yes || echo no)"
+ok "no credentials file in its own folder" "$([ -e "$C/.credentials.json" ] && echo no || echo yes)"
+ok "every write probe of ~/.claude and the links was refused" "$(sed -n '/^== writing/,/^== reading/p' "$OUT/probes.txt" | grep -q 'OPEN$' && echo no || echo yes)"
+ok "the wrapper refused nothing" "$([ "$(grep -c sandbox-refused "$J")" = 0 ] && echo yes || echo no)"
+exit $FAILED

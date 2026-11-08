@@ -16,6 +16,11 @@ c() { # <what> <path>: can a new file be made?
 	if (: >"$2/otto-sandbox-probe") 2>/dev/null; then r=OPEN; rm -f "$2/otto-sandbox-probe"; else r=refused; fi
 	printf '%-44s %s\n' "$1" "$r"
 }
+x() { # <what> <command...>: did it succeed? (each is undone where it wrongly did, or lands only in the scratch otto home)
+	what=$1; shift
+	if "$@" >/dev/null 2>&1 </dev/null; then r=OPEN; else r=refused; fi
+	printf '%-44s %s\n' "$what" "$r"
+}
 e() { # <what> <command...>: its exit code, its output dropped
 	what=$1; shift
 	"$@" >/dev/null 2>&1 </dev/null
@@ -58,13 +63,28 @@ w "the real otto's run" "$HOME/.otto/runs/12/run.json"
 w "a hook in its repo" "$REPO/.git/hooks/pre-commit"
 w "its repo's .git/config" "$REPO/.git/config"
 w "another project" "$HOME/workspace/otto/README.md"
-# Another claude session's, which that session sources.
-OTHER_ENV=$(ls "$HOME/.claude/session-env" 2>/dev/null | grep -v "^$OTTO_SESSION_ID\$" | head -1)
+# The person's own Claude folder: what their claude sources (snapshots, session-env) and reads as it starts (memory).
+OTHER_ENV=$(ls "$HOME/.claude/session-env" 2>/dev/null | head -1)
 c "another session's session-env" "$HOME/.claude/session-env/$OTHER_ENV"
 c "session-env itself" "$HOME/.claude/session-env"
-echo "== still open (plans/v3.md, \"Claude's per-session files\"): claude appends to its own snapshot as it makes it"
 SNAP=$(ls -tr "$HOME/.claude/shell-snapshots" 2>/dev/null | head -1)
 w "another session's shell snapshot" "$HOME/.claude/shell-snapshots/$SNAP"
+c "~/.claude/shell-snapshots" "$HOME/.claude/shell-snapshots"
+MEM=$(ls -d "$HOME"/.claude/projects/*/memory 2>/dev/null | head -1)
+c "a memory folder in ~/.claude/projects" "$MEM"
+c "~/.claude/projects" "$HOME/.claude/projects"
+# A claude started from inside and pointed back at the person's folder, writing its snapshot as claude does.
+x "a nested claude's snapshot in ~/.claude" env CLAUDE_CONFIG_DIR="$HOME/.claude" sh -c ': >>"$CLAUDE_CONFIG_DIR/shell-snapshots/otto-sandbox-probe"'
+rm -f "$HOME/.claude/shell-snapshots/otto-sandbox-probe" 2>/dev/null
+# The run's own Claude folder: its links to the person's settings and skills stay as they are.
+C=$O/sandbox/claude/$OTTO_RUN_ID
+x "replacing its settings.json link" sh -c "echo '{}' >'$C/.probe.json' && mv '$C/.probe.json' '$C/settings.json'"
+rm -f "$C/.probe.json"
+x "writing through its settings.json link" sh -c ": >>'$C/settings.json'"
+x "replacing its skills link" sh -c "rm '$C/skills' && mkdir '$C/skills'"
+x "a skill through its skills link" mkdir "$C/skills/otto-sandbox-probe"
+x "adding a hooks folder to it" mkdir "$C/hooks"
+x "adding CLAUDE.md to it" sh -c ": >'$C/CLAUDE.md'"
 echo "== reading other projects: every one of these should be 0"
 n 'another project' cat "$HOME/workspace/otto/README.md"
 n 'another project, listed' ls "$HOME/workspace/otto"
@@ -82,4 +102,8 @@ e 'reading its repo' git -C "$REPO" status
 e 'a repo lock' otto state lock "$OTTO_RUN_ID" --repo "$REPO"
 e 'unlocking it' otto state unlock "$OTTO_RUN_ID"
 e 'filing feedback' sh -c ": >>'$O/feedback.jsonl'"
-e "its own session-env ($OTTO_SESSION_ID)" sh -c "mkdir -p '$HOME/.claude/session-env/$OTTO_SESSION_ID' && : >'$HOME/.claude/session-env/$OTTO_SESSION_ID/otto-sandbox-probe' && rm '$HOME/.claude/session-env/$OTTO_SESSION_ID/otto-sandbox-probe'"
+printf '%-44s %s\n' 'CLAUDE_CONFIG_DIR is its own folder' "$([ "$CLAUDE_CONFIG_DIR" = "$C" ] && echo yes || echo no)"
+e "its own Claude folder" sh -c ": >'$C/otto-sandbox-probe' && rm '$C/otto-sandbox-probe'"
+e "reading a skill through its link" ls "$C/skills/"
+# claude removes its snapshot as it exits, so it's measured here, while it's in use: a whole shell, not a line.
+printf '%-44s %s\n' 'its shell snapshot, largest, in bytes' "$(ls -l "$C/shell-snapshots" 2>/dev/null | awk 'NR>1 && $5>m{m=$5} END{print m+0}')"

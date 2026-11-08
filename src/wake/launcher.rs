@@ -162,15 +162,15 @@ pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: 
 
 /// What a wake's process is told about its run, for what it runs to read: a wrapped skill that
 /// behaves differently under otto, or keeps its own files and points `artifacts/` at them. And its
-/// claude session, which the sandbox wrapper needs (`session_env`).
+/// claude session, which the sandbox wrapper names its profile by (`session_env`).
 fn wake_env(state: &RunState, session_id: &str) -> Vec<String> {
     let dir = crate::paths::runs_dir().join(&state.id);
     vec![format!("OTTO_RUN_ID={}", state.id), format!("OTTO_RUN_DIR={}", dir.display()), session_env(session_id)]
 }
 
 /// `OTTO_SESSION_ID`, the session claude is about to be given with `--session-id`. The sandbox wrapper
-/// opens that session's own `~/.claude/session-env/<id>` and no other's, and it reads nothing past its
-/// `--`, so it's told here, a wake's and a chat's alike.
+/// writes a profile for each session, as a wake and a chat of a run can start together, and it reads
+/// nothing past its `--`, so it's told here, a wake's and a chat's alike.
 fn session_env(session_id: &str) -> String {
     format!("{}={session_id}", crate::sandbox::SESSION_ENV)
 }
@@ -493,7 +493,7 @@ mod tests {
         assert!(!chat.iter().any(|w| w.starts_with("OTTO_RUN_ID=")), "a chat is not a wake: {chat:?}");
     }
 
-    /// The sandbox wrapper opens only the session's own `session-env` directory, and reads nothing past
+    /// The sandbox wrapper names each session's profile by it, and reads nothing past
     /// its `--`: so a wake and a chat each tell it their session, after the guard and before the launcher,
     /// the same id claude is given.
     #[test]
