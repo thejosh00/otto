@@ -349,6 +349,49 @@ fn nothing_that_runs_later_can_be_written() {
     assert_eq!(std::fs::read_to_string(s.home().join(".claude/settings.json")).unwrap(), "seed\n");
 }
 
+/// Plan table: "Tool caches that outside builds run". The shared caches are read-only from inside, and a wake
+/// writes its own, under `$OTTO_HOME/sandbox/caches/<id>`, where the wrapper points the tools.
+#[test]
+fn shared_caches_and_the_tmux_directory_can_not_be_written() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let seeded = [".cargo/registry/src/x/build.rs", ".cargo/git/checkouts/x/build.rs", ".npm/_npx/f", ".npm/_cacache/f", ".bun/install/cache/f", ".cache/uv/f", ".cache/oh-my-zsh/f"];
+    for path in seeded {
+        std::fs::create_dir_all(s.home().join(path).parent().unwrap()).unwrap();
+        std::fs::write(s.home().join(path), "seed\n").unwrap();
+    }
+    for path in seeded.iter().chain(&[".cargo/.package-cache", ".cache/new"]) {
+        s.refused(path, &format!("echo x >> \"$H/{path}\""));
+    }
+    for path in seeded {
+        assert_eq!(std::fs::read_to_string(s.home().join(path)).unwrap(), "seed\n", "{path}");
+    }
+    s.allowed("reading the registry", "cat \"$H/.cargo/registry/src/x/build.rs\"");
+    // The wrapper made them, from outside.
+    let own = format!("mkdir -p \"$O/sandbox/caches/{id}/cargo/registry\" && echo x > \"$O/sandbox/caches/{id}/cargo/registry/f\" && echo x > \"$O/sandbox/caches/{id}/xdg/f\"", id = s.id);
+    s.allowed("its own caches", &own);
+    // cargo with its home moved there still finds its toolchain and builds.
+    let build = format!(
+        "export CARGO_HOME=\"$O/sandbox/caches/{id}/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/t\" && cd \"$TMPDIR\" && cargo new -q --vcs none p && cd p && cargo build -q --offline",
+        id = s.id
+    );
+    s.allowed("cargo, with its home in the run's caches", &build);
+    let other = format!("mkdir -p \"$O/sandbox/caches/{id}\"; echo x > \"$O/sandbox/caches/{id}/f\"", id = s.other);
+    s.refused("another run's caches", &other);
+
+    // The real tmux server's directory. Made outside first, as it is wherever the person uses tmux.
+    let uid = String::from_utf8(Command::new("/usr/bin/id").arg("-u").output().unwrap().stdout).unwrap().trim().to_string();
+    let tmux = PathBuf::from(format!("/private/tmp/tmux-{uid}"));
+    let probe = tmux.join(format!("otto-probe-{}", std::process::id()));
+    let _ = std::fs::create_dir(&tmux);
+    let out = s.inside(&format!("echo x > '{}'", probe.display()));
+    let made = probe.exists();
+    let _ = std::fs::remove_file(&probe);
+    assert!(!out.status.success() && !made, "a file in the real tmux server's directory");
+}
+
 /// Plan table: "Other otto state", "The wrapper and profiles". Its own `run.json` is writable, and that's
 /// what the record is for (the next part of 1.2).
 #[test]

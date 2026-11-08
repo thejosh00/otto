@@ -123,11 +123,36 @@ const CLAUDE_WRITES: &[&str] = &[
 ];
 const CLAUDE_WRITE_FILES: &[&str] = &["history.jsonl", "stats-cache.json"];
 
-/// Tools' own caches. Not `~/.cargo` or `~/.bun` whole: their `bin` is on the PATH.
-const CACHE_WRITES: &[&str] = &[".cache", ".cargo/registry", ".cargo/git", ".bun/install/cache", ".npm/_cacache", ".npm/_logs", ".npm/_npx", "Library/Caches"];
+/// Shared caches still writable from inside: macOS frameworks keep theirs here (`~/Library/Caches/<bundle id>`).
+/// The tools that build code from what they cache are pointed elsewhere by `CACHE_ENV`.
+const CACHE_WRITES: &[&str] = &["Library/Caches"];
 
-/// The locks cargo takes in `~/.cargo`, even to build with nothing to fetch.
-const CACHE_WRITE_FILES: &[&str] = &[".cargo/.package-cache", ".cargo/.package-cache-mutate", ".cargo/.global-cache"];
+/// Each sandboxed run's caches of its own, `$OTTO_HOME/sandbox/caches/<id>/<dir>`, by the variable that moves
+/// each tool there. The shared ones (`~/.cargo/registry` and `git`, `~/.npm`, `~/.bun/install/cache`, `~/.cache`)
+/// are read-only from inside: an unsandboxed build later runs what's in them, as a changed `build.rs` in the
+/// registry did. Nothing outside the sandbox reads these, and later wakes of the same run reuse them.
+///
+/// The trade-off: a run's first build fetches every crate and package again, since its caches start empty, and
+/// `--offline` fails until they're full. `CARGO_HOME` moving also moves cargo's `bin` and its own `config.toml`;
+/// cargo still finds the toolchain (rustup keeps it under `RUSTUP_HOME`, not `CARGO_HOME`) and still reads
+/// `~/.cargo/config.toml` for a project under the home directory, by walking up from where it builds.
+const CACHE_ENV: &[(&str, &str)] = &[
+    ("CARGO_HOME", "cargo"),
+    ("npm_config_cache", "npm"),
+    ("BUN_INSTALL_CACHE_DIR", "bun"),
+    ("UV_CACHE_DIR", "uv"),
+    ("PIP_CACHE_DIR", "pip"),
+    ("GOCACHE", "go-build"),
+    ("XDG_CACHE_HOME", "xdg"),
+];
+
+/// Shared caches whose contents a shell runs, closed to writes whatever a record says.
+const SOURCED_CACHES: &[&str] = &[".cache/oh-my-zsh"];
+
+/// Where one run's own caches are (`CACHE_ENV`).
+fn caches_of(otto_home: &Path, run_id: &str) -> PathBuf {
+    otto_home.join("sandbox/caches").join(run_id)
+}
 
 /// What starts things outside the sandbox. Refused by binary first, and by the service behind it,
 /// since a copy of the binary runs just as well.
@@ -366,7 +391,7 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     p.note("Closed by default: writes. New places that run code keep turning up, so this is a list of what's open.");
     p.close("file-write*", &["(subpath \"/\")".to_string()]);
 
-    p.note("Open to every wake: devices, temporary files, what claude keeps, tools' caches.");
+    p.note("Open to every wake: devices, temporary files, what claude keeps, macOS's caches.");
     let mut open = vec![
         "(literal \"/dev/null\")".to_string(),
         "(literal \"/dev/zero\")".to_string(),
@@ -383,7 +408,6 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     open.extend(CLAUDE_WRITES.iter().map(|d| subpath(&in_home(".claude").join(d))));
     open.extend(CLAUDE_WRITE_FILES.iter().map(|f| literal(&in_home(".claude").join(f))));
     open.extend(CACHE_WRITES.iter().map(|d| subpath(&in_home(d))));
-    open.extend(CACHE_WRITE_FILES.iter().map(|f| literal(&in_home(f))));
     p.open("file-write*", &open);
 
     p.note("Other projects, both ways, the working directory included. Its own entry can still be looked at, to start in it.");
@@ -453,6 +477,13 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
         "file-write*",
         &[literal(&otto_real.join("config.json")), literal(&otto_real.join("config.json.lock")), literal(&otto_real.join("feedback-driver")), subpath(&otto_real.join("sandbox"))],
     );
+    p.note("Its own caches, where the wrapper points cargo, npm, bun, uv and the rest. Only this run's.");
+    p.open("file-write*", &[subpath(&caches_of(&otto_real, run_id))]);
+
+    p.note("The real tmux server's directory: a file there is one the person's tmux finds. And caches a shell sources.");
+    let mut shared = vec!["(regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")".to_string()];
+    shared.extend(SOURCED_CACHES.iter().map(|d| subpath(&in_home(d))));
+    p.close("file-write*", &shared);
 
     p.note("Credentials, and what a person's accounts leave lying around. A list, so it closes what's named and no more.");
     p.close("file-read* file-write*", &CREDENTIALS.iter().map(|s| subpath(&in_home(s))).collect::<Vec<_>>());
@@ -817,6 +848,8 @@ pub fn wrap(args: &[String]) -> Result<(), OttoError> {
 struct Prepared {
     profile: PathBuf,
     command: Vec<String>,
+    /// This run's own caches (`CACHE_ENV`).
+    caches: PathBuf,
 }
 
 fn prepare(id: &str, args: &[String]) -> Result<Prepared, String> {
@@ -826,14 +859,23 @@ fn prepare(id: &str, args: &[String]) -> Result<Prepared, String> {
     let text = profile(&id, &record, &Machine::here())?;
     let path = write_profile(&id, &text)?;
     try_profile(&path)?;
+    // From outside: inside, only what's below this is writable.
+    let caches = caches_of(&crate::paths::otto_home(), &id);
+    for (_, sub) in CACHE_ENV {
+        std::fs::create_dir_all(caches.join(sub)).map_err(|e| format!("couldn't make the run's caches in {}: {e}", caches.display()))?;
+    }
     let token = read_token()?;
     hand_in(&token)?;
-    Ok(Prepared { profile: path, command })
+    Ok(Prepared { profile: path, command, caches })
 }
 
 impl Prepared {
     fn exec(self) -> std::io::Error {
         use std::os::unix::process::CommandExt;
+        self.sandboxed().exec()
+    }
+
+    fn sandboxed(&self) -> std::process::Command {
         let mut command = std::process::Command::new("/usr/bin/sandbox-exec");
         command.arg("-f").arg(&self.profile).args(&self.command);
         for (name, _) in std::env::vars_os() {
@@ -842,7 +884,10 @@ impl Prepared {
             }
         }
         command.env("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", TOKEN_FD.to_string());
-        command.exec()
+        for (name, sub) in CACHE_ENV {
+            command.env(name, self.caches.join(sub));
+        }
+        command
     }
 }
 
@@ -1081,6 +1126,60 @@ mod tests {
             assert!(!token_from(bad.as_bytes()).unwrap_err().contains("SECRET"));
         }
         assert_eq!(token_from(br#"{"claudeAiOauth":{"accessToken":"t"}}"#).unwrap(), "t");
+    }
+
+    /// Plan table, "Tool caches that outside builds run": the shared caches aren't granted, and the run's own is.
+    #[test]
+    fn a_wake_writes_caches_of_its_own_and_not_the_shared_ones() {
+        let text = generated(&record());
+        for shared in [
+            "(subpath \"/u/.cache\")",
+            "(subpath \"/u/.cargo/registry\")",
+            "(subpath \"/u/.cargo/git\")",
+            "(subpath \"/u/.bun/install/cache\")",
+            "(subpath \"/u/.npm/_npx\")",
+            "(subpath \"/u/.npm/_cacache\")",
+            "(literal \"/u/.cargo/.package-cache\")",
+        ] {
+            assert!(!text.contains(shared), "{shared} is granted: {text}");
+        }
+        let own = text.find("(allow file-write*\n  (subpath \"/u/.otto/sandbox/caches/r1\")").expect("its own caches are granted");
+        assert!(own > text.find("(subpath \"/u/.otto/sandbox\")").unwrap(), "after otto's own closes, or it stays closed");
+        assert!(!text.contains("/u/.otto/sandbox/caches\")"), "not every run's");
+    }
+
+    /// oh-my-zsh sources what's in its cache, and the real tmux server finds what's in its directory.
+    #[test]
+    fn a_sourced_cache_and_the_tmux_directory_can_not_be_written_whatever_the_record_says() {
+        let mut r = record();
+        r.write.push("/u/.cache".into());
+        let text = generated(&r);
+        let grant = text.find("(subpath \"/u/.cache\")").expect("the record's grant");
+        let temp = text.find("(subpath \"/private/tmp\")").expect("temporary files are open");
+        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")").expect("tmux's directory is closed");
+        assert!(closed > grant && closed > temp, "closed after what opens it");
+        let omz = text.find("(subpath \"/u/.cache/oh-my-zsh\")").expect("oh-my-zsh's cache is closed");
+        assert!(omz > closed && omz > grant);
+    }
+
+    /// The wrapper points each tool at the run's own caches.
+    #[test]
+    fn the_wrapper_points_the_tools_at_the_runs_own_caches() {
+        let prepared = Prepared { profile: "/p.sb".into(), command: vec!["claude".into()], caches: "/u/.otto/sandbox/caches/r1".into() };
+        let command = prepared.sandboxed();
+        let envs: std::collections::HashMap<_, _> = command.get_envs().filter_map(|(k, v)| Some((k.to_str()?.to_string(), PathBuf::from(v?)))).collect();
+        for (name, sub) in [
+            ("CARGO_HOME", "cargo"),
+            ("npm_config_cache", "npm"),
+            ("BUN_INSTALL_CACHE_DIR", "bun"),
+            ("UV_CACHE_DIR", "uv"),
+            ("XDG_CACHE_HOME", "xdg"),
+            ("PIP_CACHE_DIR", "pip"),
+            ("GOCACHE", "go-build"),
+        ] {
+            assert_eq!(envs.get(name), Some(&PathBuf::from("/u/.otto/sandbox/caches/r1").join(sub)), "{name}");
+        }
+        assert_eq!(caches_of(Path::new("/u/.otto"), "r1"), PathBuf::from("/u/.otto/sandbox/caches/r1"));
     }
 
     /// The wrapper goes in where no wake can write, and an install says the same thing again harmlessly.

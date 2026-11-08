@@ -58,7 +58,7 @@ Beyond the directories otto grants, whatever a wake needs belongs to the sandbox
 - `~/.claude`, so `--skill` can find its skill and claude can write its session transcript (otto
   reads token usage from it; without it, a wake's cost shows as unknown, which is harmless).
 - The network hosts the work needs — your git host, `gh`'s API host, package registries.
-- Anything a wrapped skill writes outside its repo, such as a tool cache.
+- Anything a wrapped skill writes outside its repo. Tool caches it has already: its own (see below).
 
 A wake that can't reach something fails the way it would anywhere: it retries, and after enough
 failures the run is `blocked` with a gate saying what went wrong.
@@ -111,8 +111,23 @@ The `--allow` otto passes come from `run.json`, which a wake can write, so the w
 Each time, outside the sandbox: read the record; generate `$OTTO_HOME/sandbox/profiles/<id>.sb`, never reusing
 one; check that `sandbox-exec` takes it; read claude's access token from the Keychain and put it on descriptor 3;
 clear what would carry a credential in (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `GIT_CONFIG*`,
-anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; exec
-`sandbox-exec` with the command after its `--`.
+anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; point
+the tools' caches at the run's own (below); exec `sandbox-exec` with the command after its `--`.
+
+### Each run's own caches
+
+The shared caches are read-only from inside: `~/.cache` (uv, pre-commit, oh-my-zsh and the rest), `~/.cargo/registry`
+and `~/.cargo/git`, `~/.npm`, `~/.bun/install/cache`. An unsandboxed build later runs what's in them, so a wake that
+changed a `build.rs` in the registry would run it outside. Instead each sandboxed run gets
+`$OTTO_HOME/sandbox/caches/<id>/`, made by the wrapper and writable only by that run's wakes, and the wrapper sets
+`CARGO_HOME`, `npm_config_cache`, `BUN_INSTALL_CACHE_DIR`, `UV_CACHE_DIR`, `PIP_CACHE_DIR`, `GOCACHE` and
+`XDG_CACHE_HOME` to directories in it. Nothing outside the sandbox reads it; later wakes of the same run reuse it.
+
+The cost: a run's first build downloads every crate and package again, and `cargo build --offline` fails until its
+cache has them. Moving `CARGO_HOME` doesn't lose the toolchain (rustup keeps that in `RUSTUP_HOME`) or
+`~/.cargo/config.toml` for a project under your home directory (cargo walks up to it); `cargo install` from inside
+puts binaries in the run's cache, not on your `PATH`. Nothing deletes a run's caches yet: remove
+`$OTTO_HOME/sandbox/caches/<id>` by hand when a run is gone.
 
 ### A run that disagrees with its record
 
@@ -147,10 +162,11 @@ a sign-in message.
 
 | | |
 |---|---|
-| **Writes** | Closed by default. Open: the record's `write`, temporary directories, tools' caches, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`), its own run, repo locks, `feedback.jsonl` |
+| **Writes** | Closed by default. Open: the record's `write`, temporary directories, the run's own caches, `~/Library/Caches`, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`), its own run, repo locks, `feedback.jsonl` |
 | **Other projects** | Reads and writes, under the configured working directory and every configured project, unless the record lists them |
 | **In anything writable** | `.git/hooks`, `.git/config`, `config.worktree`, `.claude/settings*.json`, `.claude/hooks`; moving a repository or its `.git`. No record opens these |
-| **otto's** | `config.json`, `feedback-driver`, `sandbox/`, all closed to writes whatever a record says |
+| **otto's** | `config.json`, `feedback-driver`, `sandbox/` (but for the run's own `sandbox/caches/<id>`), all closed to writes whatever a record says |
+| **Shared caches** | Read-only: the shared tool caches (see above). `~/.cache/oh-my-zsh`, which your shell sources, and `/private/tmp/tmux-<uid>`, the real tmux server's directory, are closed to writes whatever a record says |
 | **Credentials** | The Keychain and a list of files, listed in `src/sandbox.rs`; `gh` doesn't work, even for public reads. An app's own secrets (`.config/cloudgpu`, `.config/wrangler`, `.omnifactum/token`) are closed unless the record lists them |
 | **Acting from outside** | `launchctl`, `open`, `osascript`, `security`, the services behind them, the real tmux server, the ssh agent, docker's socket, and **otto's own web page**, which approves changes for anyone who asks |
 
@@ -171,6 +187,8 @@ Not a promise past the list above:
   own tools these run with everything. Give a run its worktree and not the main checkout where that matters.
 - **A worktree's `.git` file** can be pointed at a directory of a wake's own making, with hooks in it, which
   runs in whoever next uses git in that worktree (the lander, until 1.5).
+- **`~/Library/Caches`** stays writable, as macOS frameworks keep caches there. pip's and Go's are moved to the
+  run's own; anything else that caches there and runs it later isn't.
 - **Signals.** A wake can kill other processes of yours.
 - **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
   the record lists them.
