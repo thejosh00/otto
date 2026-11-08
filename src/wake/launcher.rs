@@ -155,16 +155,24 @@ pub fn resolve(state: &RunState) -> Result<LauncherDef, OttoError> {
 /// afterwards, so it is chosen by the caller before the spawn and recorded in `wake.session`.
 pub fn argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str) -> Vec<String> {
     let mut argv = sleep_guard();
-    argv.extend(launch(state, launcher, &wake_env(state), prompt));
+    argv.extend(launch(state, launcher, &wake_env(state, session_id), prompt));
     argv.extend(claude_tail(state, session_id));
     argv
 }
 
 /// What a wake's process is told about its run, for what it runs to read: a wrapped skill that
-/// behaves differently under otto, or keeps its own files and points `artifacts/` at them.
-fn wake_env(state: &RunState) -> Vec<String> {
+/// behaves differently under otto, or keeps its own files and points `artifacts/` at them. And its
+/// claude session, which the sandbox wrapper needs (`session_env`).
+fn wake_env(state: &RunState, session_id: &str) -> Vec<String> {
     let dir = crate::paths::runs_dir().join(&state.id);
-    vec![format!("OTTO_RUN_ID={}", state.id), format!("OTTO_RUN_DIR={}", dir.display())]
+    vec![format!("OTTO_RUN_ID={}", state.id), format!("OTTO_RUN_DIR={}", dir.display()), session_env(session_id)]
+}
+
+/// `OTTO_SESSION_ID`, the session claude is about to be given with `--session-id`. The sandbox wrapper
+/// opens that session's own `~/.claude/session-env/<id>` and no other's, and it reads nothing past its
+/// `--`, so it's told here, a wake's and a chat's alike.
+fn session_env(session_id: &str) -> String {
+    format!("{}={session_id}", crate::sandbox::SESSION_ENV)
 }
 
 /// The command line for a chat about a run (`crate::chat`): the run's own launcher, sandbox and
@@ -175,7 +183,7 @@ fn wake_env(state: &RunState) -> Vec<String> {
 /// `CHAT_ENV` is set, so the `otto state` writes a wake makes are refused too. A wake's own
 /// pre-approvals are not passed: they were decided for nobody being there.
 pub fn chat_argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str, attended: bool) -> Vec<String> {
-    let mut argv = launch(state, launcher, &[format!("{}={}", crate::chat::CHAT_ENV, state.id)], prompt);
+    let mut argv = launch(state, launcher, &[format!("{}={}", crate::chat::CHAT_ENV, state.id), session_env(session_id)], prompt);
     let mut allowed: Vec<&str> = crate::chat::READS.to_vec();
     if !attended {
         allowed.push(crate::chat::UNATTENDED_NOTE);
@@ -483,6 +491,20 @@ mod tests {
         assert!(argv.iter().any(|w| w.starts_with("OTTO_RUN_DIR=") && w.ends_with("/runs/r1")), "{argv:?}");
         let chat = chat_argv(&state(), &claude(), "about r1", SID, true);
         assert!(!chat.iter().any(|w| w.starts_with("OTTO_RUN_ID=")), "a chat is not a wake: {chat:?}");
+    }
+
+    /// The sandbox wrapper opens only the session's own `session-env` directory, and reads nothing past
+    /// its `--`: so a wake and a chat each tell it their session, after the guard and before the launcher,
+    /// the same id claude is given.
+    #[test]
+    fn a_wake_and_a_chat_tell_the_launcher_their_session() {
+        for line in [argv(&state(), &nono(), "wake r1", SID), chat_argv(&state(), &nono(), "about r1", SID, true)] {
+            let set = line.iter().position(|w| *w == format!("OTTO_SESSION_ID={SID}")).unwrap_or_else(|| panic!("{}", joined(&line)));
+            let cleared = line.iter().rposition(|a| a == "-u").unwrap();
+            let launcher = line.iter().position(|a| a == "nono").unwrap();
+            assert!(cleared < set && set < launcher, "{}", joined(&line));
+            assert_eq!(line[line.iter().position(|a| a == "--session-id").unwrap() + 1], SID);
+        }
     }
 
     /// Really cleared, by the `env` a wake runs under — not just named on the command line.

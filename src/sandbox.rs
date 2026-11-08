@@ -109,8 +109,10 @@ const CLAUDE_WRITES: &[&str] = &[
     "todos",
     "tasks",
     "plans",
+    // Not closed yet: a wake can still reopen another session's snapshot. claude builds its own by appending to
+    // it a line at a time (`>> "$SNAPSHOT_FILE"`), so a wake allowed only to make new files gets a snapshot of one
+    // line and quietly loses its shell setup. `plans/v3.md`, "Claude's per-session files".
     "shell-snapshots",
-    "session-env",
     "sessions",
     "file-history",
     "paste-cache",
@@ -122,6 +124,19 @@ const CLAUDE_WRITES: &[&str] = &[
     "backups",
 ];
 const CLAUDE_WRITE_FILES: &[&str] = &["history.jsonl", "stats-cache.json"];
+/// `<session id>/`, one per session, whose files that session's claude sources: another's, the person's own
+/// included, is code that runs outside the sandbox. Only the wake's own is writable.
+const CLAUDE_SESSION_ENV: &str = ".claude/session-env";
+
+/// The claude session a wrapper was started for, as otto tells it: a wake's or a chat's `--session-id`. Passed
+/// this way because nothing past the launcher's `--` is the wrapper's to read.
+pub const SESSION_ENV: &str = "OTTO_SESSION_ID";
+
+/// A session id as otto makes them (`transcript::session_id`): a lowercase UUID, so nothing else can reach a profile.
+fn is_session_id(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12]) && groups.iter().all(|g| g.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
 
 /// Shared caches still writable from inside: macOS frameworks keep theirs here (`~/Library/Caches/<bundle id>`).
 /// The tools that build code from what they cache are pointed elsewhere by `CACHE_ENV`.
@@ -369,9 +384,13 @@ fn repos_below(dir: &Path, depth: usize) -> Vec<PathBuf> {
 
 /// The whole profile for one run. The same inputs give the same text, and a path never becomes anything
 /// but a quoted string.
-pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<String, String> {
+/// `session` is claude's own session, whose `session-env` directory is the one it may write.
+pub fn profile(run_id: &str, session: &str, record: &Record, machine: &Machine) -> Result<String, String> {
     if !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("the run id {run_id:?} isn't one a profile can carry"));
+    }
+    if !is_session_id(session) {
+        return Err(format!("the session id {} isn't one otto makes", shown(session)));
     }
     let home = &machine.home;
     let otto = &machine.otto_home;
@@ -484,6 +503,13 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     let mut shared = vec!["(regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")".to_string()];
     shared.extend(SOURCED_CACHES.iter().map(|d| subpath(&in_home(d))));
     p.close("file-write*", &shared);
+
+    p.note("What other claude sessions source from session-env: only this session's own is writable.");
+    let session_env = in_home(CLAUDE_SESSION_ENV);
+    p.close("file-write*", &[subpath(&session_env)]);
+    // The directory itself, made if it isn't there yet, as claude makes its own below it.
+    p.open("file-write-create", &[format!("(require-all {} (vnode-type DIRECTORY))", literal(&session_env))]);
+    p.open("file-write*", &[subpath(&session_env.join(session))]);
 
     p.note("Credentials, and what a person's accounts leave lying around. A list, so it closes what's named and no more.");
     p.close("file-read* file-write*", &CREDENTIALS.iter().map(|s| subpath(&in_home(s))).collect::<Vec<_>>());
@@ -644,12 +670,25 @@ fn try_profile(path: &Path) -> Result<(), String> {
     Err(format!("sandbox-exec refused the profile {} (exit {}): {}", path.display(), out.status.code().unwrap_or(-1), said.trim()))
 }
 
-fn write_profile(run_id: &str, text: &str) -> Result<PathBuf, String> {
+/// One per session, as a wake and a chat of the same run can start together and each has its own. `sandbox-exec`
+/// reads it once, as it starts, so the run's older ones are cleared away.
+fn write_profile(run_id: &str, session: &str, text: &str) -> Result<PathBuf, String> {
     let dir = dir().join("profiles");
     let failed = |e: std::io::Error| format!("couldn't write a profile in {}: {e}", dir.display());
     std::fs::create_dir_all(&dir).map_err(failed)?;
-    let path = dir.join(format!("{run_id}.sb"));
-    let temp = dir.join(format!("{run_id}.sb.{}", std::process::id()));
+    let ours = format!("{run_id}.{session}.sb");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let old = entry.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > day));
+            if old && name != ours && name.starts_with(&format!("{run_id}.")) && name.ends_with(".sb") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let path = dir.join(&ours);
+    let temp = dir.join(format!("{ours}.{}", std::process::id()));
     std::fs::write(&temp, text).map_err(failed)?;
     std::fs::rename(&temp, &path).map_err(failed)?;
     Ok(path)
@@ -836,7 +875,8 @@ pub fn wrap(args: &[String]) -> Result<(), OttoError> {
     let Some(id) = run_id else {
         return Err(refused(None, "this isn't a wake or a chat: neither OTTO_RUN_ID nor OTTO_CHAT is set".to_string()));
     };
-    match prepare(&id, args) {
+    let session = std::env::var(SESSION_ENV).unwrap_or_default();
+    match prepare(&id, &session, args) {
         Ok(prepared) => {
             let error = prepared.exec();
             Err(refused(Some(&id), format!("couldn't start sandbox-exec: {error}")))
@@ -852,12 +892,18 @@ struct Prepared {
     caches: PathBuf,
 }
 
-fn prepare(id: &str, args: &[String]) -> Result<Prepared, String> {
+/// `session` is what otto said in `OTTO_SESSION_ID`. Without one there's no telling which `session-env`
+/// directory is claude's own, and claude starting with none it can write is a wake that quietly lacks it, so
+/// that's a refusal like any other.
+fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String> {
     let command = command_after_grants(args)?.to_vec();
+    if session.is_empty() {
+        return Err(format!("{SESSION_ENV} isn't set, so there's no telling which of claude's session directories is this one's"));
+    }
     let id = crate::paths::resolve_run_id(id).map_err(|e| e.to_string())?;
     let record = read_record(&id)?;
-    let text = profile(&id, &record, &Machine::here())?;
-    let path = write_profile(&id, &text)?;
+    let text = profile(&id, session, &record, &Machine::here())?;
+    let path = write_profile(&id, session, &text)?;
     try_profile(&path)?;
     // From outside: inside, only what's below this is writable.
     let caches = caches_of(&crate::paths::otto_home(), &id);
@@ -903,8 +949,11 @@ mod tests {
         Machine { home: "/u".into(), otto_home: "/u/.otto".into(), projects: vec!["/w/space".into()], temp: vec!["/private/tmp".into()], web_ports: vec![7878] }
     }
 
+    /// The session the wrapper was told about, as otto passes it.
+    const SESSION: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
+
     fn generated(record: &Record) -> String {
-        profile("r1", record, &machine()).unwrap()
+        profile("r1", SESSION, record, &machine()).unwrap()
     }
 
     /// In Seatbelt the last matching rule wins, so a grant has to come before what no record may open.
@@ -1044,10 +1093,10 @@ mod tests {
         r.write = vec!["/w/back\\slash".into()];
         assert!(generated(&r).contains(r#"(subpath "/w/back\\slash")"#));
         r.write = vec!["/w/line\nbreak".into()];
-        assert!(profile("r1", &r, &machine()).unwrap_err().contains("line break"));
+        assert!(profile("r1", SESSION, &r, &machine()).unwrap_err().contains("line break"));
         r.write = vec!["relative/path".into()];
-        assert!(profile("r1", &r, &machine()).unwrap_err().contains("absolute"));
-        assert!(profile("r1\") (allow default", &record(), &machine()).is_err(), "the id is in each message");
+        assert!(profile("r1", SESSION, &r, &machine()).unwrap_err().contains("absolute"));
+        assert!(profile("r1\") (allow default", SESSION, &record(), &machine()).is_err(), "the id is in each message");
     }
 
     /// Every rule carries the run's id, which is how 1.7's report tells runs apart, and report mode changes
@@ -1160,6 +1209,31 @@ mod tests {
         assert!(closed > grant && closed > temp, "closed after what opens it");
         let omz = text.find("(subpath \"/u/.cache/oh-my-zsh\")").expect("oh-my-zsh's cache is closed");
         assert!(omz > closed && omz > grant);
+    }
+
+    /// Plan table, "Claude's per-session files": another claude session sources the files in its own
+    /// `session-env/<id>`, so a wake writes only its own, whatever its record says.
+    #[test]
+    fn only_this_sessions_own_session_env_is_writable() {
+        let mut r = record();
+        r.write.push("/u/.claude".into());
+        let text = generated(&r);
+        let grant = text.find("(subpath \"/u/.claude\")").expect("the record's grant");
+        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (subpath \"/u/.claude/session-env\")").expect("session-env is closed");
+        assert!(closed > grant, "closed after what opens it");
+        let own = text.find(&format!("(allow file-write*\n  (subpath \"/u/.claude/session-env/{SESSION}\")")).expect("its own session's directory");
+        assert!(own > closed);
+        assert_eq!(text.matches("/u/.claude/session-env").count(), 3, "closed, the directory itself made, and its own: {text}");
+    }
+
+    /// A session id becomes a path in the profile, so only the shape otto makes gets that far.
+    #[test]
+    fn only_a_session_id_otto_makes_reaches_a_profile() {
+        let made = crate::wake::transcript::session_id("r1", 1, "2026-11-07T00:00:00Z");
+        assert!(is_session_id(&made) && is_session_id(SESSION), "{made}");
+        for bad in ["", "..", "../11111111-2222-4333-8444-555555555555", "0F9A1C2B-3D4E-4F56-8789-ABCDEF012345", "0f9a1c2b-3d4e-4f56-8789-abcdef01234\")", "0f9a1c2b3d4e4f568789abcdef012345"] {
+            assert!(profile("r1", bad, &record(), &machine()).unwrap_err().contains("session id"), "{bad}");
+        }
     }
 
     /// The wrapper points each tool at the run's own caches.

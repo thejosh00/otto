@@ -108,8 +108,8 @@ The `--allow` otto passes come from `run.json`, which a wake can write, so the w
 
 ### What the wrapper does
 
-Each time, outside the sandbox: read the record; generate `$OTTO_HOME/sandbox/profiles/<id>.sb`, never reusing
-one; check that `sandbox-exec` takes it; read claude's access token from the Keychain and put it on descriptor 3;
+Each time, outside the sandbox: read the record; generate `$OTTO_HOME/sandbox/profiles/<id>.<session>.sb`, never
+reusing one, for the claude session otto names in `OTTO_SESSION_ID` (refusing if there's none); check that `sandbox-exec` takes it; read claude's access token from the Keychain and put it on descriptor 3;
 clear what would carry a credential in (`GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `GIT_CONFIG*`,
 anything ending `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_API_KEY` or `_ACCESS_KEY`) and `TMUX`; point
 the tools' caches at the run's own (below); exec `sandbox-exec` with the command after its `--`.
@@ -180,7 +180,7 @@ a newline into a question or a log.
 
 | | |
 |---|---|
-| **Writes** | Closed by default. Open: the record's `write`, temporary directories, the run's own caches, `~/Library/Caches`, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`), its own run, repo locks, `feedback.jsonl` |
+| **Writes** | Closed by default. Open: the record's `write`, temporary directories, the run's own caches, `~/Library/Caches`, what claude keeps under `~/.claude` (`projects` and a few others, not `settings.json`, `hooks`, `skills`, `agents`, `commands` or `plugins`; of `session-env`, only the wake's own session's directory), its own run, repo locks, `feedback.jsonl` |
 | **Other projects** | Reads and writes, under the configured working directory and every configured project, unless the record lists them |
 | **In anything writable** | `.git/hooks`, `.git/config`, `config.worktree`, `.claude/settings*.json`, `.claude/hooks`; moving a repository or its `.git`. No record opens these |
 | **otto's** | `config.json`, `feedback-driver`, `sandbox/` (but for the run's own `sandbox/caches/<id>`), all closed to writes whatever a record says |
@@ -200,6 +200,9 @@ Not a promise past the list above:
   sent. A new credential file is open until someone adds it.
 - **Other local services.** Only otto's page and docker's socket are closed. Anything else listening on the
   machine can be reached.
+- **Other sessions' shell snapshots** (`~/.claude/shell-snapshots`), which each claude sources before every Bash
+  command, its owner's unsandboxed one included. Making them create-only doesn't work: claude builds its own by
+  appending a line at a time, so it would get one line and quietly lose its shell setup. Open for now.
 - **`~/.claude/projects`** holds auto-memory, which steers later sessions in that directory, unsandboxed ones too.
 - **Files in a writable repo that run later:** `.envrc`, `.vscode/`, `Makefile`, `.mcp.json`. Under a person's
   own tools these run with everything. Give a run its worktree and not the main checkout where that matters.

@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+/// The claude session a wake is, as otto tells the wrapper (`OTTO_SESSION_ID`).
+const SESSION: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
 
 /// Whether a different profile can be entered from here. Not from inside a sandboxed wake.
 fn can_nest() -> bool {
@@ -75,7 +77,7 @@ impl Scratch {
     }
 
     fn profile_path(&self) -> PathBuf {
-        self.otto_home().join("sandbox/profiles").join(format!("{}.sb", self.id))
+        self.otto_home().join("sandbox/profiles").join(format!("{}.{SESSION}.sb", self.id))
     }
 
     fn otto(&self) -> Command {
@@ -88,6 +90,7 @@ impl Scratch {
             .env_remove("OTTO_RUN_ID")
             .env_remove("OTTO_RUN_DIR")
             .env_remove("OTTO_CHAT")
+            .env_remove("OTTO_SESSION_ID")
             .current_dir(&self.root);
         c
     }
@@ -103,7 +106,7 @@ impl Scratch {
     /// The wrapper, for this run. In a scratch `HOME` there's no sign-in, so it stops at the token, having
     /// written the profile: which is how these tests get the very text a wake would run under.
     fn wrap(&self, args: &[&str]) -> Output {
-        self.otto().env("OTTO_RUN_ID", &self.id).args(["sandbox", "wrap"]).args(args).output().unwrap()
+        self.otto().env("OTTO_RUN_ID", &self.id).env("OTTO_SESSION_ID", SESSION).args(["sandbox", "wrap"]).args(args).output().unwrap()
     }
 
     fn profile(&self) -> PathBuf {
@@ -392,6 +395,34 @@ fn shared_caches_and_the_tmux_directory_can_not_be_written() {
     assert!(!out.status.success() && !made, "a file in the real tmux server's directory");
 }
 
+/// Plan table, "Claude's per-session files". Another claude session, the person's own included, sources the files
+/// in its `session-env/<id>`: a wake writes in its own session's directory, and nothing else there.
+#[test]
+fn another_claude_sessions_files_can_not_be_written() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let other = "11111111-2222-4333-8444-555555555555";
+    let seeded = [format!(".claude/session-env/{other}/hook-1.sh")];
+    for path in &seeded {
+        std::fs::create_dir_all(s.home().join(path).parent().unwrap()).unwrap();
+        std::fs::write(s.home().join(path), "seed\n").unwrap();
+    }
+    for path in &seeded {
+        s.refused(path, &format!("echo x >> \"$H/{path}\""));
+        s.refused(path, &format!("echo x > \"$H/{path}.new\" && mv \"$H/{path}.new\" \"$H/{path}\""));
+    }
+    s.refused("a new file in another session's directory", &format!("echo x > \"$H/.claude/session-env/{other}/new.sh\""));
+    s.refused("a directory for another session", "mkdir \"$H/.claude/session-env/third\"");
+    for path in &seeded {
+        assert_eq!(std::fs::read_to_string(s.home().join(path)).unwrap(), "seed\n", "{path}");
+    }
+    assert!(!s.home().join(".claude/session-env/third").exists());
+    let own = format!("mkdir -p \"$H/.claude/session-env/{SESSION}\" && echo x > \"$H/.claude/session-env/{SESSION}/f\" && echo y >> \"$H/.claude/session-env/{SESSION}/f\"");
+    s.allowed("its own session's directory", &own);
+}
+
 /// Plan table: "Other otto state", "The wrapper and profiles". Its own `run.json` is writable, and that's
 /// what the record is for (the next part of 1.2).
 #[test]
@@ -659,6 +690,22 @@ fn the_wrapper_fails_closed_and_says_why() {
     std::fs::write(s.record_path(), r#"{"launcher":"s","write":["relative"]}"#).unwrap();
     check(&s, "a relative path", "absolute");
 
+    // No session, or one otto wouldn't make: there's no telling which of claude's directories is its own.
+    std::fs::write(s.record_path(), one_repo(&s.home()).to_string()).unwrap();
+    let session = |value: Option<&str>| {
+        let mut c = s.otto();
+        c.env("OTTO_RUN_ID", &s.id).args(["sandbox", "wrap", "--", stub]);
+        if let Some(v) = value {
+            c.env("OTTO_SESSION_ID", v);
+        }
+        c.output().unwrap()
+    };
+    for (value, said) in [(None, "OTTO_SESSION_ID isn't set"), (Some("../other"), "session id")] {
+        let out = session(value);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success() && !marker.exists() && stderr.contains(said), "{value:?}: {stderr}");
+    }
+
     // Not a wake or a chat at all.
     let out = s.otto().args(["sandbox", "wrap", "--", stub]).output().unwrap();
     assert!(!out.status.success() && !marker.exists());
@@ -742,6 +789,7 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
         .current_dir(&root)
         .env("OTTO_HOME", &otto_home)
         .env("OTTO_RUN_ID", &id)
+        .env("OTTO_SESSION_ID", SESSION)
         .env("GH_TOKEN", "planted")
         .env("GITHUB_TOKEN", "planted")
         .env("GIT_CONFIG_COUNT", "1")
