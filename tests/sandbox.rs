@@ -9,10 +9,12 @@
 //! and prints none.
 #![cfg(target_os = "macos")]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+const OTTO: &str = support::OTTO;
 /// The claude session a wake is, as otto tells the wrapper (`OTTO_SESSION_ID`).
 const SESSION: &str = "0f9a1c2b-3d4e-4f56-8789-abcdef012345";
 
@@ -81,7 +83,7 @@ impl Scratch {
     }
 
     fn otto(&self) -> Command {
-        let mut c = Command::new(OTTO);
+        let mut c = support::otto_command();
         c.env("HOME", self.home())
             .env("OTTO_HOME", self.otto_home())
             .env("TMUX_TMPDIR", &self.root)
@@ -828,7 +830,7 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
     let otto_home = root.join("home");
     std::fs::create_dir_all(otto_home.join("sandbox/runs")).unwrap();
     let otto = |args: &[&str]| {
-        Command::new(OTTO)
+        support::otto_command()
             .args(args)
             .env("OTTO_HOME", &otto_home)
             .env("TMUX_TMPDIR", &root)
@@ -852,7 +854,7 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
                   printf 'oauth=%s\\n' \"${CLAUDE_CODE_OAUTH_TOKEN:-none}\"; printf 'gitcfg=%s\\n' \"${GIT_CONFIG_COUNT:-none}\"; \
                   printf 'ghfile=%s\\n' \"$(cat \"$HOME/.config/gh/hosts.yml\" 2>/dev/null | wc -c | tr -d ' ')\"; \
                   printf 'config=%s\\n' \"$CLAUDE_CONFIG_DIR\"";
-    let out = Command::new(OTTO)
+    let out = support::otto_command()
         .args(["sandbox", "wrap", "--", "/bin/sh", "-c", script])
         .current_dir(&root)
         .env("OTTO_HOME", &otto_home)

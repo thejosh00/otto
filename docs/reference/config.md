@@ -120,3 +120,4 @@ repository's process changes only what is approved after.
 | `OTTO_HOME` | Where otto keeps its data, instead of `~/.otto`. `otto agent start` and `otto service start` pass it on to the launchd jobs |
 | `OTTO_BIN_DIR` | Where `./install.sh` puts the binary, instead of `~/.local/bin` |
 | `OTTO_REPO` | The otto checkout `otto install` symlinks skills from, when not run inside it |
+| `OTTO_NOTIFY` | `off`: poke records its notifications but doesn't post them, and detached wakes inherit it. For tests; see [notifications](../guides/running-as-a-service.md#notifications) |

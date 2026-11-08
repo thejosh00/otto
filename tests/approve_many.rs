@@ -2,13 +2,15 @@
 //! binary: one refusal leaves every named change in review, whatever order the list is in, and if
 //! saving fails partway the error says what is approved. A stub stands in for the model.
 
+mod support;
+
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+const OTTO: &str = support::OTTO;
 
 struct Scratch {
     _dir: tempfile::TempDir,
@@ -62,7 +64,7 @@ impl Scratch {
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(OTTO)
+        support::otto_command()
             .args(args)
             .current_dir(self.root.join("repo"))
             .env("OTTO_HOME", self.root.join("home"))

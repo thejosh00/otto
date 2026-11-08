@@ -11,6 +11,11 @@
 //! `budget`), recorded in `run.json`'s `notified` when sent, so a five-minute poller says it
 //! once. Keys that no longer apply are dropped, which is what lets the same kind of notice fire
 //! again for the next gate, the next block.
+//!
+//! `OTTO_NOTIFY=off` keeps every notice from reaching the notification centre and changes nothing
+//! else: each is still recorded and journalled, and poke's report says it was not sent. It is for
+//! tests, whose scratch homes have gates and changes of their own (`tests/support`, `test/live.sh`,
+//! `test/sandbox/`), and is handed on to detached wakes like `OTTO_HOME`.
 
 use crate::clock::Timestamp;
 use crate::event::Event;
@@ -24,6 +29,8 @@ const SEND_TIMEOUT_SECONDS: u64 = 10;
 // A notification banner shows a line or two; the rest is in `otto show`.
 const DETAIL_MAX_CHARS: usize = 120;
 const BUDGET_WARN_FRACTION: f64 = 0.8;
+/// Set to `off`, no notice is sent; see the module's note.
+pub const SWITCH_ENV: &str = "OTTO_NOTIFY";
 /// Wakes in a row that couldn't start before a person is told (`RunState::start_failures`).
 pub const START_FAILURES_NOTIFIED: u32 = 3;
 
@@ -167,6 +174,16 @@ fn reconcile(
 /// for poke's report. A failed send is reported but still counts as sent — retrying a broken
 /// `osascript` every five minutes would only fill the journal.
 pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run: bool) -> Vec<String> {
+    pass_with(runs, now, exec, dry_run, switched_off(std::env::var(SWITCH_ENV).ok().as_deref()))
+}
+
+/// Whether `OTTO_NOTIFY` says not to send.
+fn switched_off(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v.trim().eq_ignore_ascii_case("off"))
+}
+
+/// `pass`, with `off` deciding whether anything is sent rather than the environment.
+fn pass_with(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run: bool, off: bool) -> Vec<String> {
     let ids: Vec<String> = runs.iter().map(|r| r.id().to_string()).collect();
     let mut lines = Vec::new();
     // A run handing back a lot of code would be a banner a change: new ones across every run are
@@ -217,22 +234,14 @@ pub fn pass(runs: &[RunEntry], now: OffsetDateTime, exec: &mut dyn Exec, dry_run
                         changes.push((title.clone(), n));
                         continue;
                     }
-                    let result = send(exec, &title, &n.message);
-                    lines.push(match result {
-                        Ok(()) => format!("notify {:<34} {}", snapshot.id, n.message),
-                        Err(e) => format!("notify {:<34} could not send ({e}): {}", snapshot.id, n.message),
-                    });
+                    lines.push(say(exec, off, &snapshot.id, &title, &n.message));
                 }
             }
             Err(e) => lines.push(format!("notify {:<34} could not record: {e}", snapshot.id)),
         }
     }
     if let Some((title, message)) = combined(&changes) {
-        let result = send(exec, &title, &message);
-        lines.push(match result {
-            Ok(()) => format!("notify {:<34} {message}", "changes"),
-            Err(e) => format!("notify {:<34} could not send ({e}): {message}", "changes"),
-        });
+        lines.push(say(exec, off, "changes", &title, &message));
     }
     lines
 }
@@ -246,6 +255,17 @@ fn combined(changes: &[(String, Notice)]) -> Option<(String, String)> {
             "otto · changes".to_string(),
             format!("{} things about changes for you: {}, and {} more. otto changes", rest.len() + 1, first.message.trim_end_matches(". otto changes"), rest.len()),
         )),
+    }
+}
+
+/// Send one notice, unless switched off, and poke's line about it.
+fn say(exec: &mut dyn Exec, off: bool, who: &str, title: &str, message: &str) -> String {
+    if off {
+        return format!("notify {who:<34} [not sent: {SWITCH_ENV}=off] {message}");
+    }
+    match send(exec, title, message) {
+        Ok(()) => format!("notify {who:<34} {message}"),
+        Err(e) => format!("notify {who:<34} could not send ({e}): {message}"),
     }
 }
 
@@ -410,6 +430,29 @@ mod tests {
         assert_eq!(exec.calls.borrow().len(), 1);
 
         let journal = std::fs::read_to_string(crate::paths::run_dir("n-once").unwrap().join("journal.jsonl")).unwrap();
+        assert_eq!(journal.matches("\"event\":\"notified\"").count(), 1);
+    }
+
+    #[test]
+    fn switched_off_records_the_notice_but_sends_nothing() {
+        assert!(switched_off(Some("off")) && switched_off(Some("OFF ")));
+        assert!(!switched_off(None) && !switched_off(Some("")) && !switched_off(Some("on")));
+
+        let _home = TempHome::new();
+        crate::state::commands::test_init("n-off", "a goal").unwrap();
+        crate::state::transaction("n-off", |_p, s| {
+            s.status = Status::AwaitingHuman;
+            s.gate = Some(gate("001", 1));
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        let lines = pass_with(&crate::state::read_all_runs().unwrap(), now(), &mut exec, false, true);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("[not sent: OTTO_NOTIFY=off]") && lines[0].contains("plan review"), "{}", lines[0]);
+        assert!(exec.calls.borrow().is_empty());
+        assert!(crate::state::read_run("n-off").unwrap().notified.contains_key("gate:001"));
+        let journal = std::fs::read_to_string(crate::paths::run_dir("n-off").unwrap().join("journal.jsonl")).unwrap();
         assert_eq!(journal.matches("\"event\":\"notified\"").count(), 1);
     }
 

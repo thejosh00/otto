@@ -2,13 +2,15 @@
 //! `poke.log` and its rotated files, the check history, and a transcript. One real wake with a stub
 //! for the model, for running against a wake that's holding its lock.
 
+mod support;
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime};
 
-const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+const OTTO: &str = support::OTTO;
 const LONG: &str = "2026-09-13-once-an-hour-check-for-tasks-to-complete";
 
 struct Scratch {
@@ -45,7 +47,7 @@ impl Scratch {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(OTTO);
+        let mut command = support::otto_command();
         command
             .args(args)
             .current_dir(self.root.join("repo"))

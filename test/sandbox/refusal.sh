@@ -10,7 +10,7 @@ unset TMUX TMUX_PANE OTTO_RUN_ID OTTO_RUN_DIR OTTO_CHAT
 S=$(mktemp -d "$HOME/.work-trees/otto-scratch-refusal.XXXXXX"); S=$(cd "$S" && pwd -P)
 trap 'env -u TMUX TMUX_TMPDIR="$S/t" tmux kill-server 2>/dev/null; rm -rf "$S"' EXIT
 mkdir -p "$S/t" "$S/home/sandbox/runs" "$S/work/repo" "$S/work/other"
-export OTTO_HOME=$S/home TMUX_TMPDIR=$S/t
+export OTTO_HOME=$S/home TMUX_TMPDIR=$S/t OTTO_NOTIFY=off
 cat >"$S/stub" <<STUB
 #!/bin/sh
 echo "\$OTTO_RUN_ID\$OTTO_CHAT" >> "$S/started"

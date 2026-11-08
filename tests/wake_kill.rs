@@ -4,12 +4,14 @@
 //! The run is `--detach none`, so nothing needs tmux and poke starts the wake as it would in life:
 //! in a process group of its own, under no one here.
 
+mod support;
+
 use serde_json::Value;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+const OTTO: &str = support::OTTO;
 
 struct Scratch {
     _dir: tempfile::TempDir,
@@ -45,7 +47,7 @@ impl Scratch {
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(OTTO)
+        support::otto_command()
             .args(args)
             .current_dir(self.root.join("repo"))
             .env("OTTO_HOME", self.root.join("home"))

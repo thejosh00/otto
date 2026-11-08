@@ -2,6 +2,8 @@
 //! the log the way launchd does it: the file opened and handed over, not a pipe the test reads.
 //! `--detach none` and a stub for the model, so nothing needs tmux or can reach the real one.
 
+mod support;
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -43,7 +45,7 @@ impl Scratch {
             &stub,
             format!(
                 "#!/bin/sh\nprintf '# h\\n## Goal\\ng\\n## Where this is\\nHere.\\n## Decided\\nn\\n## This wake did\\nn\\n## Next wake must\\nn\\n## Needs\\nnothing\\n## Don'\"'\"'t re-derive\\nn\\n' | '{}' state handoff \"$OTTO_RUN_ID\" --stdin >/dev/null\n",
-                env!("CARGO_BIN_EXE_otto"),
+                support::OTTO,
             ),
         )
         .unwrap();
@@ -58,13 +60,13 @@ impl Scratch {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_otto"));
+        let mut command = support::otto_command();
         command
             .args(args)
             .current_dir(&self.root)
             .env("OTTO_HOME", self.root.join("home"))
             .env("TMUX_TMPDIR", &self.root)
-            .env("OTTO_BIN", env!("CARGO_BIN_EXE_otto"))
+            .env("OTTO_BIN", support::OTTO)
             .env_remove("TMUX")
             .env_remove("OTTO_RUN_ID")
             .env_remove("OTTO_RUN_DIR")

@@ -5,10 +5,12 @@
 //! someone noticed. The real binary runs against a stand-in for launchctl under a throwaway `HOME`,
 //! so nothing here touches launchd, and the race happens every time rather than once in a while.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 struct Sandbox {
     _dir: tempfile::TempDir,
@@ -46,9 +48,10 @@ exit 0
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_otto"))
+        support::otto_command()
             .args(args)
             .env_clear()
+            .env("OTTO_NOTIFY", "off")
             .env("HOME", self.root.join("home"))
             .env("OTTO_HOME", self.root.join("home/.otto"))
             .env("PATH", format!("{}:/usr/bin:/bin", self.root.join("stubs").display()))

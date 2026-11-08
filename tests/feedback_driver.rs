@@ -1,12 +1,14 @@
 //! tests/feedback_driver.rs — naming the run that may assign work, through the real binary: who may
 //! name it is decided by the environment a command runs in, and how an item reads by what it prints.
 
+mod support;
+
 use serde_json::Value;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn otto(home: &Path, env: &[(&str, &str)], args: &[&str]) -> Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_otto"));
+    let mut command = support::otto_command();
     command.args(args).env("OTTO_HOME", home).env_remove("OTTO_RUN_ID").env_remove("OTTO_RUN_DIR").env_remove("OTTO_CHAT");
     command.envs(env.iter().copied());
     command.output().unwrap_or_else(|e| panic!("could not run otto {args:?}: {e}"))

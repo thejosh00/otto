@@ -78,7 +78,8 @@ pub fn kill_session(exec: &mut dyn Exec, name: &str) -> bool {
 /// anywhere. Found exactly that way.
 fn inherited_env() -> Vec<(String, String)> {
     let mut env = Vec::new();
-    for key in ["OTTO_HOME", "PATH"] {
+    // `OTTO_NOTIFY` too, so a test's wakes, and any poke they run, stay as quiet as the test.
+    for key in ["OTTO_HOME", "PATH", crate::notify::SWITCH_ENV] {
         if let Ok(value) = std::env::var(key) {
             if !value.is_empty() {
                 env.push((key.to_string(), value));

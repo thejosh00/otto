@@ -105,7 +105,7 @@ fn run_case(cleaned_up: bool) {
          ## This wake did\nMade the note worktree, committed NOTE.md, merged note into main, removed the worktree and the branch.\n\
          ## Next wake must\nNothing; the run is done.\n## Needs\nnothing\n## Don't re-derive\nartifacts/todo.md\n"
     );
-    let wrote = std::process::Command::new(otto_bin())
+    let wrote = otto_command()
         .args(["state", "handoff", &run_id, "--stdin"])
         .stdin(std::process::Stdio::piped())
         .spawn()

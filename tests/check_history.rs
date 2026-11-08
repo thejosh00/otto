@@ -2,9 +2,11 @@
 //! a real script on a due run, with a stub for the model. Every run is `--detach none`, so nothing
 //! needs tmux, and poke's wakes run as detached processes, which `wait_for` waits out.
 
+mod support;
+
 use serde_json::Value;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 /// The bound in `src/check_history.rs`, here too so that changing it is a decision.
@@ -26,7 +28,7 @@ impl Scratch {
             &stub,
             format!(
                 "#!/bin/sh\nprintf '# h\\n## Goal\\ng\\n## Where this is\\nHere.\\n## Decided\\nn\\n## This wake did\\nn\\n## Next wake must\\nn\\n## Needs\\nnothing\\n## Don'\"'\"'t re-derive\\nn\\n' | '{}' state handoff \"$OTTO_RUN_ID\" --stdin >/dev/null\n",
-                env!("CARGO_BIN_EXE_otto"),
+                support::OTTO,
             ),
         )
         .unwrap();
@@ -41,12 +43,12 @@ impl Scratch {
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_otto"))
+        support::otto_command()
             .args(args)
             .current_dir(&self.root)
             .env("OTTO_HOME", self.root.join("home"))
             .env("TMUX_TMPDIR", &self.root)
-            .env("OTTO_BIN", env!("CARGO_BIN_EXE_otto"))
+            .env("OTTO_BIN", support::OTTO)
             .env_remove("TMUX")
             .env_remove("OTTO_RUN_ID")
             .env_remove("OTTO_RUN_DIR")

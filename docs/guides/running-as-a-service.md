@@ -64,6 +64,11 @@ It's poke that sends them rather than the wake, because a sandboxed wake may not
 the notification centre. If you see none, check System Settings → Notifications for Script
 Editor, which is what `osascript` posts as.
 
+With `OTTO_NOTIFY=off` in poke's environment nothing is posted: each notice is still recorded as
+sent, and poke's report marks it `[not sent: OTTO_NOTIFY=off]`. otto's tests set it, so their
+scratch runs stay out of your notification centre. Don't set it for the reviver itself; a notice
+it records but doesn't post is not posted later.
+
 ## Troubleshooting
 
 | Symptom | Look at |

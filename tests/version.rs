@@ -6,6 +6,8 @@
 //! real `build.rs` in a tiny crate planted in a throwaway one, which builds in moments and doesn't
 //! depend on the state of this checkout.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -28,7 +30,7 @@ fn the_real_binary_carries_the_commit_in_both_flags() {
         .filter(|o| o.status.success() && repo.join(".git").exists())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     for flag in ["--version", "-V"] {
-        let said = run(repo, env!("CARGO_BIN_EXE_otto"), &[flag]);
+        let said = run(repo, support::OTTO, &[flag]);
         let commit = said
             .strip_prefix(concat!("otto ", env!("CARGO_PKG_VERSION"), " ("))
             .and_then(|rest| rest.strip_suffix(')'))

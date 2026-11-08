@@ -4,6 +4,8 @@
 //! Every run here is `--detach none`, so nothing needs tmux: a terminal's command runs the wake in
 //! place, and poke's and the lander's run as detached processes, which `wait_for` waits out.
 
+mod support;
+
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -29,7 +31,7 @@ impl Scratch {
                 "#!/bin/sh\nnext='{root}/'\"$OTTO_RUN_ID\".next\nif [ -f \"$next\" ]; then\n  mv \"$next\" \"$next.running\"\n  . \"$next.running\"\nfi\n\
                  printf '# h\\n## Goal\\ng\\n## Where this is\\nHere.\\n## Decided\\nn\\n## This wake did\\nn\\n## Next wake must\\nn\\n## Needs\\nnothing\\n## Don'\"'\"'t re-derive\\nn\\n' | '{otto}' state handoff \"$OTTO_RUN_ID\" --stdin >/dev/null\n",
                 root = root.display(),
-                otto = env!("CARGO_BIN_EXE_otto"),
+                otto = support::OTTO,
             ),
         )
         .unwrap();
@@ -50,12 +52,12 @@ impl Scratch {
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_otto"))
+        support::otto_command()
             .args(args)
             .current_dir(self.repo())
             .env("OTTO_HOME", self.root.join("home"))
             .env("TMUX_TMPDIR", &self.root)
-            .env("OTTO_BIN", env!("CARGO_BIN_EXE_otto"))
+            .env("OTTO_BIN", support::OTTO)
             .env_remove("TMUX")
             .env_remove("OTTO_RUN_ID")
             .env_remove("OTTO_RUN_DIR")
@@ -115,7 +117,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+const OTTO: &str = support::OTTO;
 
 #[test]
 fn what_a_person_does_is_what_the_wake_says_started_it() {

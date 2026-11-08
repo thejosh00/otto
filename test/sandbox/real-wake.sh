@@ -15,7 +15,7 @@ trap 'env -u TMUX TMUX_TMPDIR="$S/t" tmux kill-server 2>/dev/null; rm -rf "$S"' 
 mkdir -p "$S/t" "$S/bin"
 # A copy, as the one it was given may well be in a project the sandbox closes. On the PATH for the same reason.
 cp "$OTTO" "$S/bin/otto"; OTTO=$S/bin/otto; export PATH="$S/bin:$PATH"
-export OTTO_HOME=$S/home TMUX_TMPDIR=$S/t OTTO_BIN=$OTTO GH_TOKEN=planted-value GITHUB_TOKEN=planted-value
+export OTTO_HOME=$S/home TMUX_TMPDIR=$S/t OTTO_NOTIFY=off OTTO_BIN=$OTTO GH_TOKEN=planted-value GITHUB_TOKEN=planted-value
 REPO=$S/repo
 git init -q -b main "$REPO"; git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 mkdir -p "$OTTO_HOME"

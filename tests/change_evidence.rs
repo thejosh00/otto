@@ -2,6 +2,8 @@
 //! `--evidence` nor `--no-evidence`, through the real binary: what a wake types, what it is told,
 //! the exit code, and what is left on disk. No tmux, no model.
 
+mod support;
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -59,7 +61,7 @@ impl Scratch {
     }
 
     fn otto(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_otto"))
+        support::otto_command()
             .args(args)
             .current_dir(&self.root)
             .env("OTTO_HOME", self.root.join("home"))

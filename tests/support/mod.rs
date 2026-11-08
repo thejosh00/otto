@@ -20,8 +20,11 @@ use std::time::{Duration, Instant};
 
 // --- running the binary -----------------------------------------------------
 
+/// The binary under test. To run it, `otto_command`; this is for a script that calls it.
+pub const OTTO: &str = env!("CARGO_BIN_EXE_otto");
+
 pub fn otto_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_otto"))
+    PathBuf::from(OTTO)
 }
 
 /// A path inside this checkout, e.g. `repo_path("test/fixtures/hello-flow.md")` — resolved
@@ -60,6 +63,9 @@ fn use_a_home_of_its_own() {
         std::fs::create_dir_all(&tmux_dir).expect("create the test's tmux directory");
         std::env::set_var("TMUX_TMPDIR", tmux_dir);
         std::env::remove_var("TMUX");
+        // And no desktop notifications: a test's runs open gates and hand back changes, and poke
+        // would tell you about every one. Recorded as usual, never sent. Wakes are handed it too.
+        std::env::set_var("OTTO_NOTIFY", "off");
         std::fs::create_dir_all(root.join("home")).expect("create the test's otto home");
         // `otto run` asks where wakes run until the home's config says.
         let config = serde_json::json!({ "workdir": root.join("work") }).to_string();
@@ -74,9 +80,11 @@ pub struct RealHome(Vec<(&'static str, std::ffi::OsString)>);
 
 pub fn real_home() -> RealHome {
     use_a_home_of_its_own();
-    let own = ["OTTO_HOME", "TMUX_TMPDIR"].into_iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))).collect();
+    // `OTTO_NOTIFY` too: a poke in your home that sends nothing would still mark your notices sent.
+    let own = ["OTTO_HOME", "TMUX_TMPDIR", "OTTO_NOTIFY"].into_iter().filter_map(|key| std::env::var_os(key).map(|value| (key, value))).collect();
     std::env::remove_var("OTTO_HOME");
     std::env::remove_var("TMUX_TMPDIR");
+    std::env::remove_var("OTTO_NOTIFY");
     RealHome(own)
 }
 
@@ -91,11 +99,29 @@ impl Drop for RealHome {
 /// Run `otto <args...>` in this test's own home, otherwise inheriting this process's environment
 /// (so `PATH` and the rest pass through exactly as they would from a person's shell).
 pub fn otto(args: &[&str]) -> Output {
-    use_a_home_of_its_own();
-    Command::new(otto_bin())
+    otto_command()
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("could not run otto {args:?}: {e}"))
+}
+
+/// The otto under test, to add arguments and environment to, in this test's own home and with
+/// notifications off. Every test file runs otto through this or `otto` (`tests/quiet_notifications.rs`
+/// checks), so none can reach your notification centre. A test that sets its own `OTTO_HOME`
+/// keeps it: an `env` on the command wins over the process's.
+pub fn otto_command() -> Command {
+    use_a_home_of_its_own();
+    let mut command = Command::new(otto_bin());
+    // On the command as well as the process, so a test's `env_clear` before its own settings is
+    // the only way to lose it, and that is checked for too.
+    command.env("OTTO_NOTIFY", "off");
+    command
+}
+
+/// This test's own `OTTO_HOME`, made if it isn't yet.
+pub fn own_home() -> PathBuf {
+    use_a_home_of_its_own();
+    PathBuf::from(std::env::var_os("OTTO_HOME").expect("a home of its own sets OTTO_HOME"))
 }
 
 pub fn stdout(output: &Output) -> String {
