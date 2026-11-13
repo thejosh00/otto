@@ -222,6 +222,10 @@ pub struct ChangeVersion {
     /// How long `file` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub words: Option<u32>,
+    /// What its pull request says, relative to the run directory: for a reviewer who sees only the
+    /// repository, so none of how otto got there. Without one, its pull request says `file` or `summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_file: Option<String>,
     /// What the tests said, in the author's words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tests: Option<String>,
@@ -832,6 +836,8 @@ pub struct Submit<'a> {
     pub summary: &'a str,
     /// The whole of what the author has to say, when `summary` is a summary of it.
     pub file: Option<&'a str>,
+    /// What its pull request says, for a reviewer who sees only the repository.
+    pub pr: Option<&'a str>,
     pub tests: Option<&'a str>,
     /// What shows it works, found and checked (`find_evidence`).
     pub evidence: Vec<Found>,
@@ -865,6 +871,10 @@ pub struct Submitted {
     pub file_ignored: bool,
     /// The same commit again, with a different summary and no write-up to go with it: kept as it was.
     pub summary_ignored: bool,
+    /// The same commit again, and what its pull request says joined the version.
+    pub pr_added: bool,
+    /// The same commit again, with a different pull request description: kept as it was.
+    pub pr_ignored: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -903,6 +913,13 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             return Err(OttoError::usage(format!("--file is at most {} bytes — a document a person reads", crate::outputs::FILE_MAX_BYTES)));
         }
         crate::outputs::check_summary(summary, crate::outputs::words(text))?;
+    }
+    let pr = s.pr.map(str::trim).filter(|t| !t.is_empty());
+    if s.pr.is_some() && pr.is_none() {
+        return Err(OttoError::usage("--pr-file is empty: it is what its pull request says, for a reviewer who sees only the repository"));
+    }
+    if pr.is_some_and(|t| t.chars().count() > PR_BODY_MAX_CHARS) {
+        return Err(OttoError::usage(format!("--pr-file is at most {PR_BODY_MAX_CHARS} characters — GitHub refuses a longer pull request description")));
     }
     let tests = s.tests.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     if tests.as_ref().is_some_and(|t| t.chars().count() > TESTS_MAX_CHARS) {
@@ -1002,6 +1019,9 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 let same_summary = crate::state::links::read_to_string(path.join(&latest.summary)).is_ok_and(|old| old.trim_end() == summary);
                 let new_summary = file.is_some() && !file_ignored && !same_summary;
                 let summary_ignored = file.is_none() && !same_summary;
+                let kept_pr = latest.pr_file.as_ref().and_then(|f| crate::state::links::read_to_string(path.join(f)).ok());
+                let pr_ignored = pr.is_some_and(|t| kept_pr.as_ref().is_some_and(|old| old.trim() != t));
+                let new_pr = if kept_pr.is_none() { pr } else { None };
                 let c = &mut index.changes[i];
                 c.title = title.clone();
                 c.worktree = worktree.clone().or(c.worktree.take());
@@ -1029,11 +1049,20 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                     }
                     c.moment("author", format!("v{k}: {}", if new_file.is_some() { "added the whole of what it says, with a summary" } else { "a better summary" }));
                 }
+                if let Some(text) = new_pr {
+                    let dir = c.dir();
+                    let k = c.latest().k;
+                    let rel = write_pr(path, &dir, k, text)?;
+                    c.versions.last_mut().expect("has a latest").pr_file = Some(rel);
+                    c.moment("author", format!("v{k}: added what its pull request says"));
+                }
                 let mut out = submitted(c, true, None);
                 out.evidence_ignored = ignored;
                 out.file_ignored = file_ignored;
                 out.summary_ignored = summary_ignored;
                 out.summary_added = new_file.is_some() || new_summary;
+                out.pr_added = new_pr.is_some();
+                out.pr_ignored = pr_ignored;
                 write_index(path, &index)?;
                 return Ok(out);
             }
@@ -1073,6 +1102,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
         };
         let summary_rel = write_said(path, &dir, k, summary)?;
         let whole = file.map(|text| write_whole(path, &dir, k, text)).transpose()?;
+        let pr_file = pr.map(|text| write_pr(path, &dir, k, text)).transpose()?;
         let evidence = keep_evidence(path, &dir, k, &s.evidence)?;
         let version = ChangeVersion {
             k,
@@ -1089,6 +1119,7 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             summary: summary_rel,
             words: whole.as_ref().map(|(_, words)| *words),
             file: whole.map(|(rel, _)| rel),
+            pr_file,
             tests: tests.clone(),
             why: None,
             evidence,
@@ -1181,6 +1212,8 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         summary_added: false,
         file_ignored: false,
         summary_ignored: false,
+        pr_added: false,
+        pr_ignored: false,
     }
 }
 
@@ -1188,6 +1221,13 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
 fn write_said(run_dir: &Path, dir: &str, k: u32, summary: &str) -> Result<String, OttoError> {
     let rel = format!("{dir}/v{k}.summary.md");
     crate::state::write_atomic(&run_dir.join(&rel), &format!("{summary}\n"))?;
+    Ok(rel)
+}
+
+/// Keep what version `k`'s pull request says, and say where, relative to the run directory.
+fn write_pr(run_dir: &Path, dir: &str, k: u32, text: &str) -> Result<String, OttoError> {
+    let rel = format!("{dir}/v{k}.pr.md");
+    crate::state::write_atomic(&run_dir.join(&rel), &format!("{text}\n"))?;
     Ok(rel)
 }
 
@@ -1594,13 +1634,14 @@ pub struct Due {
     pub author_alive: bool,
 }
 
-/// What its pull request says: a reviewer there has no other way to read the whole of it, so the
-/// whole of it, unless GitHub would refuse that. Its latest version's, not counting the babysitter's:
-/// what a fix says is what the fix did, not what the change is.
+/// What its pull request says: what its author wrote for it, when they did. Otherwise a reviewer
+/// there has no other way to read the whole of what they told the person, so the whole of it, unless
+/// GitHub would refuse that. Its latest version's, not counting the babysitter's: what a fix says is
+/// what the fix did, not what the change is.
 fn pr_body(dir: &Path, c: &Change) -> PathBuf {
     let v = c.versions.iter().rev().find(|v| v.by != "babysitter").unwrap_or_else(|| c.latest());
     let fits = |f: &&String| crate::state::links::read_to_string(dir.join(f)).is_ok_and(|text| text.chars().count() <= PR_BODY_MAX_CHARS);
-    dir.join(v.file.as_ref().filter(fits).unwrap_or(&v.summary))
+    dir.join(v.pr_file.as_ref().filter(fits).or(v.file.as_ref().filter(fits)).unwrap_or(&v.summary))
 }
 
 fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
@@ -1893,7 +1934,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             Some(rel)
         };
         let summary = c.latest().summary.clone();
-        let (file, words) = (c.latest().file.clone(), c.latest().words);
+        let (file, words, pr_file) = (c.latest().file.clone(), c.latest().words, c.latest().pr_file.clone());
         let tests = c.latest().tests.clone();
         // The same work on a newer base: what showed it working is still the author's word for it.
         let evidence = c.latest().evidence.clone();
@@ -1913,6 +1954,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             summary,
             file,
             words,
+            pr_file,
             tests,
             why: None,
             evidence,
@@ -2180,6 +2222,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             summary: summary_rel,
             file: None,
             words: None,
+            pr_file: None,
             tests,
             why: Some(why.clone()),
             evidence: Vec::new(),
@@ -3161,6 +3204,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_pull_request_says_what_its_author_wrote_for_it() {
+        let _h = TempHome::new();
+        test_init("c-prf", "a goal").unwrap();
+        test_init("c-prfl", "land changes").unwrap();
+        set_lander("c-prfl");
+        let repo = repo();
+        let body = || due().unwrap()[0].pr_body.clone();
+        let long = "word ".repeat(600);
+        let with = |pr| Submit { summary: "s", file: Some(&long), pr, ..submit_fix(&repo, "t") };
+
+        // Over GitHub's limit, or empty, it is refused before there is a version to approve.
+        let huge = "a".repeat(PR_BODY_MAX_CHARS + 1);
+        assert!(submit("c-prf", &with(Some(&huge))).unwrap_err().message.contains("--pr-file"));
+        assert!(submit("c-prf", &with(Some("  \n"))).unwrap_err().message.contains("--pr-file"));
+
+        // Forgotten, it joins the same commit; once there, a different one is kept out.
+        assert!(!submit("c-prf", &with(None)).unwrap().pr_added);
+        let added = submit("c-prf", &with(Some("What it is now."))).unwrap();
+        assert!(added.unchanged && added.pr_added && added.version == 1);
+        let other = submit("c-prf", &with(Some("Something else."))).unwrap();
+        assert!(other.pr_ignored && !other.pr_added);
+
+        // It wins over the write-up the person read, which would fit too.
+        approve(&[seen(r("c-prf", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        assert!(body().ends_with("v1.pr.md"), "{}", body());
+        assert_eq!(std::fs::read_to_string(body()).unwrap(), "What it is now.\n");
+    }
+
+    /// A model writes it, so this pins what it is told: the pull request is read by someone who never
+    /// saw the run.
+    #[test]
+    fn an_author_writes_its_pull_request_for_a_reviewer_who_sees_only_the_repository() {
+        let flow = include_str!("../workflows/dev-flow.md");
+        assert!(flow.contains("--pr-file artifacts/pr.md"), "it submits one");
+        assert!(flow.contains("no version numbers"), "with none of how otto got there");
+        assert!(flow.contains("written\nwhole"), "rewritten for each version, not added to");
+    }
+
+    #[test]
     fn a_rebase_by_the_lander_keeps_the_write_up_and_a_later_summary_is_its_own() {
         let _h = TempHome::new();
         test_init("c-sumr", "a goal").unwrap();
@@ -3168,13 +3250,14 @@ pub(crate) mod tests {
         set_lander("c-sumrl");
         let repo = repo();
         let long = "word ".repeat(600);
-        submit("c-sumr", &Submit { summary: "First.", file: Some(&long), ..submit_fix(&repo, "t") }).unwrap();
+        submit("c-sumr", &Submit { summary: "First.", file: Some(&long), pr: Some("For its reviewers."), ..submit_fix(&repo, "t") }).unwrap();
         approve(&[seen(r("c-sumr", 1))], None, None).unwrap();
         claim("c-sumrl", &r("c-sumr", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
         let c = rebased("c-sumrl", &r("c-sumr", 1), &head).unwrap();
         assert_eq!(c.latest().k, 2);
         assert_eq!((&c.latest().file, c.latest().words), (&c.version(1).unwrap().file, Some(600)));
+        assert_eq!(c.latest().pr_file, c.version(1).unwrap().pr_file);
 
         // The rebase shares v1's files; a better summary of v2 goes in a file of its own.
         submit("c-sumr", &Submit { summary: "Second.", file: Some(&long), ..submit_fix(&repo, "t") }).unwrap();

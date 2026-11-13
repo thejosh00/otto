@@ -2029,6 +2029,9 @@ Options:
       --file <PATH>
           The whole of what you'd tell them, when it is over a page: the page opens on the summary, with this a click away. The same commit again with this adds it to that version
 
+      --pr-file <PATH>
+          What its pull request says, if it goes as one: for a reviewer who sees only the repository, so what it is now, not how it got there — no versions, runs or artifacts. Without it, the pull request says what you told the person. The same commit again with this adds it to that version
+
       --tests <TESTS>
           What the tests said, in a line: "cargo test: 429 passed"
 

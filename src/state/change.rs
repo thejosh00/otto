@@ -188,6 +188,11 @@ pub struct SubmitArgs {
     /// with this a click away. The same commit again with this adds it to that version
     #[arg(long, value_name = "PATH")]
     pub file: Option<String>,
+    /// What its pull request says, if it goes as one: for a reviewer who sees only the repository, so
+    /// what it is now, not how it got there — no versions, runs or artifacts. Without it, the pull
+    /// request says what you told the person. The same commit again with this adds it to that version
+    #[arg(long = "pr-file", value_name = "PATH")]
+    pub pr_file: Option<String>,
     /// What the tests said, in a line: "cargo test: 429 passed"
     #[arg(long)]
     pub tests: Option<String>,
@@ -441,6 +446,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
     };
     let summary = read_given(&a.summary_file)?;
     let file = a.file.as_deref().map(read_given).transpose()?;
+    let pr = a.pr_file.as_deref().map(read_given).transpose()?;
     let given: Vec<std::path::PathBuf> = a
         .evidence
         .iter()
@@ -460,6 +466,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             title: &a.title,
             summary: &summary,
             file: file.as_deref(),
+            pr: pr.as_deref(),
             tests: a.tests.as_deref(),
             evidence,
             no_evidence: a.no_evidence.as_deref(),
@@ -489,11 +496,16 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             );
         } else if !a.evidence.is_empty() {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
-        } else if !out.file_ignored && !out.summary_added && !out.summary_ignored {
+        } else if !out.file_ignored && !out.summary_added && !out.summary_ignored && !out.pr_added && !out.pr_ignored {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
         }
         if a.no_evidence.is_some() {
             println!("change {r} v{}: what it says about its evidence kept as it was. A new reason comes with a new commit", out.version);
+        }
+        if out.pr_added {
+            println!("change {r} v{}: the same commit, now with what its pull request says", out.version);
+        } else if out.pr_ignored {
+            println!("change {r} v{}: what its pull request says kept as it was. A new one comes with a new commit", out.version);
         }
         return Ok(());
     }

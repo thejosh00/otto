@@ -145,8 +145,11 @@ otto state change pr-pushed <id> <change> --head <sha> --url <the pull request>
 otto state unlock <id>
 ```
 
-**Its description.** `prBody` in what `claim` printed is the file that says what the change is: the
-whole of what its author said when that fits on a pull request, otherwise its summary. `gh` won't
+**Its description.** `prBody` in what `claim` printed is the file that says what the change is: what
+its author wrote for its pull request, or, when they wrote none, the whole of what they told the
+person when that fits on a pull request, otherwise its summary. It goes out in their words even when
+it mentions how otto got there (a version, a run, an artifact): say so in the cycle line, so the
+person sees it, and don't edit it. `gh` won't
 apply the repository's pull request template when it is given a body, so look for one, on **its base
 branch**, never the change's own:
 

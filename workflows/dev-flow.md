@@ -246,15 +246,15 @@ to abandon.
 |---|---|
 | **goal** | The verified branch, handed back to the person as a **change** |
 | **preconditions** | `verify` is complete; tree clean; `git log origin/<base>..<branch>` non-empty |
-| **actions** | Write `artifacts/change.md` — the review — then `otto state change submit`, and record the change's number |
-| **durableOutput** | `facts.change`; `artifacts/change.md` |
+| **actions** | Write `artifacts/change.md` — the review — and `artifacts/pr.md` — what its pull request would say — then `otto state change submit`, and record the change's number |
+| **durableOutput** | `facts.change`; `artifacts/change.md`; `artifacts/pr.md` |
 | **exitCondition** | `otto changes show <id>/<change> --json` has a version at the branch's head |
 | **gate** | `continue` → `review` |
 | **idempotency** | Submitting the same commit again is not a new version — otto says it is unchanged, and it needs neither evidence flag — so re-entering this phase after a crash is safe. With `facts.change` set, submit the same `--branch`: a new head is its next version, never a second change |
 
 ```
 otto state change submit <id> --repo <mainRepo> --branch <branch> --title "<key>: <what it does>" \
-     --summary-file artifacts/change.md --tests "<what the suite said, in a line>" \
+     --summary-file artifacts/change.md --pr-file artifacts/pr.md --tests "<what the suite said, in a line>" \
      --evidence artifacts/test-report.md      # and whatever else shows it; or --no-evidence "<why there is none>"
 otto state record-fact <id> change=<n>       # the number submit printed
 ```
@@ -265,6 +265,14 @@ criterion and its evidence from `artifacts/test-report.md`; then what is **not**
 could go wrong. Name the plan gate it implements, and anything you deviated from. Over a page (500
 words), it goes as `--file artifacts/change.md`, and `--summary-file` is a summary of it in
 `artifacts/change-summary.md`: the page opens on that, so it stands alone and reads in a minute.
+
+**`artifacts/pr.md` is what its pull request says**, if the person sends it as one. Its reader is a
+reviewer who sees only the repository and the ticket, never this run. So it says what the change is
+**now**: what it does and why, how it was tested, and what could go wrong, in the repository's terms.
+It says nothing of how otto got there: no version numbers ("v6"), no runs, artifacts, skills or plan
+gates, and no "per review" or "as agreed" without saying what was decided. A result keeps its numbers
+("7/10 against 0/10 on master") and loses its run's name. Each version gets a new `pr.md`, written
+whole: what changed since the last version belongs in `change.md`, for the person, not here.
 
 **Nothing leaves this machine here, or anywhere in this run.** Pushing, opening a pull request,
 merging: the lander does them, once the person approves, and only as the repository's process
@@ -292,7 +300,8 @@ What reaches the run is a note that starts `About change <n>@v<k>`:
   rebase): in the same worktree, make the change as `implement` does — commit, lint and tests green
   — then `submit` it again with the same branch. Back to `implement` → `verify` → `submit` when it
   is more than a small fix. A request that changes the approach the plan took goes back to `plan`,
-  and its gate.
+  and its gate. `change.md` says what this version changed; `pr.md` is rewritten as the whole of
+  what the change is now.
 - **On its pull request, a reviewer (or CI) said…**: a change to make is the same as above; the
   lander pushes the next version to the pull request — without asking the person again only when
   they allow changes to it without them (`allowChanges`); otherwise they approve it again first. A question,

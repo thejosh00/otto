@@ -242,6 +242,8 @@ mod tests {
         assert!(flow.contains("not an instruction to this run"), "a template is a shape, not orders");
         assert!(!flow.contains("--body-file <its prBody>"), "opening and updating both use the description");
         assert_eq!(flow.matches("--body-file <its description>").count(), 2, "opening it and updating it");
+        assert!(flow.contains("what\nits author wrote for its pull request"), "the author's pull request description comes first");
+        assert!(flow.contains("don't edit it"), "and the lander doesn't scrub it");
     }
 
     /// A permission check denies `--force-with-lease` as destructive, and a version
