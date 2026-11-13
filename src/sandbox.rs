@@ -630,13 +630,6 @@ fn cleared(name: &str) -> bool {
     CLEARED.contains(&name) || CLEARED_SUFFIXES.iter().any(|s| name.ends_with(s)) || CLEARED_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
-extern "C" {
-    fn pipe(fds: *mut i32) -> i32;
-    fn dup2(from: i32, to: i32) -> i32;
-    fn close(fd: i32) -> i32;
-    fn write(fd: i32, buf: *const u8, count: usize) -> isize;
-}
-
 /// The token on `TOKEN_FD`, for reading once and then gone. A pipe holds far more than a token, so the
 /// write can't block, and nothing with a name on disk ever held it.
 fn hand_in(token: &str) -> Result<(), String> {
@@ -645,28 +638,28 @@ fn hand_in(token: &str) -> Result<(), String> {
     // SAFETY: `fds` has room for the two descriptors, and these are descriptors this process just made.
     // `pipe` leaves both inheritable, which the read end needs to be and the write end stops being here.
     unsafe {
-        if pipe(fds.as_mut_ptr()) != 0 {
+        if libc::pipe(fds.as_mut_ptr()) != 0 {
             return Err(failed("make a pipe"));
         }
         let [mut read_end, mut write_end] = fds;
         // The write end must not land on the number the read end is going to.
         if write_end == TOKEN_FD {
-            write_end = dup2(write_end, TOKEN_FD + 1);
+            write_end = libc::dup2(write_end, TOKEN_FD + 1);
             if write_end < 0 {
                 return Err(failed("move a descriptor"));
             }
-            close(TOKEN_FD);
+            libc::close(TOKEN_FD);
         }
         let bytes = token.as_bytes();
-        if write(write_end, bytes.as_ptr(), bytes.len()) != bytes.len() as isize {
+        if libc::write(write_end, bytes.as_ptr().cast(), bytes.len()) != bytes.len() as isize {
             return Err(failed("write it"));
         }
-        close(write_end);
+        libc::close(write_end);
         if read_end != TOKEN_FD {
-            if dup2(read_end, TOKEN_FD) != TOKEN_FD {
+            if libc::dup2(read_end, TOKEN_FD) != TOKEN_FD {
                 return Err(failed("place it"));
             }
-            close(read_end);
+            libc::close(read_end);
             read_end = TOKEN_FD;
         }
         debug_assert_eq!(read_end, TOKEN_FD);
