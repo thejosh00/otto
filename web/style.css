@@ -500,6 +500,10 @@ details.attachment > summary { font-family: var(--mono); font-size: 13px; }
 .md > h3:first-child, .md > h4:first-child { margin-top: 0; }
 .md ul, .md ol { padding-left: 22px; }
 .md li + li { margin-top: 3px; }
+.md .md-table { overflow-x: auto; }
+.md table { border-collapse: collapse; font-size: 13.5px; line-height: 1.45; }
+.md th, .md td { text-align: left; vertical-align: top; padding: 6px 10px; border: 1px solid var(--line); overflow-wrap: normal; }
+.md th { font-weight: 600; background: var(--surface-2); }
 .md code { font-family: var(--mono); font-size: 0.9em; background: var(--surface-2); padding: 0 4px; border-radius: 4px; }
 pre.code { font-family: var(--mono); font-size: 12.5px; line-height: 1.5; background: var(--surface-2); border-radius: var(--cut-sm); corner-shape: bevel; padding: 10px 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow: auto; }
 .ask-card { display: grid; gap: 12px; }

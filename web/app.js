@@ -243,7 +243,12 @@ function inline(text) {
   return out;
 }
 
-/** Block markdown — headings, lists, quotes, fences, paragraphs — as a `div.md`. */
+const unquote = (line) => line.replace(/^\s*>\s?/, "");
+const isTableRule = (line) => /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line) && line.includes("-");
+/** A table row's cells; `\|` is a pipe inside a cell. */
+const cells = (line) => line.trim().replace(/^\|/, "").replace(/(?<!\\)\|$/, "").split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, "|"));
+
+/** Block markdown — headings, lists, quotes, fences, tables, paragraphs — as a `div.md`. */
 function md(text) {
   const root = h("div.md");
   const lines = String(text || "").replace(/\r/g, "").split("\n");
@@ -255,12 +260,22 @@ function md(text) {
   };
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
-    const line = raw.replace(/^\s*>\s?/, "");
+    const line = unquote(raw);
     if (/^\s*```/.test(line)) {
       flush(); list = null;
       const body = [];
       for (i++; i < lines.length && !/^\s*```/.test(lines[i]); i++) body.push(lines[i]);
       root.append(h("pre.code", body.join("\n")));
+      continue;
+    }
+    if (line.includes("|") && i + 1 < lines.length && isTableRule(unquote(lines[i + 1]))) {
+      flush(); list = null;
+      const align = cells(unquote(lines[i + 1])).map((c) => (/^:-+:$/.test(c) ? "center" : /-:$/.test(c) ? "right" : null));
+      const tr = (text, tag) => h("tr", cells(text).map((c, k) => h(tag, align[k] ? { style: `text-align:${align[k]}` } : {}, inline(c))));
+      const body = h("tbody");
+      for (i += 2; i < lines.length && unquote(lines[i]).includes("|") && unquote(lines[i]).trim(); i++) body.append(tr(unquote(lines[i]), "td"));
+      i--;
+      root.append(h("div.md-table", h("table", h("thead", tr(line, "th")), body)));
       continue;
     }
     const heading = line.match(/^(#{1,6})\s+(.*)$/);
