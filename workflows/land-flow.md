@@ -178,7 +178,9 @@ because the pull request's `allowChanges` lets it change without them. Lock, cla
 
 ```
 otto state change check <id> <change> --head <sha>            # the new version's commit
-git -C <repo> push --force-with-lease=<branch>:<its pull request's head> origin <sha>:refs/heads/<branch>
+git -C <repo> merge-base --is-ancestor <its pull request's head> <sha>   # exit 0: it only adds to it
+git -C <repo> push origin <sha>:refs/heads/<branch>                      # then: a plain push
+git -C <repo> push --force-with-lease=<branch>:<its pull request's head> origin <sha>:refs/heads/<branch>   # else: rebased, so the lease
 gh pr edit <url> --body-file <its description>                # what this version says it is, as for opening one
 otto state change pr-pushed <id> <change> --head <sha>
 ```
@@ -186,9 +188,12 @@ otto state change pr-pushed <id> <change> --head <sha>
 The description follows the change, so anything edited into it on GitHub goes. If `gh pr edit` fails,
 the code still went: carry on with `pr-pushed`. The next push tries again.
 
-The lease is the head `pr-pushed` last recorded: if someone else pushed to the branch since, the
-push is refused — don't override it; tell its author: `otto state change relay <id> <change> --who
-"someone else" --text "pushed to <branch> since; the lease refused"`.
+A new version built on the last one only adds to it, so it goes as a plain push: git refuses that
+too if the branch moved, and a permission check that denies forcing a push allows it. Only one that
+rewrote it, a rebase, needs the lease. The lease is the head `pr-pushed` last recorded. If someone
+else pushed to the branch since, either push is refused — don't override it; tell its author:
+`otto state change relay <id> <change> --who "someone else" --text "pushed to <branch> since; the
+push was refused"`.
 
 ## Merging its pull request
 

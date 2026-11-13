@@ -244,6 +244,19 @@ mod tests {
         assert_eq!(flow.matches("--body-file <its description>").count(), 2, "opening it and updating it");
     }
 
+    /// A permission check denies `--force-with-lease` as destructive, and a version
+    /// built on the last one doesn't need it.
+    #[test]
+    fn the_lander_updates_a_pull_request_with_a_plain_push_when_it_only_adds_to_it() {
+        let flow = include_str!("../workflows/land-flow.md");
+        let at = flow.find("## Updating its pull request").expect("the section that updates one");
+        let section = &flow[at..at + flow[at..].find("## Merging its pull request").expect("the next section")];
+        assert!(section.contains("merge-base --is-ancestor <its pull request's head> <sha>"), "it asks first");
+        assert!(section.contains("git -C <repo> push origin <sha>:refs/heads/<branch>"), "a plain push when it only adds");
+        assert!(section.contains("--force-with-lease=<branch>:<its pull request's head>"), "the lease when it rewrote it");
+        assert!(section.contains("either push is refused"), "neither overrides someone else's push");
+    }
+
     #[test]
     fn makes_each_agent_once_not_started() {
         let _home = TempHome::new();
