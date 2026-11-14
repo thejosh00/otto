@@ -975,6 +975,13 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
         let existing = index.changes.iter().position(|c| c.key == key);
         if let Some(i) = existing {
             let c = &index.changes[i];
+            if c.repo != repo_text {
+                return Err(OttoError::conflict(format!(
+                    "change {} ({key}) is in {}, not {repo_text} — a branch of the same name in another repository is \
+                     another change: submit it with its own --key",
+                    c.n, c.repo
+                )));
+            }
             match c.state {
                 ChangeState::Landed | ChangeState::Dropped => {
                     return Err(OttoError::conflict(format!(
@@ -3158,6 +3165,23 @@ pub(crate) mod tests {
         assert_eq!((v2.n, v2.version, v2.files), (1, 2, 2), "the same branch is the next version of the same change");
         let j = std::fs::read_to_string(crate::paths::run_dir("c-sub").unwrap().join("journal.jsonl")).unwrap();
         assert_eq!(j.matches("\"change-submitted\"").count(), 2, "{j}");
+    }
+
+    #[test]
+    fn the_same_branch_in_another_repository_is_not_the_next_version() {
+        let _h = TempHome::new();
+        test_init("c-two", "a goal").unwrap();
+        let (one, two) = (repo(), repo());
+        submit("c-two", &submit_fix(&one, "Shout in one")).unwrap();
+
+        let e = submit("c-two", &submit_fix(&two, "Shout in two")).unwrap_err();
+        assert!(e.to_string().contains("--key"), "{e}");
+        let c = change("c-two", 1);
+        assert_eq!((c.versions.len(), c.title.as_str(), c.repo.as_str()), (1, "Shout in one", one.main.to_str().unwrap()));
+
+        let out = submit("c-two", &Submit { key: Some("fix-two"), ..submit_fix(&two, "Shout in two") }).unwrap();
+        assert_eq!((out.n, out.version), (2, 1));
+        assert_eq!(change("c-two", 2).repo, two.main.to_str().unwrap());
     }
 
     /// A folder of evidence as a builder writes it: a screenshot, a transcript, and noise to skip.
