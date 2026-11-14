@@ -944,8 +944,11 @@ function changeStateText(l) {
   switch (l.state) {
     case "review": return l.version > 1 ? `Waiting for your review — version ${l.version}` : "Waiting for your review";
     case "revising": return l.authorGone ? "Sent back, but its agent has stopped" : "Its agent is revising it";
-    case "approved": return "Approved — waiting for the lander";
-    case "landing": return "The lander is landing it";
+    case "approved":
+    case "landing":
+      // The run's index says approved, but check found no approval on record: the list hands it back to the person.
+      if (l.move === "you") return "Its run says approved, with no approval of yours on record — yours to approve again";
+      return l.state === "approved" ? "Approved — waiting for the lander" : "The lander is landing it";
     case "landed": return l.move === "lander" ? `Landed at ${shortSha(l.landedSha)} — cleaning up` : `Landed at ${shortSha(l.landedSha)}`;
     case "needs-you": return "Its agent asks you something about it";
     case "ready-to-merge": return `${prName(l)} is approved and passing — yours to merge`;
