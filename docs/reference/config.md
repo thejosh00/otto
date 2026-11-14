@@ -111,7 +111,8 @@ otto config project                                 # every repository given one
 ```
 
 Approving a change records the process it was approved under, with its `land` words, so changing a
-repository's process changes only what is approved after.
+repository's process changes only what is approved after. It is recorded on the
+[approval on record](approvals.md), which is what the lander's check reads.
 
 ## Environment variables
 

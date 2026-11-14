@@ -412,6 +412,11 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   it is about to put on the base (`otto state change check`): the approved commit, or a clean rebase of
   the same patch onto a base that moved. If the code around it changed, it comes back to you as a new
   version; if it conflicts, it goes back to its author.
+- **Your approval is kept outside the run.** Approving writes a record under `$OTTO_HOME/approvals/`
+  ([reference](reference/approvals.md)), where a sandboxed wake can't write, and
+  `otto state change check` passes only on that record. The run's `changes/index.json` says what state
+  a change is in; it is not the authority. An index that says approved with no record of yours is not
+  approved: the check refuses it, and the change comes back to you to approve again.
 - **Every change says whose move it is**: yours, its author's, the lander's, or no one's once it has
   landed or been dropped and cleaned up after. The Changes page lists them that way — what waits on
   you first — and flags a change over a few hundred lines, or two open changes that touch the same
@@ -527,7 +532,8 @@ never takes them on its own judgement. It records an **authorization** — namin
 or policy flag that allows it, and bound to one commit — and checks it immediately before acting
 (`otto state authorize` / `check-authorized`). A branch that moved since the approval asks again.
 A change the person approved is checked on the change instead (`otto state change check`), by
-the lander, with no gate.
+the lander, with no gate: it reads the approval on record under `$OTTO_HOME/approvals/`, not the
+run's own index.
 
 Two runs working in one repository would trample each other, so a wake claims a **repo lock**
 (`otto state lock`) while it uses one, and releases it before it sleeps.

@@ -74,6 +74,14 @@ The web UI's Changes does the same, with the patch file by file, and lands sever
 [change](../concepts.md#changes-code-handed-back) needs the lander to land it — one of the
 [system agents](../concepts.md#system-agents) otto makes, which you start once.
 
+A change can come back to you after you approved it. otto keeps each approval as a
+[record outside the run](../reference/approvals.md), and the lander lands only on that record. A
+change approved before otto kept those records, or one whose run says approved with nothing on
+record, is listed as yours again: "its run says approved, with no approval of yours on record: yours
+to approve again", and its history says "approved before approvals were kept outside the run:
+approve it again". This is expected. Nothing landed and nothing is lost: look at it and approve it
+again.
+
 ```bash
 otto show        # with no id: the one run waiting on you, or the only live run
 otto show my-run # where it stands, its handoff, and any open question in full

@@ -274,8 +274,11 @@ Not a promise past the list above:
 - **Signals.** A wake can kill other processes of yours.
 - **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
   the record lists them.
-- **What's listed under 1.4 and 1.5** is separate work.
+- **What's listed under 1.5** is separate work. 1.4 is done on both sides: approving writes the record under
+  `approvals/`, and `otto state change check` passes only on it.
 - **A rollback past this comparison.** An older binary ignores the record, so `run.json` decides again until it's reinstalled.
+  The same goes for approvals: after `./install.sh --rollback` to a binary from before the check read the approval
+  on record, the old binary trusts the run's index again.
 
 ## Permission mode
 
