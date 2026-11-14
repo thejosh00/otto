@@ -43,7 +43,35 @@ use cli::{AgentCommand, Cli, Command, ConfigCommand, SandboxCommand, ServiceComm
 use clap::Parser;
 use error::OttoError;
 
+/// What a shell reports for a command that SIGPIPE ended (128 + 13), which is how every other
+/// tool in a pipeline ends when its reader leaves. Not 0: the listing was cut short, and a caller
+/// who asked to know (`set -o pipefail`) should be able to tell that from a whole one.
+const READER_LEFT: i32 = 128 + libc::SIGPIPE;
+
+/// `otto feedback --all | head -1`: once `head` has gone, the next `println!` fails and std
+/// panics with "failed printing to stdout: Broken pipe (os error 32)". That is no fault of otto's
+/// and nothing to say, so that one panic ends the process quietly; any other is shown as ever.
+///
+/// SIGPIPE stays ignored, as Rust starts with it, rather than being put back to its default:
+/// otto writes into pipes of its own (a token to a sandboxed child, tmux, launchers), where a
+/// reader that died has to stay an error otto can report rather than the silent end of otto, and
+/// the children it starts would inherit a changed disposition.
+fn quiet_when_reader_left() {
+    let shown = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let said = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied());
+        let broken_pipe = std::io::Error::from_raw_os_error(libc::EPIPE).to_string();
+        if said.is_some_and(|said| said.strip_prefix("failed printing to stdout: ") == Some(broken_pipe.as_str())) {
+            logs::finish_stamping();
+            std::process::exit(READER_LEFT);
+        }
+        shown(info);
+    }));
+}
+
 fn main() {
+    quiet_when_reader_left();
     // Before any thread starts: `time` will only read the local offset in a single-threaded
     // process, and a run's time of day (`periodAt`) is on the local clock wherever it's computed.
     clock::local_offset();
