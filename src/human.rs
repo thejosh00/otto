@@ -859,6 +859,8 @@ fn change_state_words(l: &crate::changes::Line) -> String {
         Review => "waiting for your review".into(),
         Revising if l.author_gone => "sent back, but its run is over".into(),
         Revising => "its author is revising it".into(),
+        // Its run says approved, and there is no approval of yours on record (`changes::line`): nothing lands it.
+        Approved | Landing if l.whose == crate::changes::Move::You => "its run says approved, with no approval of yours on record: yours to approve again".into(),
         Approved => "approved; waiting for the lander".into(),
         Landing => "the lander is landing it".into(),
         Landed => match (&l.landed_sha, l.whose) {
