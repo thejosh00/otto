@@ -181,8 +181,31 @@ the wrapper. Answering while they still differ gets the same refusal and the sam
 
 **In the wrapper, too, anything wrong and nothing starts.** No record, a bad record, no sign-in, a profile that won't compile: it says
 why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md), and never runs the command
-outside the sandbox. Keeping the token fresh isn't built yet (1.8), so a run left alone long enough stops with
-a sign-in message.
+outside the sandbox. That includes a sign-in that has run out, or would before the wake's deadline: the wrapper
+never hands in a token that can't last, and says when it runs out.
+
+### When the sign-in is about to run out
+
+A sandboxed wake is handed claude's access token as it starts. That token lasts about eight hours, and nothing
+inside the sandbox can renew it: the part that renews stays in the Keychain, and otto never reads it out. So
+before `otto wake` starts a wake under the wrapper, it reads when the sign-in runs out:
+
+- **It lasts past the wake's deadline** (`policy.maxWakeMinutes`, plus two minutes): the wake starts.
+- **It would run out during the wake.** claude renews its own sign-in only in the last five minutes, so otto
+  doesn't start the wake. The run sleeps until four minutes before the sign-in runs out, the journal has a
+  [`sign-in-waiting`](../reference/journal.md) line saying until when, and poke brings the wake then. Such a wake
+  can start up to about 40 minutes late (a 45-minute deadline, less those few minutes). A standing check doesn't
+  stand in front of it, and an answer you gave is still given to it.
+- **It's in those last minutes, or has run out.** otto runs one tiny question outside the sandbox,
+  `claude -p "Reply with the single word ok" --model haiku --tools "" --no-session-persistence`, which costs a
+  few tokens and makes claude renew the sign-in itself, with its own lock. otto reads the new time, writes
+  [`sign-in-renewed`](../reference/journal.md), and starts the wake.
+- **It couldn't be renewed, or the sign-in has ended** (none in the Keychain, or too old to renew): nothing
+  starts. The run is `blocked (sandbox)` with a question, `claude-sign-in`, that says which it was and when the
+  sign-in ran out. Run `claude auth login`, then `otto wake <id>`: that looks again, closes the question and
+  starts the wake.
+
+A run that isn't under the wrapper is untouched by all of this, and otto doesn't read the Keychain for it.
 
 ### Links in a run directory
 

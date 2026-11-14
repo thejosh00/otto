@@ -36,6 +36,8 @@ the budget events, the wake failures, and `usage-limited`.
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `sandbox-refused` | `why` | [The sandbox wrapper](../guides/sandboxing.md#otto-s-own-sandbox) wouldn't start anything, or `otto wake` or `otto chat` wouldn't because the run [disagrees with its record](../guides/sandboxing.md#a-run-that-disagrees-with-its-record), and why |
+| `sign-in-waiting` | `until`, `expiresAt` | A sandboxed wake wasn't started yet: Claude's sign-in runs out at `expiresAt`, before the wake would end, and claude renews it only in its last minutes. The run sleeps and the wake starts at `until`. See [when the sign-in is about to run out](../guides/sandboxing.md#when-the-sign-in-is-about-to-run-out) |
+| `sign-in-renewed` | `wasExpiringAt` | Before a sandboxed wake, otto had claude renew a sign-in that was about to run out (or had), and it now lasts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |
 | `handoff-refused` | `reason` | `otto state handoff` refused a handoff — past its cap, or with otto's own words in `Where this is` or `Needs` — and the wake has to write it again |
 | `wake-complete` | `status`, `progress` | The wake passed the [contract](../concepts.md#the-contract). `progress`: it changed something otto can see, or said `tick --progress` |
