@@ -1494,6 +1494,7 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                 note: decision.note.clone(),
                 at: decision.at,
                 merge_asked: None,
+                answered: None,
             })
             .map_err(|e| OttoError::new(format!("{} is {}", r.display(), e.message), e.code))?;
             c.decision = Some(decision);
@@ -1697,10 +1698,7 @@ pub const APPROVE_AGAIN: &str = "approved before approvals were kept outside the
 /// its pull request, that version's commit): what was approved, where and how it lands are the
 /// record's. A record written for another run, or another version, counts for nothing.
 pub fn on_record(run: &RunState, c: &Change) -> Option<OnRecord> {
-    let record = crate::approvals::read(&run.id, c.n)?;
-    if record.n != c.n || !(record.run == run.id || run.former_id.as_deref() == Some(record.run.as_str())) {
-        return None;
-    }
+    let record = record_of(run, c)?;
     let latest = c.latest();
     if record.version == latest.k && record.sha == latest.sha {
         let (version, sha, patch_id) = (record.version, record.sha.clone(), record.patch_id.clone());
@@ -1709,7 +1707,29 @@ pub fn on_record(run: &RunState, c: &Change) -> Option<OnRecord> {
     if c.pr.is_some() && record.mode == LandMode::Pr && record.allow_changes.is_some() && latest.k > record.version {
         return Some(OnRecord { record, version: latest.k, sha: latest.sha.clone(), patch_id: latest.patch_id.clone(), later: true });
     }
+    // The person answered what the babysitter asked: the one version after the one they answered about.
+    if c.pr.is_some() && record.mode == LandMode::Pr && record.answered.as_ref().is_some_and(|a| a.version.checked_add(1) == Some(latest.k)) {
+        return Some(OnRecord { record, version: latest.k, sha: latest.sha.clone(), patch_id: latest.patch_id.clone(), later: true });
+    }
     None
+}
+
+/// The record kept for `c`, if it was written for this run and this change, whatever version it is for.
+fn record_of(run: &RunState, c: &Change) -> Option<crate::approvals::Record> {
+    let record = crate::approvals::read(&run.id, c.n)?;
+    (record.n == c.n && (record.run == run.id || run.former_id.as_deref() == Some(record.run.as_str()))).then_some(record)
+}
+
+/// What a change is told and shown when its index says approved and its record doesn't cover its
+/// latest version: no record at all, or one for an earlier version that allows nothing later.
+fn not_covered(run: &RunState, c: &Change) -> String {
+    match record_of(run, c) {
+        Some(record) if record.version != c.latest().k => {
+            format!("the approval on record is for v{}, and allows no later version without the person: v{} is theirs to approve", record.version, c.latest().k)
+        }
+        Some(_) => "the approval on record isn't for this commit: approve it again".to_string(),
+        None => APPROVE_AGAIN.to_string(),
+    }
 }
 
 fn no_approval(r: &ChangeRef) -> OttoError {
@@ -1726,10 +1746,11 @@ fn no_approval(r: &ChangeRef) -> OttoError {
 fn back_to_the_person(run: &str, n: u32) -> Result<Change, OttoError> {
     with_change(&ChangeRef { run: run.to_string(), n }, |path, state, c| {
         if matches!(c.state, ChangeState::Approved | ChangeState::Landing) && on_record(state, c).is_none() {
+            let why = not_covered(state, c);
             c.decision = None;
             c.enter(ChangeState::Review);
-            c.moment("otto", APPROVE_AGAIN);
-            moved(path, c, "otto", APPROVE_AGAIN)?;
+            c.moment("otto", &why);
+            moved(path, c, "otto", &why)?;
         }
         Ok(c.clone())
     })
@@ -2294,8 +2315,10 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
         let Some(d) = c.decision.as_ref().filter(|_| c.pr.is_some()) else {
             return Err(OttoError::conflict(format!("change {} has no pull request: its author changes it", r.display())));
         };
-        let answered = c.ask.as_ref().is_some_and(|a| a.by.as_deref() == Some(babysitter.as_str()) && a.answered_at.is_some() && a.at.dt() >= c.latest().at.dt());
-        // What the person allows is what their approval on record says, not the index.
+        // What the person allows is what their approval on record says, not the index: its words,
+        // or their answer to what this babysitter asked about the version the pull request has.
+        let record = record_of(state, c);
+        let answered = record.as_ref().and_then(|d| d.answered.as_ref()).is_some_and(|a| a.by == babysitter && a.version == c.latest().k);
         let allowed = on_record(state, c).and_then(|a| a.record.allow_changes);
         let _ = d;
         if allowed.is_none() && !answered {
@@ -2512,6 +2535,16 @@ pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
             Some(o) => o.clone(),
             None => text.clone(),
         };
+        // The babysitter's question: the answer goes on the approval's record first, where a wake
+        // can't write it, and the index second. Not written there, not answered.
+        if let Some(by) = ask.by.clone() {
+            let (at, version) = (Timestamp::now(), c.versions.last().map_or(0, |v| v.k));
+            crate::approvals::update(&r.run, c.n, |record| record.answered = Some(crate::approvals::Answered { at, version, by })).map_err(|e| {
+                let why = e.message.strip_prefix("not approved: ").unwrap_or(&e.message);
+                OttoError::new(format!("not answered: answering is the person's, and the answer goes on the approval's record — {why}"), e.code)
+            })?;
+        }
+        let ask = c.ask.as_mut().expect("needs-you has its question");
         ask.answer = Some(answer.clone());
         ask.answered_at = Some(Timestamp::now());
         let question = crate::gate::title(&ask.question, 120);
@@ -4372,6 +4405,86 @@ pub(crate) mod tests {
         let french = sh(&own, &["rev-parse", "HEAD"]);
         let f = Fix { head: &french, summary: "In French, as Sam asked.", tests: None, why: "the person said do it" };
         assert_eq!(fix("c-fxb", &r("c-fx", 1), &f).unwrap().latest().k, 4, "the person's answer allows it");
+    }
+
+    /// The babysitter's fix after the person answered it is covered by their answer on the approval's
+    /// record, for that one version. An index written to say they answered covers nothing.
+    #[test]
+    fn an_answered_ask_on_record_covers_the_babysitters_fix_and_an_index_saying_so_does_not() {
+        let _h = TempHome::new();
+        test_init("c-an", "a goal").unwrap();
+        test_init("c-anl", "land changes").unwrap();
+        test_init("c-anb", "look after pull requests").unwrap();
+        set_lander("c-anl");
+        set_babysitter("c-anb");
+        let repo = repo();
+        submit("c-an", &submit_fix(&repo, "Shout")).unwrap();
+        approve(&[seen(r("c-an", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let v1 = claim("c-anl", &r("c-an", 1)).unwrap().sha.unwrap();
+        pr_pushed("c-anl", &r("c-an", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
+        crate::state::transaction("c-an", |_p, s| {
+            s.status = crate::state::Status::Stopped;
+            Ok(())
+        })
+        .unwrap();
+        let own = repo.main.parent().unwrap().join("babysitter");
+        sh(&repo.main, &["worktree", "add", "--quiet", "--detach", own.to_str().unwrap(), &v1]);
+        std::fs::write(own.join("b.txt"), "alpha!\n").unwrap();
+        sh(&own, &["commit", "--quiet", "-am", "bang"]);
+        let fixed = sh(&own, &["rev-parse", "HEAD"]);
+        let f = Fix { head: &fixed, summary: "Adds the bang sam asked for.", tests: None, why: "the person said do it" };
+
+        // Asked, and the index written by hand to say the person answered: nothing on the record.
+        ask_as(Some("c-anb"), &r("c-an", 1), "Sam wants a bang.\n\n## Options\n- **Do it**\n- **Leave it**\n").unwrap();
+        let asked = change("c-an", 1);
+        by_hand("c-an", 1, |c| {
+            let ask = c.ask.as_mut().unwrap();
+            ask.answer = Some("Do it".into());
+            ask.answered_at = Some(Timestamp::now());
+            c.state = ChangeState::PrOpen;
+        });
+        assert!(crate::approvals::read("c-an", 1).unwrap().answered.is_none());
+        assert!(fix("c-anb", &r("c-an", 1), &f).unwrap_err().message.contains("allows no change"), "an answer the index made up allows no fix");
+        // The fix written in by hand as v2, and after it a v3: neither is covered.
+        let forge = |k: u32| {
+            by_hand("c-an", 1, |c| {
+                let mut v = c.latest().clone();
+                v.k = k;
+                v.sha = fixed.clone();
+                v.by = "babysitter".into();
+                c.versions.push(v);
+                let d = c.decision.as_mut().unwrap();
+                d.version = k;
+                d.sha = fixed.clone();
+                c.state = ChangeState::Landing;
+            });
+        };
+        forge(2);
+        assert!(check("c-anl", &r("c-an", 1), &fixed).unwrap_err().message.starts_with("DO NOT ACT: no approval on record"));
+        forge(3);
+        assert!(check("c-anl", &r("c-an", 1), &fixed).unwrap_err().message.starts_with("DO NOT ACT: no approval on record"));
+
+        // As it was when asked, and the person answers: on the record, and the fix is covered.
+        by_hand("c-an", 1, |c| *c = asked.clone());
+        answer(&r("c-an", 1), "do it").unwrap();
+        let on = crate::approvals::read("c-an", 1).unwrap().answered.expect("the answer is on the record");
+        assert_eq!((on.version, on.by.as_str()), (1, "c-anb"));
+        assert_eq!(fix("c-anb", &r("c-an", 1), &f).unwrap().latest().k, 2, "the person's answer allows it");
+        claim("c-anl", &r("c-an", 1)).unwrap();
+        assert!(check("c-anl", &r("c-an", 1), &fixed).unwrap().starts_with("ok:"), "the fix is what the answer covers");
+
+        // One version, not every later one: a v3 is the person's, and is told so truthfully.
+        forge(3);
+        assert!(check("c-anl", &r("c-an", 1), &fixed).unwrap_err().message.starts_with("DO NOT ACT: no approval on record"));
+        assert!(fix("c-anb", &r("c-an", 1), &f).is_err(), "the answer allowed one fix");
+        assert!(due().unwrap().is_empty());
+        let c = change("c-an", 1);
+        assert_eq!(c.state, ChangeState::Review);
+        let said = &c.timeline.last().unwrap().what;
+        assert!(said.contains("the approval on record is for v1") && said.contains("v3") && !said.contains("before approvals were kept"), "{said}");
+        // A new approval replaces the record, and the answer with it.
+        approve(&[seen(r("c-an", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        assert!(crate::approvals::read("c-an", 1).unwrap().answered.is_none(), "the allowance doesn't outlive the approval");
     }
 
     /// A commit that isn't on the change's branch: main's own.

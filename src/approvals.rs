@@ -52,6 +52,21 @@ pub struct Record {
     /// The person said to merge its pull request, and the commit the pull request had when they did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_asked: Option<MergeAsked>,
+    /// The person answered what the babysitter asked about it: the babysitter may change it on its
+    /// pull request once, as the version after the one the answer was about. A new approval
+    /// replaces the record, and this with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered: Option<Answered>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Answered {
+    pub at: Timestamp,
+    /// The change's latest version when the person answered.
+    pub version: u32,
+    /// The babysitter that asked.
+    pub by: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
