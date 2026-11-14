@@ -2053,7 +2053,12 @@ function runView(id, opened) {
         h("div.tiles", d.messages.slice(0, 12).map((m) => h(`a.tile${m.open ? ".open" : ""}`, { href: `#/inbox/${enc(d.state.id)}/m${m.id}` },
           h("span.d", clockTime(m.sentAt)), h("span.t", m.title), kindChip(m.kind, m.open)))));
     }
+    // The checklist scrolls on its own, and every refresh builds it anew: keep the reader's place.
+    const was = picture.querySelector(".todo");
+    const top = was ? was.scrollTop : 0;
     picture.replaceChildren(...parts);
+    const now = picture.querySelector(".todo");
+    if (now && top) now.scrollTop = top;
   }
 
   // ----- what has happened lately, in words
