@@ -7,6 +7,7 @@ use crate::event::{Event, WakeCause};
 use crate::exec::{Exec, RealExec};
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::{CheckResult, RunEntry, RunState};
+use std::path::{Path, PathBuf};
 use time::{Duration, OffsetDateTime};
 
 // How long past its `nextWakeAt` a run waits before poke spawns it. Zero: poke is the only thing
@@ -338,7 +339,17 @@ pub fn check_env(run_id: &str, state: &RunState) -> Vec<(&'static str, String)> 
 /// launchd's, from a terminal (`otto check`, a hand-run `otto poke`) the person's whole shell, and
 /// a script that passes the one can fail the other. `env -i` rather than a cleared `Command` so
 /// the `Exec` seam stays one argv and an environment to add.
-pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dyn Exec) -> CheckRun {
+///
+/// With a `profile` (the run has a sandbox record, `sandbox::for_check`), the script is started by
+/// `sandbox-exec` under it. `env` stays outside, so the working directory is entered from outside as
+/// a wake's is, and the timeout covers the sandbox starting too.
+pub fn execute_check(
+    run_id: &str,
+    state: &RunState,
+    script: &str,
+    profile: Option<&Path>,
+    exec: &mut dyn Exec,
+) -> CheckRun {
     let assignments: Vec<String> =
         check_env(run_id, state).into_iter().map(|(key, value)| format!("{key}={value}")).collect();
     let mut argv = vec!["/usr/bin/env", "-i"];
@@ -349,13 +360,25 @@ pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dy
         argv.extend(["-C", dir]);
     }
     argv.extend(assignments.iter().map(String::as_str));
+    let profile = profile.map(|path| path.display().to_string());
+    if let Some(profile) = &profile {
+        argv.extend([SANDBOX_EXEC, "-f", profile]);
+    }
     argv.push(script);
 
     // Isolated: a script killed at its timeout takes whatever it started down with it, so a
     // hung `curl` under it can't stall this pass — and every other run's — behind it.
     let output = exec.exec_isolated(&argv, None, std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS));
     let note = crate::exec::truncate(output.stdout.trim(), CHECK_NOTE_MAX_CHARS);
-    let note = (!note.is_empty()).then_some(note);
+    let mut note = (!note.is_empty()).then_some(note);
+    // A sandbox that wouldn't start (65: the profile didn't compile; 71: from inside another one) is an
+    // error like any other code that isn't 0 or 1, so it wakes the run. Say which it was.
+    if profile.is_some() && !output.timed_out && !matches!(output.code, 0 | 1) {
+        if let Some(line) = output.stderr.lines().find(|line| line.starts_with("sandbox-exec:")) {
+            let said = format!("its check couldn't start under its sandbox: {}", line.trim());
+            note = Some(crate::exec::truncate(&said, CHECK_NOTE_MAX_CHARS));
+        }
+    }
 
     let result = if output.timed_out {
         CheckResult::Error
@@ -367,6 +390,36 @@ pub fn execute_check(run_id: &str, state: &RunState, script: &str, exec: &mut dy
         }
     };
     CheckRun { result, note, code: output.code, timed_out: output.timed_out }
+}
+
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+
+/// Why a check script was not run at all.
+#[derive(Debug)]
+pub enum CheckStop {
+    /// The script couldn't be found, or is a link.
+    Script(String),
+    /// The run has a sandbox record and `run.json` disagrees with it, or its profile couldn't be had.
+    Sandbox(String),
+}
+
+/// Everything settled before a check script runs, the same for poke and `otto check`: where the
+/// script is, that it is no link, and the profile it runs under if the run has a sandbox record.
+pub fn prepare_check(run_id: &str, state: &RunState) -> Result<(String, Option<PathBuf>), CheckStop> {
+    let Some(check) = &state.check else {
+        return Err(CheckStop::Script(format!("{run_id} has no check script")));
+    };
+    let dir = crate::paths::run_dir(run_id).map_err(|e| CheckStop::Script(format!("cannot resolve check script: {e}")))?;
+    let script = dir.join(&check.script);
+    crate::state::links::refuse_links(&script).map_err(|e| CheckStop::Script(format!("not running its check script: {e}")))?;
+    let Some(script) = script.to_str() else {
+        return Err(CheckStop::Script("check script path is not valid UTF-8".to_string()));
+    };
+    match crate::sandbox::for_check(&dir, state) {
+        crate::sandbox::ForCheck::NoRecord => Ok((script.to_string(), None)),
+        crate::sandbox::ForCheck::Under(profile) => Ok((script.to_string(), Some(profile))),
+        crate::sandbox::ForCheck::Refused(why) => Err(CheckStop::Sandbox(why)),
+    }
 }
 
 /// Runs a run's check script (§8.1) in front of its due wake and turns the result into an
@@ -399,18 +452,25 @@ fn run_check(
         };
     }
 
-    let script = match crate::paths::run_dir(&run_id) {
-        Ok(dir) => dir.join(&check.script),
-        Err(e) => return Decision::base(&run_id, Action::Error, format!("cannot resolve check script: {e}")),
-    };
-    if let Err(e) = crate::state::links::refuse_links(&script) {
-        return Decision::base(&run_id, Action::Error, format!("not running its check script: {e}"));
-    }
-    let Some(script) = script.to_str() else {
-        return Decision::base(&run_id, Action::Error, "check script path is not valid UTF-8".to_string());
+    let (script, profile) = match prepare_check(&run_id, state) {
+        Ok(ready) => ready,
+        Err(CheckStop::Script(why)) => return Decision::base(&run_id, Action::Error, why),
+        // Not run at all, and never with no sandbox. A wake is started as for a check that errored:
+        // `otto wake` compares the same record, refuses, and leaves the run blocked with what differed.
+        Err(CheckStop::Sandbox(why)) => {
+            return spawn_or_back_off(
+                &run_id,
+                format!("not running its check: it disagrees with its sandbox record: {why}; starting a wake, which will be refused"),
+                WakeCause::CheckError,
+                state.spawn_attempts,
+                state.last_spawned_at.map(Timestamp::dt),
+                now,
+                max_attempts,
+            );
+        }
     };
 
-    let CheckRun { result, note, code, timed_out } = execute_check(&run_id, state, script, exec);
+    let CheckRun { result, note, code, timed_out } = execute_check(&run_id, state, &script, profile.as_deref(), exec);
     let streak = check.consecutive_no_change + 1;
     let safety_net = result == CheckResult::NoChange && check.wake_after > 0 && streak >= check.wake_after;
     // Evidence, so it comes first and nothing depends on it: a poke dying next still leaves what
@@ -1684,7 +1744,7 @@ mod tests {
         let workdir = work.path().canonicalize().unwrap().display().to_string();
         state.launcher.workdir = Some(workdir.clone());
 
-        let run = execute_check("7", &state, script.to_str().unwrap(), &mut RealExec);
+        let run = execute_check("7", &state, script.to_str().unwrap(), None, &mut RealExec);
 
         assert_eq!(run.code, 0);
         let seen = std::fs::read_to_string(&seen_file).unwrap();

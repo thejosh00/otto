@@ -1463,10 +1463,18 @@ pub fn renumber_runs() -> Result<RenumberReport, OttoError> {
 pub fn try_check(id: &str) -> Result<crate::poke::CheckRun, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
     let state = read_run(&id)?;
-    let check = state.check.as_ref().ok_or_else(|| OttoError::conflict(format!("{id} has no check script")))?;
-    let script = crate::paths::run_dir(&id)?.join(&check.script);
-    let script = script.to_str().ok_or_else(|| OttoError::usage("check script path is not valid UTF-8"))?.to_string();
-    Ok(crate::poke::execute_check(&id, &state, &script, &mut crate::exec::RealExec))
+    if state.check.is_none() {
+        return Err(OttoError::conflict(format!("{id} has no check script")));
+    }
+    // As poke would: a linked script isn't run, and a run with a sandbox record has its check run under
+    // that record's profile or not at all. The run is left as it is: a person is here to read why.
+    let (script, profile) = crate::poke::prepare_check(&id, &state).map_err(|stop| match stop {
+        crate::poke::CheckStop::Script(why) => OttoError::conflict(format!("{id}: {why}")),
+        crate::poke::CheckStop::Sandbox(why) => OttoError::conflict(format!(
+            "{id}: not running its check: it disagrees with its sandbox record: {why}"
+        )),
+    })?;
+    Ok(crate::poke::execute_check(&id, &state, &script, profile.as_deref(), &mut crate::exec::RealExec))
 }
 
 /// Take a run's check script away. Its file stays, like a dropped note's.

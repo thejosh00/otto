@@ -993,14 +993,56 @@ fn differences(id: &str, state: &RunState, launcher: Result<&LauncherDef, &OttoE
     found
 }
 
+/// Whether this run has a sandbox record at all, readable or not.
+fn has_record(run_id: &str) -> bool {
+    // `symlink_metadata`: a dangling link is a record that can't be read, not the absence of one.
+    !record_path(run_id).symlink_metadata().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// What a run's check script runs under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForCheck {
+    /// The run isn't sandboxed: its check runs as it always has.
+    NoRecord,
+    /// The profile file its record gives, for `sandbox-exec -f`.
+    Under(PathBuf),
+    /// It has a record and the check must not run: `run.json` disagrees with it, or the record or its profile
+    /// couldn't be had. Never a reason to run the script with no sandbox.
+    Refused(String),
+}
+
+/// The profile a run's check script runs under: the one its record gives, the same text as its wakes', and never
+/// one `run.json` names. Nothing of claude's is prepared: no token, no folder of its own, no Keychain. Only a
+/// record that is truly absent is `NoRecord`; every failure on the way is `Refused`.
+pub fn for_check(run_dir: &Path, state: &RunState) -> ForCheck {
+    let Some(id) = run_dir.file_name().map(|name| name.to_string_lossy().to_string()) else {
+        return ForCheck::Refused(format!("{} names no run", run_dir.display()));
+    };
+    if !has_record(&id) {
+        return ForCheck::NoRecord;
+    }
+    let resolved = crate::wake::launcher::resolve(state);
+    if let Some(why) = disagreement(run_dir, state, resolved.as_ref()) {
+        return ForCheck::Refused(why);
+    }
+    // A check's output is a pipe: the terminal `otto check` was typed at is not the script's to open.
+    let machine = Machine { terminal: None, ..Machine::here() };
+    let written = read_record(&id)
+        .and_then(|record| profile(&id, &record, &machine))
+        .and_then(|text| write_profile(&id, "check", &text));
+    match written {
+        Ok(path) => ForCheck::Under(path),
+        Err(why) => ForCheck::Refused(why),
+    }
+}
+
 /// Why this run must not start, if it has a sandbox record and disagrees with it. A wake can write its
 /// `run.json` and can't write the record: otherwise its next wake could leave the sandbox. No record means
 /// nothing to compare, as for every run that isn't sandboxed; one that can't be read is a refusal, never that.
 /// `dir` is the run's directory, the one thing about its identity that `run.json` doesn't say.
 pub fn disagreement(dir: &Path, state: &RunState, launcher: Result<&LauncherDef, &OttoError>) -> Option<String> {
     let id = dir.file_name()?.to_string_lossy().to_string();
-    // `symlink_metadata`: a dangling link is a record that can't be read, not the absence of one.
-    if record_path(&id).symlink_metadata().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+    if !has_record(&id) {
         return None;
     }
     match read_record(&id) {
