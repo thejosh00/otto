@@ -513,9 +513,89 @@ fn otto_state_past_its_own_run_can_not_be_written() {
         ("another run", format!("echo x >> {other}")),
         ("who may assign", "echo x > \"$O/feedback-driver\"".to_string()),
         ("a new file in $OTTO_HOME", "echo x > \"$O/approvals\"".to_string()),
+        ("an approval on record", format!("mkdir -p \"$O/approvals/{id}\" && echo x > \"$O/approvals/{id}/1.json\"", id = s.id)),
     ] {
         s.refused(what, &script);
     }
+    assert!(!s.otto_home().join("approvals").exists());
+}
+
+/// The person's approvals (`$OTTO_HOME/approvals`) are closed after the record's grants: a record that
+/// lists the folder itself under `write`, or all of `$OTTO_HOME`, opens none of it. Not to add one, change
+/// one, remove one or move the folder away.
+#[test]
+fn no_record_opens_the_persons_approvals() {
+    if !can_nest() {
+        return;
+    }
+    for record in [
+        (|home: &Path| serde_json::json!({"launcher": "sandbox", "write": [home.join(".otto/approvals")]})) as fn(&Path) -> serde_json::Value,
+        |home: &Path| serde_json::json!({"launcher": "sandbox", "write": [home.join(".otto")]}),
+    ] {
+        let s = Scratch::new(record);
+        let mine = s.otto_home().join("approvals").join(&s.id);
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::write(mine.join("1.json"), "the person's\n").unwrap();
+        let id = &s.id;
+        for (what, script) in [
+            ("a new approval", format!("echo x > \"$O/approvals/{id}/2.json\"")),
+            ("a new run's approvals", "mkdir -p \"$O/approvals/9\" && echo x > \"$O/approvals/9/1.json\"".to_string()),
+            ("changing one", format!("echo x >> \"$O/approvals/{id}/1.json\"")),
+            ("removing one", format!("rm \"$O/approvals/{id}/1.json\"")),
+            ("moving the folder away", "mv \"$O/approvals\" \"$O/approvals2\"".to_string()),
+        ] {
+            s.refused(what, &script);
+        }
+        assert_eq!(std::fs::read_to_string(mine.join("1.json")).unwrap(), "the person's\n");
+        assert!(!mine.join("2.json").exists() && !s.otto_home().join("approvals/9").exists() && !s.otto_home().join("approvals2").exists());
+        s.allowed("reading one", &format!("cat \"$O/approvals/{id}/1.json\""));
+    }
+}
+
+/// `otto changes approve` from inside, on the wake's own change: the approval can't be written, so the
+/// command fails before the run's index is touched, says why, and the change is still in review.
+#[test]
+fn a_wake_can_not_approve_its_own_change() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let repo = s.home().join("workspace/repo");
+    let init = |args: &[&str]| assert!(Command::new("git").args(args).current_dir(&repo).env("HOME", s.home()).output().unwrap().status.success(), "{args:?}");
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    init(&["init", "-q", "-b", "main"]);
+    init(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"]);
+    init(&["checkout", "-q", "-b", "try"]);
+    std::fs::write(repo.join("made"), "x\n").unwrap();
+    init(&["add", "made"]);
+    init(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "try"]);
+    init(&["checkout", "-q", "main"]);
+    let ok = |args: &[&str]| {
+        let out = s.otto().args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    };
+    ok(&["config", "project", repo.to_str().unwrap(), "--process", "direct"]);
+    ok(&["config", "lander", &s.other]);
+    let (id, r) = (&s.id, repo.display());
+    std::fs::write(s.root.join("summary.md"), "What it does.\n").unwrap();
+    ok(&["state", "change", "submit", id, "--repo", repo.to_str().unwrap(), "--branch", "try", "--title", "t", "--summary-file", s.root.join("summary.md").to_str().unwrap(), "--tests", "none", "--no-evidence", "none"]);
+    let _ = r;
+    let index = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(s.otto_home().join("runs").join(id).join("changes/index.json")).unwrap()).unwrap() };
+    assert_eq!(index()["changes"][0]["state"], "review", "{}", index());
+
+    let out = s.inside(&format!("'{OTTO}' changes approve {id}/1@v1 --no-wake"));
+    let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(!out.status.success(), "approving from inside should fail: {said}");
+    assert!(said.contains("approving is the person's") && said.contains("sandbox") && said.contains("approvals/"), "{said}");
+    let change = &index()["changes"][0];
+    assert_eq!(change["state"], "review", "{change}");
+    assert!(change.get("decision").is_none(), "{change}");
+    assert!(!s.otto_home().join("approvals").join(id).join("1.json").exists());
+
+    // From outside, where the person is, the same command approves it and leaves the record.
+    ok(&["changes", "approve", &format!("{id}/1@v1"), "--no-wake"]);
+    assert_eq!(index()["changes"][0]["state"], "approved");
+    assert!(s.otto_home().join("approvals").join(id).join("1.json").is_file());
 }
 
 /// Found by a real wake: `$OTTO_HOME` under a directory the projects rule closes, and the wake can't read its

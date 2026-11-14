@@ -315,6 +315,9 @@ mod tests {
         let c = change("2026-09-21-wa", 1);
         let d = c.decision.as_ref().unwrap();
         assert_eq!((d.version, d.sha.as_str()), (2, c.latest().sha.as_str()));
+        // The page's approval is on record outside the run too, as the command's is.
+        let record = crate::approvals::read("2026-09-21-wa", 1).expect("approving from the page leaves a record");
+        assert_eq!((record.version, record.sha.as_str(), record.patch_id.as_str()), (2, c.latest().sha.as_str(), c.latest().patch_id.as_str()));
     }
 
     /// The page's Approve for picked changes: one stale pick refuses the lot, and the others stay
