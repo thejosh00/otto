@@ -1403,7 +1403,8 @@ pub fn publish(args: PublishArgs) -> Result<(), OttoError> {
         },
     )?;
     if out.summary_added {
-        println!("{}@{} unchanged, and its summary kept with it", out.key, out.version);
+        let what = if out.summary_replaced { "summary replaced with this one" } else { "summary added" };
+        println!("{}@{}: {what} — the text is the same, so no new version", out.key, out.version);
     } else if out.unchanged {
         println!("{}@{} unchanged — the same as its latest version, so no new one", out.key, out.version);
     } else {

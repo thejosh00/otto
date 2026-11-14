@@ -283,6 +283,8 @@ pub struct Published {
     pub summary: Option<String>,
     /// The text was unchanged and the summary was not: it is kept on the latest version.
     pub summary_added: bool,
+    /// That summary took the place of one the version already had, rather than being its first.
+    pub summary_replaced: bool,
 }
 
 /// Publish a version of `key`: a new output when the key is new, its next version otherwise. A
@@ -359,6 +361,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
                     }
                     None => false,
                 };
+                let summary_replaced = summary_added && latest.summary.is_some();
                 let output = &mut index.outputs[i];
                 if summary_added {
                     output.versions.last_mut().expect("an output has at least one version").summary = Some(summary_file(&key, latest.n));
@@ -375,7 +378,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
                 }
                 write_index(path, &index)?;
                 let summary = index.outputs[i].latest().summary.clone();
-                return Ok(Published { key, version: latest.n, file: latest.file, unchanged: true, words: latest.words, summary, summary_added });
+                return Ok(Published { key, version: latest.n, file: latest.file, unchanged: true, words: latest.words, summary, summary_added, summary_replaced });
             }
         }
 
@@ -443,7 +446,7 @@ pub fn publish(run_id: &str, p: &Publish) -> Result<Published, OttoError> {
             path,
             &Event::OutputPublished { output: key.clone(), version: n, title, stage, file: file.clone(), link },
         )?;
-        Ok(Published { key, version: n, file, unchanged: false, words: text_words, summary, summary_added: false })
+        Ok(Published { key, version: n, file, unchanged: false, words: text_words, summary, summary_added: false, summary_replaced: false })
     })
 }
 
@@ -802,6 +805,7 @@ mod tests {
 
         let again = publish("o-sum", &with("Three tiers, set per key, and why.")).unwrap();
         assert!(again.unchanged && again.summary_added, "a better summary of the same text is not a new version");
+        assert!(again.summary_replaced, "and the reply says it took the place of the one before");
         assert_eq!(read("o-sum", "design", Some(1)).unwrap().summary.as_deref(), Some("Three tiers, set per key, and why.\n"));
         assert!(!publish("o-sum", &with("Three tiers, set per key, and why.")).unwrap().summary_added, "the same summary again changes nothing");
         assert!(publish("o-sum", &doc("design", "Design: tiers", &long)).unwrap().summary.is_some(), "republished without one, it keeps it");

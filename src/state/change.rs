@@ -480,7 +480,12 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
                 out.version
             );
         } else if out.summary_added {
-            println!("change {r} v{}: the same commit, and its summary kept with it", out.version);
+            let what = match (out.file_added, out.summary_replaced) {
+                (true, true) => "whole write-up added, and its summary replaced with this one",
+                (true, false) => "whole write-up added, under the summary it already had",
+                (false, _) => "summary replaced with this one",
+            };
+            println!("change {r} v{}: {what} — the same commit, so no new version", out.version);
         } else if out.summary_ignored {
             println!(
                 "change {r} v{}: its summary kept as it was, not the one you gave — the person may already have read it. A new one \

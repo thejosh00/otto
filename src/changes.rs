@@ -867,6 +867,10 @@ pub struct Submitted {
     pub evidence_ignored: bool,
     /// The same commit again, and a whole write-up or a better summary of it joined the version.
     pub summary_added: bool,
+    /// Which of those it was: the whole write-up joined a version that had none.
+    pub file_added: bool,
+    /// Which of those it was: this summary took the place of the one the version had.
+    pub summary_replaced: bool,
     /// The same commit again, with a different whole write-up: kept as it was.
     pub file_ignored: bool,
     /// The same commit again, with a different summary and no write-up to go with it: kept as it was.
@@ -1061,6 +1065,8 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 out.file_ignored = file_ignored;
                 out.summary_ignored = summary_ignored;
                 out.summary_added = new_file.is_some() || new_summary;
+                out.file_added = new_file.is_some();
+                out.summary_replaced = new_summary;
                 out.pr_added = new_pr.is_some();
                 out.pr_ignored = pr_ignored;
                 write_index(path, &index)?;
@@ -1210,6 +1216,8 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         evidence: v.evidence.len(),
         evidence_ignored: false,
         summary_added: false,
+        file_added: false,
+        summary_replaced: false,
         file_ignored: false,
         summary_ignored: false,
         pr_added: false,
@@ -3130,13 +3138,15 @@ pub(crate) mod tests {
         submit("c-sum", &submit_fix(&repo, "t")).unwrap();
         let added = submit("c-sum", &with("Shouts it, and why.")).unwrap();
         assert!(added.unchanged && added.summary_added && added.version == 1);
+        assert!(added.file_added && added.summary_replaced, "the reply says which it was");
         let d = read(&r("c-sum", 1), None).unwrap();
         assert_eq!(d.summary, "Shouts it, and why.\n");
         assert_eq!(d.text.as_deref().map(|t| t.split_whitespace().count()), Some(600));
         assert_eq!(d.version.words, Some(600));
 
         // A better summary of the same text replaces it; the same one again is nothing new.
-        assert!(submit("c-sum", &with("Shouts it, and why not.")).unwrap().summary_added);
+        let better = submit("c-sum", &with("Shouts it, and why not.")).unwrap();
+        assert!(better.summary_added && better.summary_replaced && !better.file_added);
         assert_eq!(read(&r("c-sum", 1), None).unwrap().summary, "Shouts it, and why not.\n");
         assert!(!submit("c-sum", &with("Shouts it, and why not.")).unwrap().summary_added);
 
