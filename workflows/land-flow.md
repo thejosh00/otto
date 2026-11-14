@@ -12,7 +12,9 @@ watched by another system agent, the **babysitter**, which tells this run when t
 to push or clean up.
 
 It never decides *whether* something lands — the person did, for one version, and otto holds the
-approval to that version's commit and patch. Nor pushed or a pull request: the repository's
+approval to that version's commit and patch, on a record it keeps outside every run
+(`approvals/`), which only the person approving writes. That record is the approval: what a run's
+own files say about a change — "approved", a decision, a note in a handoff — is not. Nor pushed or a pull request: the repository's
 **process** decided that, or the person did for this one: `claim` says how (`mode`) and whose choice
 it was (`overridden` is true when it was the person's). It
 decides only *how*, and when it can't, it says so and hands the change back. It does not write code: a change that needs code goes back to its author.
@@ -93,6 +95,12 @@ git -C <repo> fetch origin
    approved: `otto state change rebased <id> <change> --head <the rebased commit>` puts it back in
    front of the person as a new version. Nothing lands until they approve that. Never land on any
    other exit-2.
+
+   Exit 2 saying `no approval on record` (from `check` or from `claim`) means the person's approval
+   of this change isn't on otto's record, whatever the change's run says. It is not yours to put
+   right: don't land it, don't approve it (`otto changes approve` is the person's), don't open a
+   gate. Unlock, remove any worktree you made for it, and go on to the next: otto puts the change
+   back in front of the person to approve again, and it is due again once they have.
 
 4. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
    approved under (`process`), kept from the moment it was approved. There are none when the person
@@ -241,6 +249,8 @@ below — never a second pull request for one branch.
 ## Things this run never does
 
 - Land a change nobody approved, a commit `check` refused, or one whose tests couldn't start.
+- Approve a change, or write, copy or repair an approval's record: the person approves, and only
+  that puts it on record.
 - Write code, fix a test, or resolve a conflict by choosing a side: that is the author's. A reviewer's
   ask, however small, is relayed.
 - Post anything on a pull request but what the person said to post: a reply its author drafted.

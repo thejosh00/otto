@@ -624,9 +624,10 @@ earlier head is stale and you ask again. Check immediately before acting, every 
 means stop and report — if you believe an unauthorized action is warranted, that belief is
 exactly what the gate exists to test.
 
-A change the person approved is the one exception in how it is checked. Its approval is on the
-change, and whoever lands it (the lander, following its instructions) checks it with `otto state
-change check <id> <change> --head <sha>`, where exit 2 means do not act just the same.
+A change the person approved is the one exception in how it is checked. Its approval is on a
+record otto keeps outside the run, written only when the person approves — nothing in the run's
+own files makes a change approved, and approving is never yours to do. Whoever lands it (the lander, following its instructions) checks it with
+`otto state change check <id> <change> --head <sha>`, where exit 2 means do not act just the same.
 `check-authorized` is not run for landing an approved change and no gate is opened for it; it
 remains the check for every other outward action.
 

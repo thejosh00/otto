@@ -66,7 +66,7 @@ head from the index counts only when the record allows later versions.
 |---|---|
 | The index says approved or landing, and no record matches | `check` and `claim` exit 2: `DO NOT ACT: no approval on record`. `otto changes` lists it as yours: "its run says approved, with no approval of yours on record: yours to approve again" |
 | The same, when the lander next asks what is due | The change goes back to review with its decision cleared, and its history says, by `otto`: "approved before approvals were kept outside the run: approve it again" |
-| A record for an earlier version that allows no later one | It goes back to you: "the approval on record is for vN, and allows no later version without the person: vM is theirs to approve" |
+| A record for an earlier version that allows no later one | When the lander next asks what is due, it goes back to you: "the approval on record is for vN, and allows no later version without the person: vM is theirs to approve" |
 
 A change approved before records were kept has none, so it takes the second row once. That is
 expected: approve it again.
