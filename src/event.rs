@@ -27,7 +27,7 @@ use serde_json::{Map, Value};
 pub const OTTO_EVENTS: &[&str] = &[
     "run-created", "phase-changed", "status-changed", "facts-recorded", "gate-opened", "gate-closed",
     "gate-expired", "timer-armed", "tick", "noop-tick", "wake-started", "wake-spent", "usage-unavailable",
-    "sandbox-refused",
+    "sandbox-refused", "sign-in-waiting", "sign-in-renewed",
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
     "budget-exhausted", "lock-acquired", "lock-released", "lock-broken", "lock-lost", "authorized",
     "wake-killed", "spawn-abandoned", "check-ran", "note-added", "notes-delivered", "notes-given-late", "note-dropped",
@@ -258,6 +258,18 @@ pub enum Event {
     /// disagrees with its record, and why. No token, or any of a token, in `why`.
     SandboxRefused {
         why: String,
+    },
+    /// A sandboxed wake wasn't started yet: Claude's sign-in would run out before the wake ended, and claude
+    /// renews it only in its last minutes. The wake starts at `until`.
+    SignInWaiting {
+        until: Timestamp,
+        #[serde(rename = "expiresAt")]
+        expires_at: Timestamp,
+    },
+    /// Claude's sign-in was about to run out (or had), and otto had claude renew it before a sandboxed wake.
+    SignInRenewed {
+        #[serde(rename = "wasExpiringAt")]
+        was_expiring_at: Timestamp,
     },
     WakeReportedError {
         #[serde(rename = "exitCode")]

@@ -240,6 +240,15 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         return block_on_budget(&args.id, &why);
     }
 
+    // A sandboxed wake is handed claude's sign-in and can't renew it: see that it lasts first. Only for a
+    // launcher that goes through the wrapper; any other run's Keychain is never looked at.
+    if !args.dry_run && crate::sandbox::through_wrapper(&launcher) {
+        let ends = Timestamp::in_minutes(state.policy.max_wake_minutes as i64);
+        if crate::sandbox::keep_signed_in(&args.id, ends, exec)? == crate::sandbox::Start::Later {
+            return Ok(());
+        }
+    }
+
     let base = prompt::for_wake(&args.id, &run_path, &state);
     // A person's answer no wake has completed with yet is given to this one, whoever started it:
     // the answerer handing it over (`args.answer`, the same words) or a follow-on, poke or `otto
@@ -2434,5 +2443,190 @@ mod tests {
         assert_eq!(exec.timeouts.borrow()[0], Duration::from_secs(180));
         let state = read_run("w-deadline").unwrap();
         assert!(state.wake.as_ref().unwrap().deadline_at > state.wake.as_ref().unwrap().started_at);
+    }
+
+    /// A run whose wakes go through the sandbox wrapper: a launcher naming it, and a record that agrees.
+    fn sandboxed(id: &str) {
+        test_init(id, "a goal").unwrap();
+        let wrapper = crate::sandbox::dir().join(crate::sandbox::WRAPPER);
+        let config = json!({"launchers": [{"name": "sandbox", "command": format!("{} -- claude", wrapper.display()), "grantFlag": "--allow"}]});
+        std::fs::write(crate::config::config_path(), config.to_string()).unwrap();
+        transaction(id, |_p, state| {
+            state.launcher.kind = "sandbox".into();
+            Ok(())
+        })
+        .unwrap();
+        place_record(id);
+    }
+
+    /// What `security` prints for a sign-in running out in `minutes`, as a fake `Exec` hands it back.
+    fn keychain_says(expires_in_minutes: i64, refresh_in_days: i64) -> Output {
+        let ms = |at: time::OffsetDateTime| at.unix_timestamp_nanos() / 1_000_000;
+        let now = crate::clock::now();
+        let item = json!({"claudeAiOauth": {
+            "accessToken": "SECRET-access", "refreshToken": "SECRET-refresh",
+            "expiresAt": ms(now + time::Duration::minutes(expires_in_minutes)) as i64,
+            "refreshTokenExpiresAt": ms(now + time::Duration::days(refresh_in_days)) as i64,
+        }});
+        Output { code: 0, stdout: item.to_string(), stderr: String::new(), timed_out: false }
+    }
+
+    fn is_keychain_read(call: &[String]) -> bool {
+        call.first().is_some_and(|c| c == "/usr/bin/security")
+    }
+
+    fn journal_of(id: &str) -> String {
+        std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap()
+    }
+
+    /// The sign-in would run out mid-wake and claude won't renew it yet: no wake, and the run sleeps until
+    /// four minutes before it runs out, where poke brings it, past a standing check, and not as a crash.
+    #[test]
+    fn a_sandboxed_wake_waits_for_a_sign_in_that_would_run_out_under_it() {
+        let _h = TempHome::new();
+        sandboxed("w-wait");
+        crate::state::ops::open_gate("w-wait", "theirs", "Which?", None).unwrap();
+        crate::state::ops::answer_gate("w-wait", "the left one", Status::Sleeping).unwrap();
+        transaction("w-wait", |_p, state| {
+            state.spawn_attempts = 2;
+            state.check = Some(crate::state::Check { pinned: true, ..serde_json::from_value(json!({"script": "artifacts/check.sh"})).unwrap() });
+            Ok(())
+        })
+        .unwrap();
+        let wakes_before = read_run("w-wait").unwrap().wake.map(|w| w.n);
+
+        let mut exec = FakeExec::new();
+        exec.queue(keychain_says(30, 20));
+        run_wake(&args("w-wait"), &mut exec).expect("waiting is not a failure");
+
+        let calls = exec.calls.borrow();
+        assert_eq!(calls.len(), 1, "only the Keychain was read: {calls:?}");
+        assert!(is_keychain_read(&calls[0]));
+        let state = read_run("w-wait").unwrap();
+        assert_eq!(state.wake.as_ref().map(|w| w.n), wakes_before, "no wake was recorded");
+        assert_eq!(state.status, Status::Sleeping);
+        let minutes = minutes_until(state.next_wake_at.expect("it is brought back"));
+        assert!((25..=26).contains(&minutes), "four minutes before it runs out, got {minutes}");
+        assert_eq!(state.spawn_attempts, 0, "not a spawn that failed");
+        assert_eq!((state.incomplete_wakes, state.start_failures), (0, 0), "not a crash");
+        assert!(state.check.is_some() && !state.check_gates_wake(), "the standing check doesn't stand in front of this wake");
+        assert!(state.unheard_answer.as_ref().is_some_and(|a| a.given_to_wake.is_none()), "the answer is still to be given");
+        let journal = journal_of("w-wait");
+        assert!(journal.contains("\"event\":\"sign-in-waiting\"") && !journal.contains("wake-started"), "{journal}");
+        assert!(!journal.contains("SECRET"));
+        // Poke, before then, leaves it asleep.
+        let entry = crate::state::RunEntry::Readable(state.clone());
+        let poke = |at: time::OffsetDateTime| crate::poke::decide(&entry, at, &LockLiveness, 2, 5, 5).reason;
+        assert!(poke(crate::clock::now()).contains("due at"), "{}", poke(crate::clock::now()));
+        // And then starts it as a wake that came due, not as one that died, and not behind the check.
+        let then = poke(state.next_wake_at.unwrap().dt() + time::Duration::minutes(10));
+        assert!(then.contains("missed its wake"), "{then}");
+    }
+
+    /// Inside the last four minutes: claude is asked one small thing outside the sandbox, which renews the
+    /// sign-in, and then the wake starts as usual.
+    #[test]
+    fn a_sandboxed_wake_has_claude_renew_a_sign_in_about_to_run_out_and_then_starts() {
+        let _h = TempHome::new();
+        sandboxed("w-renew");
+        let mut exec = FakeExec::new();
+        // The Keychain before, the renewing call, the Keychain after; then the wake itself.
+        exec.queue(keychain_says(3, 20)).queue(Output::default()).queue(keychain_says(480, 20));
+        let _ = run_wake(&args("w-renew"), &mut exec);
+
+        let calls = exec.calls.borrow();
+        assert_eq!(calls.len(), 4, "{calls:?}");
+        assert!(is_keychain_read(&calls[0]) && is_keychain_read(&calls[2]));
+        let renew = &calls[1];
+        let at = renew.iter().position(|w| w == "claude").expect("claude itself");
+        assert_eq!(renew[at..], ["claude", "-p", "Reply with the single word ok", "--model", "haiku", "--tools", "", "--no-session-persistence"]);
+        assert!(renew[..at].iter().all(|w| !w.contains("wrapper")), "outside the sandbox: {renew:?}");
+        assert!(renew[..at].windows(2).any(|w| w == ["-u", "ANTHROPIC_API_KEY"]), "on the sign-in, not a key");
+        assert_eq!(exec.timeouts.borrow()[1], Duration::from_secs(120));
+        assert!(calls[3].iter().any(|w| w.ends_with("sandbox/wrapper")), "then the wake, under the wrapper: {:?}", calls[3]);
+        let journal = journal_of("w-renew");
+        let (renewed, started) = (journal.find("sign-in-renewed").expect("it says so"), journal.find("wake-started").expect("the wake started"));
+        assert!(renewed < started);
+        assert!(!journal.contains("SECRET"));
+    }
+
+    /// The renewing call changed nothing: no wake, and a question for the person saying what to do. Once they
+    /// have, `otto wake` starts it with no question left over.
+    #[test]
+    fn a_sign_in_that_could_not_be_renewed_blocks_the_run_and_says_what_to_do() {
+        let _h = TempHome::new();
+        sandboxed("w-stuck");
+        transaction("w-stuck", |_p, state| {
+            state.spawn_attempts = 2;
+            Ok(())
+        })
+        .unwrap();
+        let mut exec = FakeExec::new();
+        exec.queue(keychain_says(-10, 20)).queue(Output { code: 1, ..Output::default() }).queue(keychain_says(-10, 20));
+        let err = run_wake(&args("w-stuck"), &mut exec).expect_err("nothing starts");
+        assert!(err.message.contains("couldn't be renewed") && err.message.contains("claude auth login"), "{}", err.message);
+        assert_eq!(exec.calls.borrow().len(), 3, "no wake: {:?}", exec.calls.borrow());
+
+        let state = read_run("w-stuck").unwrap();
+        assert_eq!(state.status, Status::Blocked);
+        assert!(state.wake.is_none(), "no wake was recorded");
+        assert_eq!(state.spawn_attempts, 0, "not a crash to retry");
+        let gate = state.gate.as_ref().expect("a question");
+        assert_eq!(gate.slug, "claude-sign-in");
+        let question = std::fs::read_to_string(crate::paths::run_dir("w-stuck").unwrap().join(&gate.file)).unwrap();
+        assert!(question.contains("ran out at") && question.contains("couldn't be renewed"), "{question}");
+        assert!(question.contains("`claude auth login`") && question.contains("otto wake"), "{question}");
+        assert!(!question.contains("SECRET") && !journal_of("w-stuck").contains("SECRET"));
+
+        // A sign-in that has ended says that instead, without asking claude anything.
+        sandboxed("w-ended");
+        let mut ended = FakeExec::new();
+        ended.queue(keychain_says(-10, -1));
+        let err = run_wake(&args("w-ended"), &mut ended).expect_err("nothing starts");
+        assert!(err.message.contains("has ended"), "{}", err.message);
+        assert_eq!(ended.calls.borrow().len(), 1);
+        let mut none = FakeExec::new();
+        none.queue(Output { code: 44, ..Output::default() });
+        sandboxed("w-none-in");
+        let err = run_wake(&args("w-none-in"), &mut none).expect_err("nothing starts");
+        assert!(err.message.contains("has ended"), "{}", err.message);
+
+        // Signed in again, and started by hand.
+        let mut exec = FakeExec::new();
+        exec.queue(keychain_says(480, 20));
+        exec.on_exec(|| {
+            let state = read_run("w-stuck").unwrap();
+            if state.wake.is_some() {
+                assert_eq!(state.status, Status::Running);
+                assert!(state.gate.is_none() && state.blocked.is_none());
+            }
+        });
+        let _ = run_wake(&args("w-stuck"), &mut exec);
+        assert_eq!(exec.calls.borrow().len(), 2, "the Keychain, then the wake");
+        assert!(read_run("w-stuck").unwrap().wake.is_some());
+    }
+
+    /// A run that isn't under the wrapper is handed no token, and its wake never looks in the Keychain: not
+    /// with a record beside it, and not on a dry run of a sandboxed one.
+    #[test]
+    fn only_a_sandboxed_wake_looks_at_the_sign_in() {
+        let _h = TempHome::new();
+        test_init("w-plain", "a goal").unwrap();
+        place_record("w-plain");
+        let mut exec = FakeExec::new();
+        let _ = run_wake(&args("w-plain"), &mut exec);
+        assert_eq!(exec.calls.borrow().len(), 1, "the wake and nothing else");
+        assert!(!exec.calls.borrow().iter().any(|c| is_keychain_read(c) || c.iter().any(|w| w == "haiku")));
+
+        sandboxed("w-dry");
+        let mut exec = FakeExec::new();
+        run_wake(&WakeArgs { dry_run: true, ..args("w-dry") }, &mut exec).unwrap();
+        assert!(exec.calls.borrow().is_empty());
+        // Sandboxed, and a sign-in that lasts: one look, and the wake.
+        let mut exec = FakeExec::new();
+        exec.queue(keychain_says(480, 20));
+        let _ = run_wake(&args("w-dry"), &mut exec);
+        assert_eq!(exec.calls.borrow().len(), 2);
+        assert!(is_keychain_read(&exec.calls.borrow()[0]) && !journal_of("w-dry").contains("sign-in-"));
     }
 }

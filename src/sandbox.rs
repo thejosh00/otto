@@ -609,7 +609,7 @@ fn token_from(json: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "claude's Keychain item has no access token: sign in with `claude auth login`".to_string())
 }
 
-fn read_token() -> Result<String, String> {
+fn read_token(deadline: Option<time::OffsetDateTime>) -> Result<String, String> {
     let out = std::process::Command::new("/usr/bin/security")
         .args(["find-generic-password", "-s", KEYCHAIN_ITEM, "-w"])
         .stdin(std::process::Stdio::null())
@@ -622,7 +622,210 @@ fn read_token() -> Result<String, String> {
             out.status.code().unwrap_or(-1)
         ));
     }
-    token_from(&out.stdout)
+    lasting_token(&out.stdout, crate::clock::now(), deadline)
+}
+
+/// How long before it runs out claude will renew its own sign-in, less a minute: claude renews in the last
+/// five minutes, and only then.
+const RENEWABLE_MINUTES: i64 = 4;
+/// How far past a wake's deadline its sign-in must last to be let start.
+const LASTS_MARGIN_MINUTES: i64 = 2;
+/// With no deadline to last to (a chat), how much longer the wrapper wants a sign-in to have.
+const UNEXPIRED_MARGIN_MINUTES: i64 = 5;
+/// The gate a run waits on when its sign-in ran out and couldn't be renewed.
+const SIGN_IN_GATE: &str = "claude-sign-in";
+
+/// Whether claude's sign-in will see a wake through, read from the Keychain's JSON and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignIn {
+    /// It lasts past the wake's deadline.
+    Lasts,
+    /// It would run out during the wake, and claude won't renew it before `until`.
+    Wait { until: time::OffsetDateTime, expires: time::OffsetDateTime },
+    /// It would run out during the wake, or has, and claude would renew it if started now.
+    Renew { expires: time::OffsetDateTime },
+    /// There's none, it can't be read, or it can no longer be renewed. `expired`: when it ran out, if it says.
+    Dead { expired: Option<time::OffsetDateTime> },
+}
+
+/// A time the Keychain's JSON gives in milliseconds.
+fn millis(value: &serde_json::Value) -> Option<time::OffsetDateTime> {
+    let ms = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))?;
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000).ok()
+}
+
+/// When the access token runs out, and when it can no longer be renewed if that's said. No token, or no
+/// time on it, is `None`. Nothing of the token itself is read out.
+fn expiry_from(json: &[u8]) -> Option<(time::OffsetDateTime, Option<time::OffsetDateTime>)> {
+    let value: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let oauth = &value["claudeAiOauth"];
+    oauth["accessToken"].as_str().filter(|t| !t.is_empty())?;
+    Some((millis(&oauth["expiresAt"])?, millis(&oauth["refreshTokenExpiresAt"])))
+}
+
+/// The decision for a wake that must end by `deadline`. `json` is what the Keychain holds, `None` if nothing.
+/// One that lasts is let through whatever else is true of it; only one that needs renewing can be dead.
+pub fn sign_in(json: Option<&[u8]>, now: time::OffsetDateTime, deadline: time::OffsetDateTime) -> SignIn {
+    let Some((expires, renewable_until)) = json.and_then(expiry_from) else {
+        return SignIn::Dead { expired: None };
+    };
+    if expires >= deadline + time::Duration::minutes(LASTS_MARGIN_MINUTES) {
+        return SignIn::Lasts;
+    }
+    if renewable_until.is_some_and(|end| end <= now) {
+        return SignIn::Dead { expired: Some(expires) };
+    }
+    let until = expires - time::Duration::minutes(RENEWABLE_MINUTES);
+    if now >= until {
+        SignIn::Renew { expires }
+    } else {
+        SignIn::Wait { until, expires }
+    }
+}
+
+/// The access token, if it lasts to `deadline` (a wake's), or with none a few minutes yet (a chat). The
+/// wrapper's last look: `otto wake` renews a sign-in before starting, and this is for whatever got past that.
+/// Never an expired token, and the refusal says when it runs out and nothing of what it is.
+fn lasting_token(json: &[u8], now: time::OffsetDateTime, deadline: Option<time::OffsetDateTime>) -> Result<String, String> {
+    let token = token_from(json)?;
+    let Some((expires, _)) = expiry_from(json) else {
+        return Err("claude's Keychain item doesn't say when the sign-in runs out, so nothing started: sign in with `claude auth login`".to_string());
+    };
+    let at = crate::clock::plain_time(crate::clock::Timestamp::at(expires));
+    if expires <= now {
+        return Err(format!("claude's sign-in ran out at {at}, so nothing started: nothing inside the sandbox can renew it. Run `claude` once outside it, or `claude auth login`"));
+    }
+    let needed = deadline.map_or(now + time::Duration::minutes(UNEXPIRED_MARGIN_MINUTES), |d| d.max(now));
+    if expires < needed {
+        return Err(format!("claude's sign-in runs out at {at}, before this would end, so nothing started: nothing inside the sandbox can renew it"));
+    }
+    Ok(token)
+}
+
+/// Whether a wake under this launcher goes through the wrapper, and so is handed a token that nothing inside
+/// can renew: one of the launcher's command words is `$OTTO_HOME/sandbox/wrapper`.
+pub fn through_wrapper(launcher: &LauncherDef) -> bool {
+    let home = crate::paths::home_dir();
+    let place = |path: &str| normalize(path, &home).ok();
+    let wrapper = dir().join(WRAPPER);
+    let wanted = place(&wrapper.display().to_string());
+    launcher.command_words().iter().any(|word| Path::new(word) == wrapper || (word.contains('/') && wanted.is_some() && place(word) == wanted))
+}
+
+/// What the Keychain holds, read through `exec` so a test can stand in for it. Never printed or kept.
+fn keychain_json(exec: &mut dyn crate::exec::Exec) -> Option<Vec<u8>> {
+    let out = exec.exec(&["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_ITEM, "-w"], None, std::time::Duration::from_secs(20));
+    (out.code == 0 && !out.timed_out).then(|| out.stdout.into_bytes())
+}
+
+/// What `otto wake` does next about a sandboxed run's sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// Start the wake.
+    Now,
+    /// Nothing started: the run sleeps until the sign-in can be renewed.
+    Later,
+}
+
+/// The one small question that makes claude renew its own sign-in: outside the sandbox, one turn, the
+/// cheapest model, no tools, nothing kept. claude takes its own lock and writes the Keychain itself; otto
+/// never reads out, holds or passes the refresh token.
+pub const RENEW_ARGV: &[&str] = &["claude", "-p", "Reply with the single word ok", "--model", "haiku", "--tools", "", "--no-session-persistence"];
+
+/// Before a sandboxed wake is recorded or started: make sure the sign-in it will be handed lasts to its
+/// deadline. If it wouldn't, wait until claude will renew it and have claude do that. If that can't be done,
+/// block the run with a question saying so. Not called for a run that isn't under the wrapper, or a dry run.
+pub fn keep_signed_in(id: &str, deadline: crate::clock::Timestamp, exec: &mut dyn crate::exec::Exec) -> Result<Start, OttoError> {
+    use crate::clock::{plain_time, Timestamp};
+    let read = |exec: &mut dyn crate::exec::Exec| sign_in(keychain_json(exec).as_deref(), crate::clock::now(), deadline.dt());
+    match read(exec) {
+        SignIn::Lasts => Ok(Start::Now),
+        SignIn::Wait { until, expires } => {
+            let until = Timestamp::at(until);
+            let expires = Timestamp::at(expires);
+            crate::state::transaction(id, |path, state| {
+                use crate::state::Status;
+                if matches!(state.status, Status::Running | Status::Sleeping) {
+                    state.status = Status::Sleeping;
+                }
+                // As a timer a wake armed for itself, so a standing check doesn't stand in front of it; and a
+                // check that belonged to the sleep now over has said its piece.
+                state.next_wake_at = Some(until);
+                state.armed_wake_at = Some(until);
+                if state.check.as_ref().is_some_and(|c| !c.pinned) {
+                    state.check = None;
+                }
+                // otto chose not to start: not a spawn that failed.
+                state.spawn_attempts = 0;
+                crate::event::record(path, &crate::event::Event::SignInWaiting { until, expires_at: expires })
+            })?;
+            println!(
+                "{id}: waiting for the Claude sign-in to become renewable: it runs out at {}, before this wake would end, and claude renews it only in its last minutes. The wake starts at {}.",
+                plain_time(expires),
+                plain_time(until)
+            );
+            Ok(Start::Later)
+        }
+        SignIn::Renew { expires } => {
+            let mut argv: Vec<String> = crate::wake::launcher::env_guard();
+            argv.extend(RENEW_ARGV.iter().map(|w| w.to_string()));
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let _ = exec.exec_in(&argv, Some(&std::env::temp_dir()), std::time::Duration::from_secs(120));
+            match read(exec) {
+                SignIn::Lasts => {
+                    crate::state::log_event(id, crate::event::Event::SignInRenewed { was_expiring_at: Timestamp::at(expires) })?;
+                    println!("{id}: Claude sign-in renewed");
+                    Ok(Start::Now)
+                }
+                SignIn::Dead { .. } => Err(refuse_sign_in(id, &ended_words())),
+                SignIn::Wait { expires, .. } | SignIn::Renew { expires } => {
+                    let ran = if expires <= crate::clock::now() { "ran out" } else { "runs out" };
+                    Err(refuse_sign_in(id, &format!("Claude's sign-in {ran} at {} and couldn't be renewed", plain_time(Timestamp::at(expires)))))
+                }
+            }
+        }
+        SignIn::Dead { .. } => Err(refuse_sign_in(id, &ended_words())),
+    }
+}
+
+fn ended_words() -> String {
+    "Claude's sign-in has ended: there's none in the Keychain, or it can no longer be renewed".to_string()
+}
+
+fn sign_in_question(id: &str, why: &str) -> String {
+    let short = crate::paths::short_id(id);
+    format!(
+        "{why}, so otto started nothing for run `{id}`: no wake, nothing spent.\n\n\
+         This run's wakes are sandboxed. Each is handed claude's sign-in as it starts and can't renew it from inside, \
+         so otto won't start one on a sign-in that would run out part-way.\n\n\
+         To go on: run `claude auth login`, then `otto wake {short}`. To end the run, `otto stop {short}`.\n\n\
+         ## Options\n\n\
+         - **Signed in** *(default)* — I've signed in again. It's looked at again before the next wake.\n"
+    )
+}
+
+/// Block a run whose sign-in can't be made to last, as `refuse` does for one that disagrees with its record:
+/// a journal line, and a question for the person, which poke leaves alone rather than retrying.
+fn refuse_sign_in(id: &str, why: &str) -> OttoError {
+    let refusal = OttoError::conflict(format!("{id}: not starting anything. {why}: run `claude auth login`, then `otto wake {}`", crate::paths::short_id(id)));
+    let trail = crate::state::transaction(id, |path, state| {
+        state.block(crate::state::BlockedCause::Instructions, Some(why.to_string()));
+        if let Some(blocked) = state.blocked.as_mut() {
+            blocked.sandbox = true;
+        }
+        state.spawn_attempts = 0;
+        crate::event::record(path, &crate::event::Event::SandboxRefused { why: why.to_string() })?;
+        Ok(state.gate.is_none())
+    });
+    let asked = match trail {
+        Ok(true) => crate::state::ops::open_gate(id, SIGN_IN_GATE, &sign_in_question(id, why), None).map(|_| ()),
+        Ok(false) => Ok(()),
+        Err(e) => Err(e),
+    };
+    match asked {
+        Ok(()) => refusal,
+        Err(e) => OttoError::conflict(format!("{}, and recording that failed: {e}", refusal.message)),
+    }
 }
 
 /// What the sandboxed command's environment loses.
@@ -862,6 +1065,9 @@ pub fn lift_refusal(id: &str, state: &RunState) -> Result<(), OttoError> {
     if state.gate.as_ref().is_some_and(|g| g.slug == REFUSED_GATE) {
         return crate::state::ops::close_gate(id, Some(AGREES), Status::Sleeping);
     }
+    if state.gate.as_ref().is_some_and(|g| g.slug == SIGN_IN_GATE) {
+        return crate::state::ops::close_gate(id, Some("(otto) started again by hand; the sign-in is looked at afresh."), Status::Sleeping);
+    }
     crate::state::transaction(id, |path, state| {
         state.status = if state.gate.is_some() { Status::AwaitingHuman } else { Status::Sleeping };
         crate::event::record(
@@ -931,7 +1137,12 @@ fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String>
         std::fs::create_dir_all(caches.join(sub)).map_err(|e| format!("couldn't make the run's caches in {}: {e}", caches.display()))?;
     }
     let claude = lay_out_claude(&id, &record, &machine.home)?;
-    let token = read_token()?;
+    // A wake's deadline is in its `run.json` before it's started; a chat has none.
+    let deadline = std::env::var("OTTO_RUN_ID")
+        .is_ok_and(|run| !run.is_empty())
+        .then(|| crate::state::read_run(&id).ok().and_then(|state| state.wake.filter(|w| w.outcome.is_none()).map(|w| w.deadline_at.dt())))
+        .flatten();
+    let token = read_token(deadline)?;
     hand_in(&token)?;
     Ok(Prepared { profile: path, command, caches, claude })
 }
@@ -1580,5 +1791,84 @@ mod tests {
         assert!(dir().join("runs").is_dir() && dir().join("profiles").is_dir());
         ensure_wrapper(Path::new("/o'tto/bin/otto")).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+
+    fn keychain(expires_ms: i128, refresh_ms: i128) -> Vec<u8> {
+        format!(r#"{{"claudeAiOauth":{{"accessToken":"SECRET-a","refreshToken":"SECRET-r","expiresAt":{expires_ms},"refreshTokenExpiresAt":{refresh_ms}}}}}"#).into_bytes()
+    }
+
+    fn ms(at: time::OffsetDateTime) -> i128 {
+        at.unix_timestamp_nanos() / 1_000_000
+    }
+
+    /// Each side of each line the decision draws, for a wake of 45 minutes.
+    #[test]
+    fn a_sign_in_lasts_waits_renews_or_is_dead() {
+        use time::Duration as D;
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let deadline = now + D::minutes(45);
+        let far = ms(now + D::days(20));
+        let decide = |expires: time::OffsetDateTime, refresh: i128| sign_in(Some(&keychain(ms(expires), refresh)), now, deadline);
+
+        // Past the deadline by the margin, exactly, lasts; a second less doesn't.
+        assert_eq!(decide(deadline + D::minutes(2), far), SignIn::Lasts);
+        let short = deadline + D::minutes(2) - D::seconds(1);
+        assert_eq!(decide(short, far), SignIn::Wait { until: short - D::minutes(4), expires: short });
+        // Four minutes before it runs out, exactly, claude will renew; a second earlier is still a wait.
+        let soon = now + D::minutes(4);
+        assert_eq!(decide(soon, far), SignIn::Renew { expires: soon });
+        let later = soon + D::seconds(1);
+        assert_eq!(decide(later, far), SignIn::Wait { until: now + D::seconds(1), expires: later });
+        // Run out already: renewable still.
+        let gone = now - D::hours(3);
+        assert_eq!(decide(gone, far), SignIn::Renew { expires: gone });
+        // Nothing left to renew it with.
+        assert_eq!(decide(gone, ms(now - D::seconds(1))), SignIn::Dead { expired: Some(gone) });
+        assert_eq!(decide(soon, ms(now)), SignIn::Dead { expired: Some(soon) });
+        // One that lasts is let through without asking what renews it.
+        assert_eq!(decide(deadline + D::hours(1), ms(now - D::days(1))), SignIn::Lasts);
+        // No item, or nothing that can be read as one.
+        assert_eq!(sign_in(None, now, deadline), SignIn::Dead { expired: None });
+        for garbage in ["not json SECRET", "{}", r#"{"claudeAiOauth":{"accessToken":"SECRET","expiresAt":"soon"}}"#, r#"{"claudeAiOauth":{"accessToken":"","expiresAt":99999999999999}}"#] {
+            assert_eq!(sign_in(Some(garbage.as_bytes()), now, deadline), SignIn::Dead { expired: None }, "{garbage}");
+        }
+    }
+
+    /// The wrapper's last look: a token that has run out, or will before the wake's deadline, isn't handed in,
+    /// and the refusal says when and nothing of the item.
+    #[test]
+    fn the_wrapper_hands_in_no_token_that_has_run_out_or_will_before_the_deadline() {
+        use time::Duration as D;
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let far = ms(now + D::days(20));
+        let deadline = Some(now + D::minutes(45));
+        let item = |expires: time::OffsetDateTime| keychain(ms(expires), far);
+
+        assert_eq!(lasting_token(&item(now + D::minutes(45)), now, deadline).unwrap(), "SECRET-a");
+        assert_eq!(lasting_token(&item(now + D::minutes(5)), now, None).unwrap(), "SECRET-a", "a chat wants only a few minutes");
+        let refusals = [
+            (item(now - D::seconds(1)), deadline, "ran out at"),
+            (item(now), None, "ran out at"),
+            (item(now + D::minutes(44)), deadline, "runs out at"),
+            (item(now + D::minutes(4)), None, "runs out at"),
+            (br#"{"claudeAiOauth":{"accessToken":"SECRET-a"}}"#.to_vec(), None, "doesn't say when"),
+        ];
+        for (json, deadline, said) in refusals {
+            let why = lasting_token(&json, now, deadline).unwrap_err();
+            assert!(why.contains(said) && why.contains("nothing started"), "{why}");
+            assert!(!why.contains("SECRET"), "{why}");
+        }
+    }
+
+    #[test]
+    fn only_a_launcher_naming_the_wrapper_is_handed_a_token() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let launcher = |command: &str| LauncherDef { name: "l".into(), command: command.into(), grant_flag: None };
+        let wrapper = dir().join(WRAPPER).display().to_string();
+        assert!(through_wrapper(&launcher(&format!("{wrapper} -- claude"))));
+        assert!(through_wrapper(&launcher(&format!("env LEGENDA_DIR=/x {wrapper} -- claude"))));
+        assert!(!through_wrapper(&launcher("claude")));
+        assert!(!through_wrapper(&launcher("nono run --profile p -- claude")));
+        assert!(!through_wrapper(&launcher("/elsewhere/sandbox/wrapper -- claude")));
     }
 }

@@ -134,7 +134,7 @@ const UNINHERITED: &[&str] = &[
 
 /// `env -u …` for each of `UNINHERITED`. `env` execs what follows, so it adds no process: the
 /// deadline's kill still reaches claude.
-fn env_guard() -> Vec<String> {
+pub(crate) fn env_guard() -> Vec<String> {
     let mut words = vec!["env".to_string()];
     for var in UNINHERITED {
         words.push("-u".to_string());

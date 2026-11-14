@@ -223,6 +223,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         WakeSpent { turns: 0, spent_wakes: 0, spent_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, tool_errors: 0 },
         UsageUnavailable { note: s() },
         SandboxRefused { why: "no sandbox record for run 12".into() },
+        SignInWaiting { until: at, expires_at: at },
+        SignInRenewed { was_expiring_at: at },
         WakeReportedError { exit_code: 1, timed_out: false, turns: 0 },
         BudgetWarning { fraction_spent: 0.8, budget: crate::state::test_run_state("x").budget },
         WakeComplete { status: s(), progress: true },
@@ -290,7 +292,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | DoneVerified { .. } | DoneReopened { .. } | FactsRecorded { .. }
             | GateOpened { .. } | GateClosed { .. } | GateExpired { .. } | TimerArmed { .. }
             | Tick { .. } | NoopTick { .. } | WakeStarted { .. } | WakeSpent { .. }
-            | UsageUnavailable { .. } | SandboxRefused { .. } | WakeReportedError { .. } | BudgetWarning { .. }
+            | UsageUnavailable { .. } | SandboxRefused { .. } | SignInWaiting { .. } | SignInRenewed { .. } | WakeReportedError { .. } | BudgetWarning { .. }
             | WakeComplete { .. } | WakeIncomplete { .. } | UsageLimited { .. } | BudgetExhausted { .. }
             | LockAcquired { .. } | LockReleased { .. } | LockBroken { .. } | LockLost { .. }
             | Authorized { .. } | WakeKilled { .. } | SpawnAbandoned { .. } | CheckRan { .. }
