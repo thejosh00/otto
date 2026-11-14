@@ -26,6 +26,7 @@ wake. Approved edits to the plan take effect that way, so never work from a copy
 | `artifacts/todo.md` | Every plan item, in build order, one line each. This is the progress the person sees |
 | `artifacts/ledger.md` | Append-only: for each item, its report number, its change, your verdict and what showed it |
 | `artifacts/waiting-on` | Your cursor, which the check script reads. A report number, `hold`, or no file |
+| `artifacts/blocked-seen` | The blocked agents you have already looked at, which the check script reads too |
 | `artifacts/baseline.json` | Every run's id, name and goal hash, from your first wake |
 
 **Keep `artifacts/waiting-on` true before you stop.** The check script wakes you only because of what
@@ -72,8 +73,19 @@ assign an item twice.
 | The item you assigned is still open, building or landed | Nothing. Make sure `waiting-on` names it and stop |
 | The item you assigned is verified | [Check it](#checking-an-item) |
 | The item you assigned was closed | Read why. If it was overtaken or a duplicate, mark it `[-]` with the reason and go on. If it's anything else, ask the person |
-| An agent is blocked | Look at why. If an install did it, `otto-build` handles that, and you wait. Otherwise tell the person |
+| An agent is blocked | Look at why. If an install did it, `otto-build` handles that, and you wait. Otherwise tell the person. Either way, record that you looked (below) |
 | Nothing is out | [Hand off the next item](#handing-off-an-item) |
+
+**A blocked agent you have looked at.** Once you have looked at a blocked agent and done what the table says, record it, from the run
+directory:
+
+```
+otto state list --status blocked --json | jq -r '.[] | "\(.id) \(.blocked.at // "")"' > artifacts/blocked-seen
+```
+
+That rewrites the file whole each time, so an agent that is no longer blocked drops out of it. The
+check script then stops waking you for an agent that is still blocked the way you left it. One that
+blocks again later, or a different one, still wakes you.
 
 **4. Before you stop,** mark the todo and log one line when something happened:
 
