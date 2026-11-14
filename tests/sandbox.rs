@@ -1115,7 +1115,13 @@ fn a_check_is_not_run_for_a_run_that_disagrees_with_its_record() {
     assert!(poked.contains("not running its check") && poked.contains("second"), "{poked}");
     s.wait_for("blocked");
     assert!(!marker.exists(), "poke ran the script of a run that disagrees with its record");
-    assert_eq!(s.state()["gate"]["slug"], "sandbox-record");
+    // The wake poke started refuses in two steps, blocked and then its question (sandbox::refuse), and it is
+    // another process: wait for the second step rather than read between them.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.state()["gate"]["slug"] != "sandbox-record" {
+        assert!(std::time::Instant::now() < until, "blocked, and never asked: {:#}\n{}", s.state(), s.journal());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     assert!(s.journal().contains("sandbox-refused") && s.journal().contains("second"), "{}", s.journal());
     assert!(s.check_codes().is_empty(), "no script ran, so there is no result");
 }
