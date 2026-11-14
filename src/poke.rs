@@ -1219,6 +1219,82 @@ mod tests {
         assert!(exec.calls.borrow().is_empty(), "nothing ran: {:?}", exec.calls.borrow());
     }
 
+    /// `otto check` goes through the same step poke does.
+    #[test]
+    fn otto_check_refuses_a_linked_script() {
+        let _h = crate::paths::test_support::TempHome::new();
+        init_with_check("p-check-link-once", a_check(24));
+        let elsewhere = tempfile::tempdir().unwrap();
+        let marker = elsewhere.path().join("ran");
+        std::fs::write(elsewhere.path().join("theirs.sh"), format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(elsewhere.path().join("theirs.sh"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let dir = crate::paths::run_dir("p-check-link-once").unwrap();
+        std::os::unix::fs::symlink(elsewhere.path().join("theirs.sh"), dir.join("artifacts/check.sh")).unwrap();
+        let refused = crate::core::try_check("p-check-link-once").map(|run| run.code).unwrap_err();
+        assert!(refused.to_string().contains("a link was found in the run directory"), "{refused}");
+        assert!(!marker.exists(), "nothing ran");
+    }
+
+    /// With a profile the script is started by `sandbox-exec` under it, `env` outside; without one the
+    /// command is what it always was.
+    #[test]
+    fn a_check_with_a_profile_runs_under_sandbox_exec_and_one_without_as_before() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let RunEntry::Readable(state) = init_with_check("p-check-argv", a_check(24)) else { unreachable!() };
+        let mut exec = FakeExec::new();
+        exec.queue(Output::default());
+        execute_check("p-check-argv", &state, "/run/check.sh", Some(Path::new("/p/r.check.sb")), &mut exec);
+        let argv = exec.last_call();
+        assert_eq!(argv[..2], ["/usr/bin/env", "-i"]);
+        assert_eq!(argv[argv.len() - 4..], ["/usr/bin/sandbox-exec", "-f", "/p/r.check.sb", "/run/check.sh"], "{argv:?}");
+        assert!(!argv.iter().any(|a| a.to_lowercase().contains("claude")), "nothing of claude's: {argv:?}");
+        assert_eq!(exec.timeouts.borrow()[0], std::time::Duration::from_secs(CHECK_TIMEOUT_SECONDS), "the sandbox starts inside the same limit");
+
+        exec.queue(Output::default());
+        execute_check("p-check-argv", &state, "/run/check.sh", None, &mut exec);
+        let plain = exec.last_call();
+        assert!(!plain.iter().any(|a| a.contains("sandbox-exec")), "{plain:?}");
+        let mut without: Vec<String> = argv.clone();
+        without.drain(argv.len() - 4..argv.len() - 1);
+        assert_eq!(plain, without, "the sandbox adds itself and changes nothing else");
+    }
+
+    /// `sandbox-exec` refusing to start (71 from inside another sandbox, 65 for a profile that won't
+    /// compile) is an error, which wakes the run, and the note says it was the sandbox.
+    #[test]
+    fn a_sandbox_that_refuses_to_start_is_an_error_and_says_so() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let RunEntry::Readable(state) = init_with_check("p-check-71", a_check(24)) else { unreachable!() };
+        for code in [65, 71] {
+            let mut exec = FakeExec::new();
+            exec.queue(Output { code, stderr: "sandbox-exec: sandbox_apply: Operation not permitted\n".to_string(), ..Default::default() });
+            let run = execute_check("p-check-71", &state, "/run/check.sh", Some(Path::new("/p/r.check.sb")), &mut exec);
+            assert_eq!(run.result, CheckResult::Error, "exit {code} is never nothing new");
+            let note = run.note.unwrap();
+            assert!(note.contains("couldn't start under its sandbox") && note.contains("Operation not permitted"), "{note}");
+        }
+    }
+
+    /// A record that can't be read is not the absence of one: the script isn't run, with a sandbox or
+    /// without, and a wake is started as for a check that errored.
+    #[test]
+    fn a_run_whose_record_can_not_be_used_has_no_check_run_and_a_wake_started() {
+        let _h = crate::paths::test_support::TempHome::new();
+        let entry = init_with_check("p-check-badrec", a_check(24));
+        let records = crate::sandbox::dir().join("runs");
+        std::fs::create_dir_all(&records).unwrap();
+        std::fs::write(records.join("p-check-badrec.json"), "{ not json").unwrap();
+        let mut exec = FakeExec::new();
+        exec.queue(Output { code: 1, ..Default::default() }); // has-session: no, for the spawn itself
+        let decisions = pass(entry, &mut exec);
+        assert_eq!(decisions[0].action, Action::Spawn, "{:?}", decisions[0]);
+        assert!(decisions[0].reason.contains("not running its check"), "{}", decisions[0].reason);
+        let calls = exec.calls.borrow();
+        assert!(!calls.iter().any(|argv| argv.iter().any(|a| a.ends_with("check.sh"))), "the script ran: {calls:?}");
+        let after = crate::state::read_run("p-check-badrec").unwrap();
+        assert_eq!(after.check.unwrap().last_result, None, "no script ran, so there is no result");
+    }
+
     #[test]
     fn a_check_script_reporting_a_change_falls_through_to_spawn() {
         let _h = crate::paths::test_support::TempHome::new();
