@@ -1677,9 +1677,72 @@ fn pr_body(dir: &Path, c: &Change) -> PathBuf {
     dir.join(v.pr_file.as_ref().filter(fits).or(v.file.as_ref().filter(fits)).unwrap_or(&v.summary))
 }
 
+/// The person's approval of a change as its index has it now, from the record kept outside its run
+/// (`crate::approvals`), and the commit and patch that approval covers.
+pub struct OnRecord {
+    pub record: crate::approvals::Record,
+    pub version: u32,
+    pub sha: String,
+    pub patch_id: String,
+    /// A later version than the one approved, on its pull request, which the record says may change
+    /// without the person.
+    pub later: bool,
+}
+
+/// What a change that says approved, with no approval on record, is told and shown.
+pub const APPROVE_AGAIN: &str = "approved before approvals were kept outside the run: approve it again";
+
+/// The approval on record for `c`, if it is for what the index says is the change's latest version.
+/// The index gives only the latest version's number (and, where the record allows later versions on
+/// its pull request, that version's commit): what was approved, where and how it lands are the
+/// record's. A record written for another run, or another version, counts for nothing.
+pub fn on_record(run: &RunState, c: &Change) -> Option<OnRecord> {
+    let record = crate::approvals::read(&run.id, c.n)?;
+    if record.n != c.n || !(record.run == run.id || run.former_id.as_deref() == Some(record.run.as_str())) {
+        return None;
+    }
+    let latest = c.latest();
+    if record.version == latest.k && record.sha == latest.sha {
+        let (version, sha, patch_id) = (record.version, record.sha.clone(), record.patch_id.clone());
+        return Some(OnRecord { record, version, sha, patch_id, later: false });
+    }
+    if c.pr.is_some() && record.mode == LandMode::Pr && record.allow_changes.is_some() && latest.k > record.version {
+        return Some(OnRecord { record, version: latest.k, sha: latest.sha.clone(), patch_id: latest.patch_id.clone(), later: true });
+    }
+    None
+}
+
+fn no_approval(r: &ChangeRef) -> OttoError {
+    OttoError::conflict(format!(
+        "DO NOT ACT: no approval on record for change {} — what its run's index says about it counts for nothing. The person \
+         approves it again (`otto changes approve {}`)",
+        r.display(),
+        r.display()
+    ))
+}
+
+/// A change whose index says approved, or being landed, with no approval on record for it: back to
+/// the person. Nothing is made up for it; they approve it again.
+fn back_to_the_person(run: &str, n: u32) -> Result<Change, OttoError> {
+    with_change(&ChangeRef { run: run.to_string(), n }, |path, state, c| {
+        if matches!(c.state, ChangeState::Approved | ChangeState::Landing) && on_record(state, c).is_none() {
+            c.decision = None;
+            c.enter(ChangeState::Review);
+            c.moment("otto", APPROVE_AGAIN);
+            moved(path, c, "otto", APPROVE_AGAIN)?;
+        }
+        Ok(c.clone())
+    })
+}
+
 fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
     let (run, name) = (author.id.as_str(), author.display_name());
-    let d = c.decision.as_ref();
+    let a = on_record(author, c);
+    // Approved, the index says: without the person's record of it, nothing for the lander.
+    if matches!(c.state, ChangeState::Approved | ChangeState::Landing) && a.is_none() {
+        return None;
+    }
+    let d = a.as_ref().map(|a| &a.record);
     let pr_mode = d.is_some_and(|d| d.mode == LandMode::Pr);
     let todo = match c.state {
         ChangeState::Approved if c.pr.is_some() => "update its pull request",
@@ -1700,12 +1763,13 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         title: c.title.clone(),
         state: c.state,
         todo: todo.to_string(),
-        repo: c.repo.clone(),
-        base: c.base.clone(),
-        branch: c.branch.clone(),
+        // Where it lands is what the person approved, not what the index says now.
+        repo: d.map(|d| d.repo.clone()).unwrap_or_else(|| c.repo.clone()),
+        base: d.map(|d| d.base.clone()).unwrap_or_else(|| c.base.clone()),
+        branch: d.map(|d| d.branch.clone()).unwrap_or_else(|| c.branch.clone()),
         worktree: c.worktree.clone(),
-        sha: d.map(|d| d.sha.clone()),
-        patch_id: d.map(|d| d.patch_id.clone()),
+        sha: a.as_ref().map(|a| a.sha.clone()),
+        patch_id: a.as_ref().map(|a| a.patch_id.clone()),
         mode: d.map(|d| d.mode),
         merge_when_ready: d.is_some_and(|d| d.merge_when_ready),
         process: d.and_then(|d| d.process.clone()),
@@ -1799,6 +1863,12 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
         let crate::state::RunEntry::Readable(state) = entry else { continue };
         let Ok(dir) = crate::paths::run_dir(&state.id) else { continue };
         for c in index_or_empty(&dir).changes {
+            // Approved by a binary that kept no record, or by something that isn't the person: it
+            // goes back to them, here, where the lander would have picked it up.
+            if matches!(c.state, ChangeState::Approved | ChangeState::Landing) && on_record(&state, &c).is_none() {
+                let _ = back_to_the_person(&state.id, c.n);
+                continue;
+            }
             if let Some(d) = due_of(&state, &dir, &c) {
                 out.push(d);
             }
@@ -1820,6 +1890,9 @@ pub fn claim(lander: &str, r: &ChangeRef) -> Result<Due, OttoError> {
     let lander = require_lander(lander)?;
     with_change(r, |path, state, c| {
         refuse_unless(c, &[ChangeState::Approved, ChangeState::Landing], "landed")?;
+        if on_record(state, c).is_none() {
+            return Err(no_approval(r));
+        }
         let fresh = c.state == ChangeState::Approved;
         if fresh {
             c.enter(ChangeState::Landing);
@@ -1837,45 +1910,54 @@ pub fn claim(lander: &str, r: &ChangeRef) -> Result<Due, OttoError> {
 /// Whether `head` is what the person approved: the approved commit itself, or one with the same
 /// patch against where it meets the base now — a clean rebase. Anything else is refused (exit 2):
 /// record it with `rebased` so the person looks again, or `bounce` it to its author.
+///
+/// What was approved is read from the record kept outside the run (`crate::approvals`), which no
+/// wake can write. The run's index gives only where the change is — being landed, or on its pull
+/// request — and its latest version's number: its `decision`, repository and base are not looked at.
 pub fn check(lander: &str, r: &ChangeRef, head: &str) -> Result<String, OttoError> {
     require_lander(lander)?;
     let state = crate::state::read_run(&r.run)?;
     let dir = crate::paths::run_dir(&r.run)?;
     let c = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
-    let d = c.decision.as_ref().ok_or_else(|| OttoError::conflict(format!("DO NOT ACT: change {} has no approval on record", r.display())))?;
-    let repo = Path::new(&c.repo);
+    let a = on_record(&state, &c).ok_or_else(|| no_approval(r))?;
+    let d = &a.record;
+    let repo = Path::new(&d.repo);
+    let base = base_ref(repo, &d.base);
     let sha = rev(repo, head)?;
-    // Merging its pull request: what merges must be what the lander pushed to it, not a commit
-    // someone else added since.
-    if matches!(c.state, ChangeState::PrOpen | ChangeState::ReadyToMerge) && d.merge_asked.is_some() {
+    // A commit with no patch of its own against the base — the base itself, say — matches nothing.
+    let same_patch = || patch_id_against(repo, &base, &sha).is_ok_and(|id| id == a.patch_id);
+    // Merging its pull request: what merges must be what the pull request had when the person said
+    // to merge it, not a commit someone else added since. Where the record allows later versions
+    // without the person, what the lander pushed for the latest one.
+    if let (true, Some(asked)) = (matches!(c.state, ChangeState::PrOpen | ChangeState::ReadyToMerge), d.merge_asked.as_ref()) {
         let pr = c.pr.as_ref().ok_or_else(|| OttoError::conflict(format!("DO NOT ACT: change {} has no pull request on record", r.display())))?;
-        if sha == pr.head || patch_id_against(repo, &base_ref(repo, &c.base), &sha).is_ok_and(|id| id == d.patch_id) {
+        let pushed = if a.later { pr.head.as_str() } else { asked.head.as_str() };
+        if sha == pushed || same_patch() {
             return Ok(format!("ok: {} is what was pushed to its pull request — merge it", short_sha(&sha)));
         }
         return Err(OttoError::conflict(format!(
             "DO NOT ACT: its pull request's head {} isn't what the lander pushed ({}) — someone else pushed to it. Look at what \
              they added; it goes back to its author with `otto state change relay`, not into main",
             short_sha(&sha),
-            short_sha(&pr.head)
+            short_sha(pushed)
         )));
     }
     if c.state != ChangeState::Landing {
         return Err(OttoError::conflict(format!("DO NOT ACT: change {} is {}, not being landed — claim it first", r.display(), c.state.as_str())));
     }
-    if sha == d.sha {
-        return Ok(format!("ok: {} is v{}, as approved", short_sha(&sha), d.version));
+    if sha == a.sha {
+        return Ok(format!("ok: {} is v{}, as approved", short_sha(&sha), a.version));
     }
-    // A commit with no patch of its own against the base — the base itself, say — matches nothing.
-    if patch_id_against(repo, &base_ref(repo, &c.base), &sha).is_ok_and(|id| id == d.patch_id) {
-        return Ok(format!("ok: {} is v{} rebased onto {} with the same patch — a clean rebase of what was approved", short_sha(&sha), d.version, base_ref(repo, &c.base)));
+    if same_patch() {
+        return Ok(format!("ok: {} is v{} rebased onto {} with the same patch — a clean rebase of what was approved", short_sha(&sha), a.version, base));
     }
     Err(OttoError::conflict(format!(
         "DO NOT ACT: {} is not what was approved — v{} was {}, and this one's patch differs (the code around it changed, or \
          the commits did). Record it with `otto state change rebased {} {} --head {}` so the person looks again, or bounce it \
          to its author",
         short_sha(&sha),
-        d.version,
-        short_sha(&d.sha),
+        a.version,
+        short_sha(&a.sha),
         crate::paths::short_id(lander),
         r.display(),
         short_sha(&sha)
@@ -2213,7 +2295,10 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             return Err(OttoError::conflict(format!("change {} has no pull request: its author changes it", r.display())));
         };
         let answered = c.ask.as_ref().is_some_and(|a| a.by.as_deref() == Some(babysitter.as_str()) && a.answered_at.is_some() && a.at.dt() >= c.latest().at.dt());
-        if d.allow_changes.is_none() && !answered {
+        // What the person allows is what their approval on record says, not the index.
+        let allowed = on_record(state, c).and_then(|a| a.record.allow_changes);
+        let _ = d;
+        if allowed.is_none() && !answered {
             return Err(OttoError::conflict(format!(
                 "the person allows no change to {} without them — relay it to its author, or, its author finished, ask them (`otto state \
                  change ask --by`)",
@@ -2266,7 +2351,6 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
         d.version = k;
         d.sha = sha.clone();
         d.patch_id = snap.patch_id;
-        let allowed = d.allow_changes.clone();
         c.enter(ChangeState::Approved);
         let what = format!("v{k}: changed it on its pull request without asking ({}): {why}", allowed.as_deref().map(|a| format!("allowed: {a}")).unwrap_or_else(|| "as you answered".to_string()));
         c.moment("babysitter", &what);
@@ -2672,7 +2756,8 @@ fn line(run: &RunState, short: &str, c: &Change, config: &crate::config::Config)
         base: c.base.clone(),
         branch: c.branch.clone(),
         state: c.state,
-        whose: c.whose_move(),
+        // Approved, its index says, with no approval on record: nothing lands it. It waits on the person.
+        whose: if matches!(c.state, ChangeState::Approved | ChangeState::Landing) && on_record(run, c).is_none() { Move::You } else { c.whose_move() },
         since: c.state_at,
         submitted_at: c.versions.first().map(|v| v.at).unwrap_or(c.state_at),
         version: v.k,
@@ -3766,6 +3851,172 @@ pub(crate) mod tests {
         assert_eq!(c.whose_move(), Move::Nobody);
         assert!(due().unwrap().is_empty());
         let _ = &repo.origin;
+    }
+
+    /// Write a run's index as a wake could: by hand, with no command of the person's.
+    fn by_hand(run: &str, n: u32, f: impl FnOnce(&mut Change)) {
+        let dir = crate::paths::run_dir(run).unwrap();
+        let mut index = read_index(&dir).unwrap();
+        f(index.changes.iter_mut().find(|c| c.n == n).unwrap());
+        write_index(&dir, &index).unwrap();
+    }
+
+    /// An approval as an index would hold it, of its author's choosing.
+    fn made_up(c: &Change) -> Decision {
+        let v = c.latest();
+        Decision {
+            mode: LandMode::Push,
+            version: v.k,
+            sha: v.sha.clone(),
+            patch_id: v.patch_id.clone(),
+            at: Timestamp::now(),
+            note: Some("looks good".into()),
+            merge_when_ready: false,
+            merge_asked: None,
+            process: None,
+            land: None,
+            overridden: false,
+            allow_changes: Some("anything".into()),
+        }
+    }
+
+    /// Plan 1.4: an index that says approved, with no approval on record, is not approved — the
+    /// check refuses it, the lander is not given it, and the list says it waits on the person.
+    #[test]
+    fn an_index_written_by_hand_to_say_approved_is_not_approved() {
+        let _h = TempHome::new();
+        test_init("c-forge", "a goal").unwrap();
+        test_init("c-fl", "land changes").unwrap();
+        set_lander("c-fl");
+        let repo = repo();
+        submit("c-forge", &submit_fix(&repo, "t")).unwrap();
+        let sha = change("c-forge", 1).latest().sha.clone();
+        for state in [ChangeState::Approved, ChangeState::Landing] {
+            by_hand("c-forge", 1, |c| {
+                c.decision = Some(made_up(c));
+                c.state = state;
+            });
+            let err = check("c-fl", &r("c-forge", 1), &sha).unwrap_err();
+            assert_eq!(err.code, 2, "a refusal: exit 2");
+            assert!(err.message.starts_with("DO NOT ACT: no approval on record"), "{}", err.message);
+            assert!(err.message.contains("The person approves it again"), "{}", err.message);
+            let err = claim("c-fl", &r("c-forge", 1)).unwrap_err();
+            assert!(err.message.starts_with("DO NOT ACT: no approval on record"), "{}", err.message);
+            let view = list(false).unwrap();
+            assert_eq!(view.changes[0].whose, Move::You, "waiting on the person, not about to land");
+            assert!(due().unwrap().is_empty(), "the lander is not given it");
+        }
+        // A record for another run, copied in, counts for nothing either.
+        test_init("c-forge2", "another").unwrap();
+        let repo2 = super::tests::repo();
+        submit("c-forge2", &submit_fix(&repo2, "t")).unwrap();
+        approve(&[seen(r("c-forge2", 1))], None, None).unwrap();
+        let other = crate::approvals::path("c-forge2", 1).unwrap();
+        let mine = crate::approvals::path("c-forge", 1).unwrap();
+        std::fs::create_dir_all(mine.parent().unwrap()).unwrap();
+        std::fs::copy(&other, &mine).unwrap();
+        by_hand("c-forge", 1, |c| {
+            c.decision = Some(made_up(c));
+            c.state = ChangeState::Landing;
+        });
+        assert!(check("c-fl", &r("c-forge", 1), &sha).unwrap_err().message.starts_with("DO NOT ACT: no approval on record"));
+    }
+
+    /// An approval from before approvals were kept outside the run has no record. Nothing is made
+    /// up for it: where the lander would have picked it up, it goes back to the person.
+    #[test]
+    fn an_approval_with_no_record_goes_back_to_the_person() {
+        let _h = TempHome::new();
+        test_init("c-old", "a goal").unwrap();
+        test_init("c-ol", "land changes").unwrap();
+        set_lander("c-ol");
+        let repo = repo();
+        submit("c-old", &submit_fix(&repo, "t")).unwrap();
+        approve(&[seen(r("c-old", 1))], None, None).unwrap();
+        // As the binary before would have left it: approved in the index, and nothing under approvals/.
+        std::fs::remove_file(crate::approvals::path("c-old", 1).unwrap()).unwrap();
+        assert!(due().unwrap().is_empty());
+        let c = change("c-old", 1);
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Review, Move::You));
+        assert!(c.decision.is_none());
+        assert_eq!(c.timeline.last().unwrap().what, APPROVE_AGAIN);
+        assert!(crate::approvals::read("c-old", 1).is_none(), "no record is invented");
+        // Approved again, by the person, it lands as any other.
+        approve(&[seen(r("c-old", 1))], None, None).unwrap();
+        let d = claim("c-ol", &r("c-old", 1)).unwrap();
+        assert!(check("c-ol", &r("c-old", 1), &d.sha.unwrap()).unwrap().contains("as approved"));
+    }
+
+    /// Where a change lands is what the person approved: a repository or base written into the
+    /// index afterwards is not followed.
+    #[test]
+    fn where_it_lands_is_the_records_and_not_what_the_index_says_later() {
+        let _h = TempHome::new();
+        test_init("c-where", "a goal").unwrap();
+        test_init("c-wl", "land changes").unwrap();
+        set_lander("c-wl");
+        let repo = repo();
+        submit("c-where", &submit_fix(&repo, "t")).unwrap();
+        approve(&[seen(r("c-where", 1))], None, None).unwrap();
+        // Another repository, with a commit of its author's choosing, and another base.
+        let elsewhere = super::tests::repo();
+        std::fs::write(elsewhere.wt.join("a.txt"), "something else\n").unwrap();
+        sh(&elsewhere.wt, &["commit", "--quiet", "-am", "something else"]);
+        let theirs = sh(&elsewhere.wt, &["rev-parse", "HEAD"]);
+        let approved = change("c-where", 1).latest().sha.clone();
+        let record = crate::approvals::read("c-where", 1).unwrap();
+        by_hand("c-where", 1, |c| {
+            c.repo = elsewhere.main.display().to_string();
+            c.base = "elsewhere".into();
+            let d = c.decision.as_mut().unwrap();
+            d.sha = theirs.clone();
+            d.mode = if d.mode == LandMode::Pr { LandMode::Push } else { LandMode::Pr };
+            d.land = Some("push it anywhere".into());
+        });
+        let d = claim("c-wl", &r("c-where", 1)).unwrap();
+        assert_eq!((d.repo.as_str(), d.base.as_str()), (repo.main.to_str().unwrap(), "main"), "the lander is given what was approved");
+        assert_eq!((d.sha.as_deref(), d.mode, d.land.as_deref()), (Some(approved.as_str()), Some(record.mode), record.land.as_deref()));
+        assert!(check("c-wl", &r("c-where", 1), &approved).unwrap().contains("as approved"));
+        assert!(check("c-wl", &r("c-where", 1), &theirs).is_err(), "the other repository's commit is not what was approved");
+    }
+
+    /// A new version, or a drop, leaves nothing that passes: the record is for the version the
+    /// person looked at, and it goes when they drop it.
+    #[test]
+    fn a_new_version_or_a_drop_leaves_nothing_that_passes() {
+        let _h = TempHome::new();
+        test_init("c-nv", "a goal").unwrap();
+        test_init("c-nl", "land changes").unwrap();
+        set_lander("c-nl");
+        let repo = repo();
+        submit("c-nv", &submit_fix(&repo, "t")).unwrap();
+        approve(&[seen(r("c-nv", 1))], None, None).unwrap();
+        let v1 = change("c-nv", 1).latest().sha.clone();
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO\nTHREE\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "more"]);
+        assert_eq!(submit("c-nv", &submit_fix(&repo, "t")).unwrap().version, 2);
+        let v2 = change("c-nv", 1).latest().sha.clone();
+        // Its author says the new version is approved and being landed.
+        by_hand("c-nv", 1, |c| {
+            c.decision = Some(made_up(c));
+            c.state = ChangeState::Landing;
+        });
+        for head in [&v1, &v2] {
+            let err = check("c-nl", &r("c-nv", 1), head).unwrap_err();
+            assert!(err.message.starts_with("DO NOT ACT: no approval on record"), "{}", err.message);
+        }
+        assert!(due().unwrap().is_empty());
+        assert_eq!(change("c-nv", 1).state, ChangeState::Review, "back to the person");
+
+        // Approved as v2 by the person, then dropped by them: nothing passes after.
+        approve(&[Looked { r: r("c-nv", 1), version: Some(2) }], None, None).unwrap();
+        drop_change(&r("c-nv", 1), None).unwrap();
+        by_hand("c-nv", 1, |c| {
+            c.decision = Some(made_up(c));
+            c.state = ChangeState::Landing;
+        });
+        let err = check("c-nl", &r("c-nv", 1), &v2).unwrap_err();
+        assert!(err.message.starts_with("DO NOT ACT: no approval on record"), "{}", err.message);
     }
 
     #[test]
