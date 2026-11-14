@@ -509,10 +509,10 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     pinned.dedup();
     p.close("file-write-unlink", &pinned.iter().map(|d| format!("(require-all {} (vnode-type DIRECTORY))", literal(d))).collect::<Vec<_>>());
 
-    p.note("otto's own: who runs what, who may assign, the wrapper, the profiles and the records.");
+    p.note("otto's own: who runs what, who may assign, the wrapper, the profiles and the records, and the person's approvals.");
     p.close(
         "file-write*",
-        &[literal(&otto_real.join("config.json")), literal(&otto_real.join("config.json.lock")), literal(&otto_real.join("feedback-driver")), subpath(&otto_real.join("sandbox"))],
+        &[literal(&otto_real.join("config.json")), literal(&otto_real.join("config.json.lock")), literal(&otto_real.join("feedback-driver")), subpath(&otto_real.join("sandbox")), subpath(&otto_real.join("approvals"))],
     );
     p.note("Its own caches, where the wrapper points cargo, npm, bun, uv and the rest. Only this run's.");
     p.open("file-write*", &[subpath(&caches_of(&otto_real, run_id))]);
@@ -1562,7 +1562,7 @@ mod tests {
     fn what_no_record_can_open_comes_after_the_record() {
         let text = generated(&record());
         let grant = text.find("(allow file-write*\n  (subpath \"/w/space/repo\")").expect("the record's write");
-        for later in ["/\\.git/(hooks", "(literal \"/u/.otto/config.json\")", "(subpath \"/u/.ssh\")", "(subpath \"/u/.otto/sandbox\")", "(global-name \"com.apple.secd\")"] {
+        for later in ["/\\.git/(hooks", "(literal \"/u/.otto/config.json\")", "(subpath \"/u/.ssh\")", "(subpath \"/u/.otto/sandbox\")", "(subpath \"/u/.otto/approvals\")", "(global-name \"com.apple.secd\")"] {
             assert!(text.find(later).expect(later) > grant, "{later} must come after the grants");
         }
         let closed = text.find("(deny file-read* file-write* (with message \"otto-run-r1\")\n  (subpath \"/w/space\")").expect("the projects are closed");

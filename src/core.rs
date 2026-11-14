@@ -1452,6 +1452,8 @@ pub fn renumber_runs() -> Result<RenumberReport, OttoError> {
             crate::event::record(path, &crate::event::Event::Renumbered { from: from.clone() })
         })?;
         crate::state::locks::repoint(&from, &id);
+        // Its approvals on record follow it. One left behind counts for nothing: the person approves again.
+        crate::approvals::moved(&from, &id);
         report.renumbered.push(Renumbered { from, id, name });
     }
     Ok(report)

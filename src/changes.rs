@@ -1460,7 +1460,7 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
         let decided = with_change(r, |path, _state, c| {
             let Approval { chosen, process, updates_its_pr, overridden } = check_approval(c, looked, how, &config)?;
             let v = c.latest().clone();
-            c.decision = Some(Decision {
+            let decision = Decision {
                 mode: chosen.mode,
                 version: v.k,
                 sha: v.sha.clone(),
@@ -1473,7 +1473,30 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                 land: if chosen.mode == process.mode { process.land.clone() } else { None },
                 overridden,
                 allow_changes: if chosen.mode == LandMode::Pr { process.allow_changes.clone() } else { None },
-            });
+            };
+            // The record first, the index second: a record that can't be written leaves the change
+            // in review, and a crash between the two leaves a record nothing lands from.
+            crate::approvals::write(&crate::approvals::Record {
+                run: r.run.clone(),
+                n: c.n,
+                version: decision.version,
+                sha: decision.sha.clone(),
+                patch_id: decision.patch_id.clone(),
+                repo: c.repo.clone(),
+                base: c.base.clone(),
+                branch: c.branch.clone(),
+                mode: decision.mode,
+                process: decision.process.clone(),
+                land: decision.land.clone(),
+                overridden: decision.overridden,
+                merge_when_ready: decision.merge_when_ready,
+                allow_changes: decision.allow_changes.clone(),
+                note: decision.note.clone(),
+                at: decision.at,
+                merge_asked: None,
+            })
+            .map_err(|e| OttoError::new(format!("{} is {}", r.display(), e.message), e.code))?;
+            c.decision = Some(decision);
             c.enter(ChangeState::Approved);
             let how = match (chosen.mode, chosen.merge_when_ready) {
                 _ if updates_its_pr => "to update its pull request".to_string(),
@@ -1518,6 +1541,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
         refuse_unless(c, &[ChangeState::Review, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "sent back")?;
         // With its pull request open the approval stands: the next version goes to the pull request.
         if c.pr.is_none() {
+            crate::approvals::remove(&r.run, c.n)?;
             c.decision = None;
         }
         c.enter(ChangeState::Revising);
@@ -1536,6 +1560,7 @@ pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoErr
     let text = check_say(text, "why")?;
     with_change(r, |path, state, c| {
         refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::NeedsYou, ChangeState::PrOpen, ChangeState::ReadyToMerge], "dropped")?;
+        crate::approvals::remove(&r.run, c.n)?;
         c.decision = None;
         c.enter(ChangeState::Dropped);
         let what = match &text {
@@ -2147,6 +2172,7 @@ pub fn allow(r: &ChangeRef, words: Option<&str>) -> Result<Decided, OttoError> {
                 r.display()
             )));
         }
+        crate::approvals::update(&r.run, c.n, |record| record.allow_changes = words.clone())?;
         c.decision.as_mut().expect("checked").allow_changes = words.clone();
         let what = match &words {
             Some(w) => format!("let the babysitter change it without asking: {w}"),
@@ -2363,7 +2389,11 @@ pub fn merge(r: &ChangeRef) -> Result<Decided, OttoError> {
     with_change(r, |path, _state, c| {
         refuse_unless(c, &[ChangeState::ReadyToMerge, ChangeState::PrOpen], "merged")?;
         let d = c.decision.as_mut().ok_or_else(|| OttoError::conflict(format!("change {} has no approval on record", r.display())))?;
-        d.merge_asked = Some(Timestamp::now());
+        let at = Timestamp::now();
+        if let Some(head) = c.pr.as_ref().map(|pr| pr.head.clone()) {
+            crate::approvals::update(&r.run, c.n, |record| record.merge_asked = Some(crate::approvals::MergeAsked { at, head }))?;
+        }
+        d.merge_asked = Some(at);
         c.moment("you", "said to merge its pull request");
         moved(path, c, "person", "said to merge its pull request")?;
         Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: None, how: None, wake: None })
@@ -3479,6 +3509,101 @@ pub(crate) mod tests {
         assert_eq!(c.whose_move(), Move::Lander);
         assert!(approve(&[seen(r("c-app", 1))], None, None).is_err(), "only a change waiting for review is approved");
         assert_eq!(due().unwrap().len(), 1);
+    }
+
+    /// The approval is kept outside the run too (`crate::approvals`), holding what was approved.
+    #[test]
+    fn approving_writes_a_record_outside_the_run_and_taking_it_back_removes_it() {
+        let _h = TempHome::new();
+        test_init("c-rec", "a goal").unwrap();
+        test_init("c-recl", "land changes").unwrap();
+        set_lander("c-recl");
+        let repo = repo();
+        submit("c-rec", &submit_fix(&repo, "t")).unwrap();
+        assert!(crate::approvals::read("c-rec", 1).is_none(), "nothing on record before the person approves");
+
+        approve(&[seen(r("c-rec", 1))], None, Some("ship it")).unwrap();
+        let c = change("c-rec", 1);
+        let v = c.latest();
+        let record = crate::approvals::read("c-rec", 1).expect("approving leaves a record");
+        assert_eq!((record.run.as_str(), record.n, record.version), ("c-rec", 1, 1));
+        assert_eq!((record.sha.as_str(), record.patch_id.as_str()), (v.sha.as_str(), v.patch_id.as_str()));
+        assert_eq!((record.repo.as_str(), record.base.as_str(), record.branch.as_str()), (c.repo.as_str(), c.base.as_str(), c.branch.as_str()));
+        let d = c.decision.as_ref().unwrap();
+        assert_eq!((record.mode, record.note.as_deref(), record.overridden, record.process.as_ref()), (d.mode, Some("ship it"), false, d.process.as_ref()));
+        assert!(crate::paths::otto_home().join("approvals/c-rec/1.json").is_file(), "under approvals/, not in the run");
+
+        // Asking for changes takes the approval back, and the record with it.
+        revise(&r("c-rec", 1), "louder").unwrap();
+        assert!(crate::approvals::read("c-rec", 1).is_none(), "revise removes the record");
+
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        assert_eq!(submit("c-rec", &submit_fix(&repo, "t")).unwrap().version, 2);
+        approve(&[Looked { r: r("c-rec", 1), version: Some(2) }], None, None).unwrap();
+        let record = crate::approvals::read("c-rec", 1).unwrap();
+        assert_eq!((record.version, record.sha.as_str()), (2, change("c-rec", 1).latest().sha.as_str()), "a later approval replaces it");
+
+        drop_change(&r("c-rec", 1), None).unwrap();
+        assert!(crate::approvals::read("c-rec", 1).is_none(), "drop removes the record");
+    }
+
+    /// Several at once: a refusal leaves no record for any of them, as it leaves none approved.
+    #[test]
+    fn a_refused_batch_leaves_no_record() {
+        let _h = TempHome::new();
+        test_init("c-bat", "a goal").unwrap();
+        test_init("c-batl", "land changes").unwrap();
+        set_lander("c-batl");
+        let repo = repo();
+        submit("c-bat", &submit_fix(&repo, "t")).unwrap();
+
+        // The second names a version the change doesn't have: the first, which is fine, isn't approved either.
+        let err = approve(&[seen(r("c-bat", 1)), Looked { r: r("c-bat", 1), version: Some(1) }], None, None).unwrap_err();
+        assert!(err.message.contains("named twice") && err.message.contains("Nothing new is approved"), "{}", err.message);
+        let err = approve(&[seen(r("c-bat", 1)), Looked { r: r("c-bat", 9), version: Some(1) }], None, None).unwrap_err();
+        assert!(err.message.contains("Nothing new is approved"), "{}", err.message);
+        assert_eq!(change("c-bat", 1).state, ChangeState::Review);
+        assert!(crate::approvals::read("c-bat", 1).is_none(), "no record for a refused batch");
+        assert!(!crate::paths::otto_home().join("approvals/c-bat").exists());
+
+        approve(&[seen(r("c-bat", 1))], None, None).unwrap();
+        assert!(crate::approvals::read("c-bat", 1).is_some());
+    }
+
+    /// The record comes first: when it can't be written the change isn't approved, and the error says why.
+    #[test]
+    fn approving_fails_when_the_record_cannot_be_written() {
+        use std::os::unix::fs::PermissionsExt;
+        let _h = TempHome::new();
+        test_init("c-ro", "a goal").unwrap();
+        test_init("c-rol", "land changes").unwrap();
+        set_lander("c-rol");
+        let repo = repo();
+        submit("c-ro", &submit_fix(&repo, "t")).unwrap();
+        let approvals = crate::paths::otto_home().join("approvals");
+
+        // A plain file where the directory goes.
+        std::fs::write(&approvals, "in the way").unwrap();
+        let err = approve(&[seen(r("c-ro", 1))], None, None).unwrap_err();
+        assert!(err.message.contains("c-ro/1 is not approved") && err.message.contains("couldn't be written"), "{}", err.message);
+        assert!(!err.message.contains("Stopped partway"), "{}", err.message);
+        let c = change("c-ro", 1);
+        assert_eq!((c.state, c.decision.is_none()), (ChangeState::Review, true), "still in review, nothing decided");
+        std::fs::remove_file(&approvals).unwrap();
+
+        // A directory that can't be written, which is what a sandbox makes of it.
+        std::fs::create_dir(&approvals).unwrap();
+        std::fs::set_permissions(&approvals, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = approve(&[seen(r("c-ro", 1))], None, None).unwrap_err();
+        std::fs::set_permissions(&approvals, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(err.message.contains("approving is the person's") && err.message.contains("sandbox"), "{}", err.message);
+        let c = change("c-ro", 1);
+        assert_eq!((c.state, c.decision.is_none()), (ChangeState::Review, true), "still in review, nothing decided");
+        assert!(crate::approvals::read("c-ro", 1).is_none());
+
+        approve(&[seen(r("c-ro", 1))], None, None).unwrap();
+        assert_eq!(change("c-ro", 1).state, ChangeState::Approved);
     }
 
     #[test]

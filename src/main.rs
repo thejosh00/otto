@@ -1,4 +1,5 @@
 mod agents;
+mod approvals;
 mod changes;
 mod chat;
 mod check_history;
