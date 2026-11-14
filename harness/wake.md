@@ -512,8 +512,8 @@ and carry on. Never replay the ticks you missed.
 Every wake is a cold model session, and a run that is mostly watching — "answer any PR questions
 that appear", "fix CI when it goes red", "pick up tickets as they land in the queue" — spends most
 of its wakes finding nothing. If "is there anything new?" is something a shell script can answer —
-`gh pr view --json` and a cursor diff, `curl` against a status endpoint, `git fetch --dry-run` for a
-moved base — give the run a **check script**. When a wake comes due, poke runs the script instead,
+`git ls-remote` on a public remote compared with a cursor for a moved branch, `curl` against a status
+endpoint — give the run a **check script**. When a wake comes due, poke runs the script instead,
 no LLM involved, and only wakes the run if it says something changed.
 
 **Set one up as soon as you know the run is watching.** Usually that is the first wake: do the
@@ -539,6 +539,11 @@ matters, so "new" has to mean "newer than what a wake last handled": the wake re
 handled (the highest comment id, the last CI run it looked at) in an artifact or a fact, and the
 script compares the world against that. A script that compares against its own previous run will
 report the same change forever if a wake fails to act on it.
+
+**A check may have less access than your shell does.** It can run with no `gh`, no ssh and no
+credentials, so build it on reads that need none: a public URL, an anonymous `git ls-remote`, a file
+in the run's own directory. And let a read that fails fail — a non-zero exit wakes the run — rather
+than hide it with `|| true`: a failure the script hides reads as "nothing new".
 
 **For a one-off wait, arm the check with the sleep instead.** Waiting for one CI run, one deploy,
 one reply:

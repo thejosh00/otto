@@ -184,6 +184,16 @@ why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md)
 outside the sandbox. That includes a sign-in that has run out, or would before the wake's deadline: the wrapper
 never hands in a token that can't last, and says when it runs out.
 
+### Its check script
+
+A run's [check script](check-scripts.md) goes by the same record. Poke, and `otto check`, run it under the
+profile the record gives: the same text as the run's wakes get, never one `run.json` names, and with nothing of
+claude's, so no token and no Claude folder. The script stays in the run directory, where a wake can rewrite it,
+and a wake that does now reaches only what it could reach anyway. A run that disagrees with its record doesn't
+have its check run: poke starts a wake, which is refused as above. A record or a profile that can't be used is
+the same, never a reason to run the script outside. A run with no record has its check run as before.
+[A sandboxed run's check](check-scripts.md#a-sandboxed-runs-check) says what such a script can and can't use.
+
 ### When the sign-in is about to run out
 
 A sandboxed wake is handed claude's access token as it starts. That token lasts about eight hours, and nothing
@@ -263,7 +273,7 @@ Not a promise past the list above:
 - **Signals.** A wake can kill other processes of yours.
 - **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
   the record lists them.
-- **What's listed under 1.3 to 1.5** is separate work.
+- **What's listed under 1.4 and 1.5** is separate work.
 - **A rollback past this comparison.** An older binary ignores the record, so `run.json` decides again until it's reinstalled.
 
 ## Permission mode

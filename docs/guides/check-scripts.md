@@ -46,16 +46,19 @@ A check script is a small executable that looks at the world and exits:
 
 ```sh
 #!/bin/sh
-# Wake the run when the PR has a review comment newer than the last one it handled.
+# Wake the run when the branch has a commit newer than the last one it handled.
 set -e
-latest=$(/opt/homebrew/bin/gh pr view 123 --repo acme/svc --json comments \
-  --jq '[.comments[].createdAt] | max // ""')
-seen=$(cat "$HOME/.otto/runs/$OTTO_RUN_ID/artifacts/seen-comment" 2>/dev/null || true)
-if [ "$latest" = "$seen" ]; then
-  echo "no new comments"
+found=$(git ls-remote https://github.com/acme/svc.git refs/heads/main)
+head=${found%%[!0-9a-f]*}
+[ -n "$head" ] || { echo "no refs/heads/main there"; exit 2; }
+cursor="$OTTO_HOME/runs/$OTTO_RUN_ID/artifacts/seen-head"
+seen=""
+[ -f "$cursor" ] && seen=$(cat "$cursor")
+if [ "$head" = "$seen" ]; then
+  echo "no new commits"
   exit 0
 fi
-echo "new comment at $latest"
+echo "main is at $head"
 exit 1
 ```
 
@@ -66,8 +69,11 @@ exit 1
   launchd's minimal `PATH`, not your shell's, even when `otto check` runs it from your terminal.
 - **Be read-only.** The script has no `otto state` access and never will. If the run needs to
   record something (a cursor, a ledger line), that's the wake's job once the check says
-  "changed" — as above, where the wake writes `seen-comment` after handling the comment.
+  "changed" — as above, where the wake writes `seen-head` after handling the commit.
 - **Keep it fast.** Poke gives it 10 seconds before treating it as an error.
+- **Let a failed read fail.** A read that fails should end the script with something other than 0,
+  which wakes the run to look, as `set -e` does above when `git` can't reach the remote. Hidden with
+  `|| true`, it reads as "nothing new" and the run sleeps on.
 
 Its environment is the same whoever runs it, poke or `otto check`, and holds only: `HOME`,
 `USER`, `LOGNAME`, `SHELL`, `TMPDIR` and `SSH_AUTH_SOCK` as you have them; `PATH` set to
@@ -77,6 +83,49 @@ Its environment is the same whoever runs it, poke or `otto check`, and holds onl
 keeps in the run directory, so a script that finds files from its own path (`dirname "$0"`) finds
 the run directory instead. Use `$OTTO_WORKDIR`.
 The first 200 characters of what it prints are kept as the "last result" `otto show` displays.
+
+## A sandboxed run's check
+
+A run with a [sandbox record](sandboxing.md#the-record-decides) has its check run under that
+record's profile, whoever runs it: poke in front of a due wake, or `otto check` on the spot. The
+script gets the same reads and writes as the run's wakes and nothing more. A run with no record has
+its check run as it always was.
+
+What that leaves the script:
+
+- **`$OTTO_HOME` is readable, all of it**, so `otto state list`, `otto show` and reading another
+  run's `run.json` still work. Only the run's own directory there is writable.
+- **What the record lists** under `read` and `write`, and the network.
+- **The same environment** as above, and the same 10 seconds, which now include the sandbox
+  starting.
+
+What it takes away:
+
+- **`gh`**, even for a public repository, and anything else that signs in from `~/.config/gh` or
+  the Keychain.
+- **ssh.** `SSH_AUTH_SOCK` is still set, but the agent's socket is closed and so is `~/.ssh`. A
+  `git fetch` or `git ls-remote` over ssh fails; over `https` to a public repository it works.
+- **Credentials**: `~/.netrc`, `~/.git-credentials`, `~/.aws` and the rest of
+  [what the sandbox closes](sandboxing.md#whats-closed).
+- **Other projects.** Every project in `config.json`, and the working directory itself, are closed
+  to reads and writes unless the record lists them. The script still starts in the working
+  directory, but can't read it.
+- **Claude.** A check gets no sign-in and no Claude folder: it runs no model.
+
+So a check that works for a run today can stop working the day the run gets a record, and how it
+stops matters:
+
+- **A read the sandbox refuses is a failed command in your script.** If the script lets it fail,
+  it exits with something other than 0 or 1, and the run is woken to look: every period, until the
+  script or the record is changed. If the script hides it and exits 0, that is "nothing new", and
+  the run sleeps until the [safety net](#the-safety-net) wakes it. Don't hide it.
+- **A check the sandbox won't start is an error, never "nothing new".** The run is woken, and the
+  result says `its check couldn't start under its sandbox`.
+- **A run that [disagrees with its record](sandboxing.md#a-run-that-disagrees-with-its-record)
+  doesn't have its check run at all**, with a sandbox or without. Poke starts a wake instead, which
+  is refused as any wake of that run would be, leaving it blocked with a question that says what
+  differed. `otto check` says what differed and runs nothing. A record that can't be read counts
+  the same.
 
 ## Setting, seeing and removing it
 
