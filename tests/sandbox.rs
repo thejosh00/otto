@@ -879,3 +879,272 @@ fn the_real_token_arrives_on_the_descriptor_and_nowhere_else() {
     assert!(said.contains(&format!("config={}\n", otto_home.join("sandbox/claude").join(&id).display())) || said.contains(&format!("config={}\n", config.display())), "claude's folder is the run's own: {said}");
     assert!(config.join(".claude.json").is_file(), "and laid out");
 }
+
+// --- check scripts (plans/v3.md, 1.3) ---------------------------------------------------------
+
+/// A record naming the stub launcher these runs really have, so the run agrees with it.
+fn checked_record(home: &Path) -> serde_json::Value {
+    serde_json::json!({"launcher": "claude", "workdir": home.join("workspace"), "write": [home.join("workspace/repo")]})
+}
+
+/// What a check script needs of a scratch: a run whose last wake completed, so that a check stands in
+/// front of its next one, and ways to make it due and see what poke did.
+impl Scratch {
+    fn run_json(&self) -> PathBuf {
+        self.otto_home().join("runs").join(&self.id).join("run.json")
+    }
+
+    fn state(&self) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(self.run_json()).unwrap()).unwrap()
+    }
+
+    fn artifacts(&self) -> PathBuf {
+        let dir = self.otto_home().join("runs").join(&self.id).join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The stub writes a handoff from here on, and the run's wake is run again so that it completes.
+    fn complete_a_wake(&self) {
+        write_exec(
+            &self.root.join("stub"),
+            &format!(
+                "#!/bin/sh\nprintf '# h\\n## Goal\\ng\\n## Where this is\\nHere.\\n## Decided\\nn\\n## This wake did\\nn\\n## Next wake must\\nn\\n## Needs\\nnothing\\n## Don'\"'\"'t re-derive\\nn\\n' | '{OTTO}' state handoff \"$OTTO_RUN_ID\" --stdin >/dev/null\n"
+            ),
+        );
+        let out = self.otto().args(["wake", &self.id]).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        self.wait_for("sleeping");
+    }
+
+    /// Set the run's check, which `otto check` also runs once on the spot.
+    fn set_check(&self, body: &str) -> Output {
+        let script = self.root.join("check.sh");
+        write_exec(&script, &format!("#!/bin/sh\n{body}\n"));
+        self.otto().args(["check", &self.id, "--script"]).arg(&script).output().unwrap()
+    }
+
+    fn make_due(&self) {
+        let mut state = self.state();
+        assert_eq!(state["status"], "sleeping", "{state:#}");
+        state["nextWakeAt"] = "2020-01-01T00:00:00Z".into();
+        std::fs::write(self.run_json(), serde_json::to_string_pretty(&state).unwrap()).unwrap();
+    }
+
+    /// One pass of poke; the line it printed for the run under test.
+    fn poke(&self) -> String {
+        let out = self.otto().env("OTTO_BIN", OTTO).args(["poke", "--verbose", "--grace", "0"]).output().unwrap();
+        let said = String::from_utf8_lossy(&out.stdout).to_string();
+        said.lines().find(|l| l.contains(&self.id)).unwrap_or_else(|| panic!("poke said nothing of the run: {said}{}", String::from_utf8_lossy(&out.stderr))).to_string()
+    }
+
+    fn wait_for(&self, status: &str) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while self.state()["status"] != status {
+            assert!(std::time::Instant::now() < until, "never {status}: {:#}\n{}", self.state(), self.journal());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Wait for the wake poke started to be over.
+    fn wait_for_wakes(&self, wakes: usize) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let journal = self.journal();
+            let finished = journal.matches("\"wake-complete\"").count() + journal.matches("\"wake-incomplete\"").count();
+            if finished >= wakes && self.state()["status"] == "sleeping" {
+                return;
+            }
+            assert!(std::time::Instant::now() < until, "never got to {wakes} wakes: {journal}");
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    fn wakes_finished(&self) -> usize {
+        let journal = self.journal();
+        journal.matches("\"wake-complete\"").count() + journal.matches("\"wake-incomplete\"").count()
+    }
+
+    fn check_codes(&self) -> Vec<i64> {
+        std::fs::read_to_string(self.otto_home().join("runs").join(&self.id).join("check-history.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["code"].as_i64().unwrap())
+            .collect()
+    }
+}
+
+/// Writes inside its own run, then tries what a check has no business doing, and says "nothing new".
+const REACHING_CHECK: &str = r#"A="$OTTO_HOME/runs/$OTTO_RUN_ID/artifacts"
+echo in > "$A/inside"
+echo out > "$OTTO_HOME/runs/OTHER/planted"
+echo out > "$HOME/workspace/other/planted"
+echo out >> "$HOME/.zshenv"
+cat "$HOME/.ssh/id_ed25519" > "$A/read-ssh" 2>/dev/null
+cat "$HOME/workspace/other/secret" > "$A/read-other" 2>/dev/null
+{ if (: >&3) 2>/dev/null; then echo descriptor-3-open; fi; env | grep -i claude; } > "$A/sign-in"
+echo looked
+exit 0"#;
+
+/// The plan's required test: a check can't write outside its run, whoever runs it (`otto check` once, or poke in
+/// front of a due wake), and reads no credentials and gets no sign-in. The same script for a run with no
+/// record does all of it, as before.
+#[test]
+fn a_check_can_not_write_outside_its_run() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(checked_record);
+    s.complete_a_wake();
+    let artifacts = s.artifacts();
+    let body = REACHING_CHECK.replace("OTHER", &s.other);
+    let outside = [s.otto_home().join("runs").join(&s.other).join("planted"), s.home().join("workspace/other/planted")];
+    let zshenv = s.home().join(".zshenv");
+    let read = |name: &str| std::fs::read_to_string(artifacts.join(name)).unwrap_or_default();
+    let held = |who: &str| {
+        assert_eq!(read("inside"), "in\n", "{who}: its own run is still writable");
+        for path in &outside {
+            assert!(!path.exists(), "{who}: the check wrote {}", path.display());
+        }
+        assert_eq!(std::fs::read_to_string(&zshenv).unwrap(), "seed\n", "{who}: the check wrote .zshenv");
+        assert_eq!(read("read-ssh"), "", "{who}: the check read an ssh key");
+        assert_eq!(read("read-other"), "", "{who}: the check read another project");
+        assert_eq!(read("sign-in"), "", "{who}: a check gets nothing of claude's");
+    };
+
+    let out = s.set_check(&body);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("nothing new"), "{}", String::from_utf8_lossy(&out.stdout));
+    held("otto check");
+
+    std::fs::remove_file(artifacts.join("inside")).unwrap();
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("no change; sleeping again"), "{poked}");
+    held("otto poke");
+    assert_eq!(s.state()["status"], "sleeping");
+    assert_eq!(s.check_codes(), [0]);
+
+    // No record: exactly as before, which is everything.
+    std::fs::remove_file(s.record_path()).unwrap();
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("no change; sleeping again"), "{poked}");
+    for path in &outside {
+        assert!(path.exists(), "with no record the check writes {}", path.display());
+    }
+    assert_eq!(std::fs::read_to_string(&zshenv).unwrap(), "seed\nout\n");
+    assert_eq!(read("read-ssh"), "seed\n");
+    assert_eq!(read("read-other"), "seed\n");
+    let out = s.set_check(&body);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&zshenv).unwrap(), "seed\nout\nout\n", "and so does `otto check`");
+}
+
+/// Under the sandbox the exit code still decides: 0 sleeps, 1 wakes, anything else wakes as an error.
+#[test]
+fn the_checks_exit_code_still_decides_under_the_sandbox() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(checked_record);
+    s.complete_a_wake();
+    let artifacts = s.artifacts();
+    let planted = s.home().join("workspace/other/planted");
+    std::fs::write(artifacts.join("says"), "exit 0\n").unwrap();
+    let out = s.set_check("echo out > \"$HOME/workspace/other/planted\"\n. \"$OTTO_HOME/runs/$OTTO_RUN_ID/artifacts/says\"");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("no change; sleeping again"), "{poked}");
+    assert_eq!(s.state()["status"], "sleeping");
+
+    let wakes = s.wakes_finished();
+    std::fs::write(artifacts.join("says"), "exit 1\n").unwrap();
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("check script reported a change"), "{poked}");
+    s.wait_for_wakes(wakes + 1);
+    assert!(s.journal().contains("check-changed"), "{}", s.journal());
+
+    std::fs::write(artifacts.join("says"), "exit 7\n").unwrap();
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("check script errored (exit 7"), "{poked}");
+    s.wait_for_wakes(wakes + 2);
+    assert!(s.journal().contains("check-error"), "{}", s.journal());
+
+    assert_eq!(s.check_codes(), [0, 1, 7]);
+    assert!(!planted.exists(), "each of those ran inside the sandbox");
+}
+
+/// `run.json` naming another launcher than the record: the check is not run, sandboxed or not. Poke starts a
+/// wake, as for a check that errored, and `otto wake` refuses it as it always does. `otto check` says why.
+/// None of this enters a profile, so it runs inside a sandbox too.
+#[test]
+fn a_check_is_not_run_for_a_run_that_disagrees_with_its_record() {
+    let s = Scratch::new(checked_record);
+    s.complete_a_wake();
+    let marker = s.artifacts().join("ran");
+    let config = s.otto_home().join("config.json");
+    let mut with_second: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    with_second["launchers"].as_array_mut().unwrap().push(serde_json::json!({"name": "second", "command": s.root.join("stub").display().to_string()}));
+    std::fs::write(&config, with_second.to_string()).unwrap();
+    let body = "touch \"$OTTO_HOME/runs/$OTTO_RUN_ID/artifacts/ran\"\nexit 0";
+    if can_nest() {
+        assert!(s.set_check(body).status.success());
+        assert!(marker.exists(), "while they agree, it runs");
+        std::fs::remove_file(&marker).unwrap();
+    } else {
+        s.set_check(body);
+    }
+
+    let mut state = s.state();
+    state["launcher"]["kind"] = "second".into();
+    std::fs::write(s.run_json(), state.to_string()).unwrap();
+
+    let out = s.set_check(body);
+    let said = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "otto check ran it: {}", String::from_utf8_lossy(&out.stdout));
+    assert!(said.contains("second") && said.contains("sandbox record"), "{said}");
+    assert!(!marker.exists(), "otto check ran the script of a run that disagrees with its record");
+
+    s.make_due();
+    let poked = s.poke();
+    assert!(poked.contains("not running its check") && poked.contains("second"), "{poked}");
+    s.wait_for("blocked");
+    assert!(!marker.exists(), "poke ran the script of a run that disagrees with its record");
+    assert_eq!(s.state()["gate"]["slug"], "sandbox-record");
+    assert!(s.journal().contains("sandbox-refused") && s.journal().contains("second"), "{}", s.journal());
+    assert!(s.check_codes().is_empty(), "no script ran, so there is no result");
+}
+
+/// A sandbox that can't be had is never "nothing new", and never a reason to run the script without one: the
+/// script is not run and a wake is started to look.
+#[test]
+fn a_sandbox_that_will_not_start_is_not_nothing_new() {
+    let s = Scratch::new(checked_record);
+    s.complete_a_wake();
+    let marker = s.artifacts().join("ran");
+    let body = "touch \"$OTTO_HOME/runs/$OTTO_RUN_ID/artifacts/ran\"\nexit 0";
+    s.set_check(body);
+    std::fs::remove_file(&marker).ok();
+    // Not a directory where profiles go: none can be written.
+    std::fs::remove_dir_all(s.otto_home().join("sandbox/profiles")).ok();
+    std::fs::write(s.otto_home().join("sandbox/profiles"), "").unwrap();
+
+    let out = s.set_check(body);
+    assert!(!out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("profile"), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!marker.exists(), "otto check ran it with no sandbox");
+
+    let wakes = s.wakes_finished();
+    s.make_due();
+    let poked = s.poke();
+    assert!(!poked.contains("no change"), "{poked}");
+    assert!(poked.contains("not running its check") && poked.contains("profile"), "{poked}");
+    s.wait_for_wakes(wakes + 1);
+    assert!(!marker.exists(), "poke ran it with no sandbox");
+    assert!(s.journal().contains("check-error"), "{}", s.journal());
+}

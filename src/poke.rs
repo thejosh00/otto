@@ -460,7 +460,7 @@ fn run_check(
         Err(CheckStop::Sandbox(why)) => {
             return spawn_or_back_off(
                 &run_id,
-                format!("not running its check: it disagrees with its sandbox record: {why}; starting a wake, which will be refused"),
+                format!("not running its check, which its sandbox record stands in front of: {why}; starting a wake, which is refused if they disagree"),
                 WakeCause::CheckError,
                 state.spawn_attempts,
                 state.last_spawned_at.map(Timestamp::dt),

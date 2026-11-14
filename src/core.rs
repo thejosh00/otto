@@ -1471,7 +1471,7 @@ pub fn try_check(id: &str) -> Result<crate::poke::CheckRun, OttoError> {
     let (script, profile) = crate::poke::prepare_check(&id, &state).map_err(|stop| match stop {
         crate::poke::CheckStop::Script(why) => OttoError::conflict(format!("{id}: {why}")),
         crate::poke::CheckStop::Sandbox(why) => OttoError::conflict(format!(
-            "{id}: not running its check: it disagrees with its sandbox record: {why}"
+            "{id}: not running its check, which its sandbox record stands in front of: {why}"
         )),
     })?;
     Ok(crate::poke::execute_check(&id, &state, &script, profile.as_deref(), &mut crate::exec::RealExec))
