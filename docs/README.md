@@ -21,6 +21,7 @@ notes, and how they fit together. The guides assume it.
 | [`config.json`](reference/config.md) | Launchers, the lander, and the environment variables otto reads |
 | [`run.json`](reference/run-json.md) | Every field of a run's state |
 | [The journal](reference/journal.md) | Every event otto writes |
+| [Approvals on record](reference/approvals.md) | The file `otto changes approve` writes outside the run |
 
 ## Elsewhere
 

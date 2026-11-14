@@ -576,10 +576,9 @@ fn a_wake_can_not_approve_its_own_change() {
     };
     ok(&["config", "project", repo.to_str().unwrap(), "--process", "direct"]);
     ok(&["config", "lander", &s.other]);
-    let (id, r) = (&s.id, repo.display());
+    let id = &s.id;
     std::fs::write(s.root.join("summary.md"), "What it does.\n").unwrap();
     ok(&["state", "change", "submit", id, "--repo", repo.to_str().unwrap(), "--branch", "try", "--title", "t", "--summary-file", s.root.join("summary.md").to_str().unwrap(), "--tests", "none", "--no-evidence", "none"]);
-    let _ = r;
     let index = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(s.otto_home().join("runs").join(id).join("changes/index.json")).unwrap()).unwrap() };
     assert_eq!(index()["changes"][0]["state"], "review", "{}", index());
 
