@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.." || exit 1
 # tests/support turns notifications off for each test too; this is for anything else they start.
 export OTTO_NOTIFY=off
 
-tests=${*:-live_tmux live_gate live_todo live_message live_note live_chat live_feedback live_assign live_driver_blocked live_background live_wait live_outputs live_verify live_changes live_land_tests live_land_override live_change_summary live_long_summary live_summary_added live_revive live_sandbox_refused live_check_sandboxed}
+tests=${*:-live_tmux live_gate live_todo live_message live_note live_chat live_feedback live_assign live_driver_blocked live_background live_wait live_outputs live_verify live_changes live_land_tests live_land_override live_land_approval live_change_summary live_long_summary live_summary_added live_revive live_sandbox_refused live_check_sandboxed}
 logs=$(mktemp -d "${TMPDIR:-/tmp}/otto-live.XXXXXX")
 
 # Build once, then run the test binaries themselves. Not one `cargo test` each: every cargo that

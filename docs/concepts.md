@@ -526,6 +526,8 @@ Pushing, merging and commenting on someone's ticket can't be undone by deleting 
 never takes them on its own judgement. It records an **authorization** — naming the answered gate
 or policy flag that allows it, and bound to one commit — and checks it immediately before acting
 (`otto state authorize` / `check-authorized`). A branch that moved since the approval asks again.
+A change the person approved is checked on the change instead (`otto state change check`), by
+the lander, with no gate.
 
 Two runs working in one repository would trample each other, so a wake claims a **repo lock**
 (`otto state lock`) while it uses one, and releases it before it sleeps.

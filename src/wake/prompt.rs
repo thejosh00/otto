@@ -204,6 +204,26 @@ mod tests {
         }
     }
 
+    /// The harness told every wake to run `check-authorized` before a push, every time, and the
+    /// lander's instructions told it to confirm an approved change with `change check`:
+    /// `check-authorized` refuses an approved change and says to open a gate, which the lander is
+    /// never to do about a landing. Where a wake reads how an outward action is checked, it must
+    /// read that an approved change is checked on the change.
+    #[test]
+    fn an_approved_change_is_checked_on_the_change() {
+        let undone = HARNESS
+            .split("\n## Things that cannot be undone\n")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .expect("the harness has a Things that cannot be undone section")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for said in ["otto state change check <id> <change> --head <sha>", "is not run for landing an approved change", "no gate is opened"] {
+            assert!(undone.contains(said), "Things that cannot be undone must say {said:?}");
+        }
+    }
+
     /// "Staying cheap" told a wake to delegate to subagents, and only shell jobs were said to die
     /// with the wake. Subagents run in the background by default, so a wake delegated four jobs,
     /// exited cleanly, and the next wake redid all of it (feedback from lectio-teach, wake 16). Where

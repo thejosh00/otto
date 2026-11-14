@@ -132,6 +132,12 @@ pub fn authorize(args: AuthorizeArgs) -> Result<(), OttoError> {
     Ok(())
 }
 
+/// Whether this run is the one `config.json` names to land approved changes, as
+/// `changes::require_lander` decides it. A config that can't be read says no.
+fn is_lander(run_id: &str) -> bool {
+    matches!(crate::config::lander(), Ok(Some(lander)) if lander == run_id)
+}
+
 #[derive(clap::Args, Debug)]
 pub struct CheckAuthorizedArgs {
     /// The run: its number or name (a unique prefix of the name will do)
@@ -156,6 +162,16 @@ pub fn check_authorized(args: CheckAuthorizedArgs) -> Result<(), OttoError> {
         None => action_str(args.action).to_string(),
     };
     let record = state.authorizations.get(&key).ok_or_else(|| {
+        // The lander's approvals are on the changes it lands, and it never asks about a landing:
+        // sending it to a gate would contradict its instructions. Still a refusal — an approved
+        // change is not accepted here, only named as checked elsewhere.
+        if args.action == OutwardAction::Push && is_lander(&state.id) {
+            return OttoError::conflict(format!(
+                "{what} is not authorized for this run, and this is not where it would be: this run lands \
+                 approved changes, and a change's approval is checked with `otto state change check <id> \
+                 <change> --head <sha>` (exit 2 there means do not act), not with a gate",
+            ));
+        }
         OttoError::conflict(format!(
             "{what} is not authorized for this run — open a gate, get an answer, then \
              `authorize --action {}{} --gate <NNN> --head <sha>`",
@@ -319,6 +335,46 @@ mod tests {
             item: None,
         });
         assert!(stale.is_err());
+    }
+
+    fn refusal(id: &str) -> OttoError {
+        check_authorized(CheckAuthorizedArgs {
+            id: id.to_string(),
+            action: OutwardAction::Push,
+            head: "abc123".to_string(),
+            item: None,
+        })
+        .expect_err("nothing authorized a push")
+    }
+
+    /// The lander's instructions confirm an approval with `change check`, and the harness told
+    /// every wake to run `check-authorized` before a push: for an approved change that refused
+    /// with "open a gate", which the lander must never do about a landing. The refusal it gets
+    /// names the check that is its own.
+    #[test]
+    fn the_lander_is_sent_to_change_check_not_to_a_gate() {
+        let _home = TempHome::new();
+        test_init("auth-lander", "land-flow").unwrap();
+        crate::config::save_lander(Some("auth-lander")).unwrap();
+        let e = refusal("auth-lander");
+        assert_eq!(e.code, 2, "still a refusal: {}", e.message);
+        assert!(e.message.contains("otto state change check <id> <change> --head <sha>"), "{}", e.message);
+        assert!(!e.message.contains("open a gate"), "{}", e.message);
+    }
+
+    /// Any other run is told what it always was, lander set up or not.
+    #[test]
+    fn another_run_is_still_told_to_open_a_gate() {
+        let _home = TempHome::new();
+        test_init("auth-lander", "land-flow").unwrap();
+        test_init("auth-other", "dev-flow").unwrap();
+        let before = refusal("auth-other").message;
+        crate::config::save_lander(Some("auth-lander")).unwrap();
+        let e = refusal("auth-other");
+        assert_eq!(e.code, 2);
+        assert_eq!(e.message, before);
+        assert!(e.message.contains("open a gate, get an answer"), "{}", e.message);
+        assert!(!e.message.contains("change check"), "{}", e.message);
     }
 
     #[test]

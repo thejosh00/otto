@@ -624,6 +624,12 @@ earlier head is stale and you ask again. Check immediately before acting, every 
 means stop and report — if you believe an unauthorized action is warranted, that belief is
 exactly what the gate exists to test.
 
+A change the person approved is the one exception in how it is checked. Its approval is on the
+change, and whoever lands it (the lander, following its instructions) checks it with `otto state
+change check <id> <change> --head <sha>`, where exit 2 means do not act just the same.
+`check-authorized` is not run for landing an approved change and no gate is opened for it; it
+remains the check for every other outward action.
+
 ## Repo locks
 
 `otto state lock <id> --repo <path>` before creating a worktree or a branch, `otto state
