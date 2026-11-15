@@ -488,6 +488,13 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
     )?;
     let r = format!("{}/{}", crate::paths::short_id(&id), out.n);
     if out.unchanged {
+        if out.back_in_review {
+            println!(
+                "change {r} v{}: the same commit, back in the person's review — their answer needed no change to it. What they \
+                 decide reaches you as a note",
+                out.version
+            );
+        }
         if out.file_ignored {
             println!(
                 "change {r} v{}: its write-up kept as it was — the person may already have read it. A new one comes with a new commit",
@@ -515,7 +522,7 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             );
         } else if !a.evidence.is_empty() {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
-        } else if !out.file_ignored && !out.summary_added && !out.summary_ignored && !out.pr_added && !out.pr_ignored {
+        } else if !out.back_in_review && !out.file_ignored && !out.summary_added && !out.summary_ignored && !out.pr_added && !out.pr_ignored {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
         }
         if a.no_evidence.is_some() {

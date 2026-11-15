@@ -514,6 +514,11 @@ pub struct Ask {
     pub answer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_at: Option<Timestamp>,
+    /// Where the change stood when its author asked, kept only until it next moves for another
+    /// reason. `Review`, on an answered question, is what lets the same commit again put it back in
+    /// review: the answer changed nothing, and nobody has asked for anything since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_in: Option<ChangeState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -591,6 +596,18 @@ impl Change {
     fn enter(&mut self, state: ChangeState) {
         self.state = state;
         self.state_at = Timestamp::now();
+        // Whatever moved it, where it stood when its author asked is no longer where it came from.
+        // Asking and answering put it back themselves.
+        if let Some(ask) = self.ask.as_mut() {
+            ask.asked_in = None;
+        }
+    }
+
+    /// Its author's question was answered, it was in review when they asked, and nothing has moved
+    /// it since: the same commit again is them saying it stands as it is.
+    fn stands_after_answer(&self) -> bool {
+        self.state == ChangeState::Revising
+            && self.ask.as_ref().is_some_and(|a| a.by.is_none() && a.answer.is_some() && a.asked_in == Some(ChangeState::Review))
     }
 }
 
@@ -880,6 +897,9 @@ pub struct Submitted {
     pub pr_added: bool,
     /// The same commit again, with a different pull request description: kept as it was.
     pub pr_ignored: bool,
+    /// The same commit again after the person answered what its author asked while it was in
+    /// review: nothing needed changing, so it is back with them to approve.
+    pub back_in_review: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -1068,7 +1088,18 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                     c.versions.last_mut().expect("has a latest").pr_file = Some(rel);
                     c.moment("author", format!("v{k}: added what its pull request says"));
                 }
+                // Answered, and nothing to change: back where the person can approve it. Only from an
+                // answer to a question asked in review; a change the person or the lander sent back
+                // is not brought back by the same commit.
+                let back = c.stands_after_answer();
+                if back {
+                    c.enter(ChangeState::Review);
+                    let what = format!("v{}: stands as it is after your answer — yours to review", c.latest().k);
+                    c.moment("author", &what);
+                    moved(path, c, "author", &what)?;
+                }
                 let mut out = submitted(c, true, None);
+                out.back_in_review = back;
                 out.evidence_ignored = ignored;
                 out.file_ignored = file_ignored;
                 out.summary_ignored = summary_ignored;
@@ -1230,6 +1261,7 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         summary_ignored: false,
         pr_added: false,
         pr_ignored: false,
+        back_in_review: false,
     }
 }
 
@@ -2706,7 +2738,20 @@ pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
         c.moment("you", format!("answered: {}", first_line(&answer)));
         moved(path, c, "person", &format!("answered: {}", first_line(&answer)))?;
         let Some(babysitter) = babysitter else {
+            let asked_in = c.ask.as_ref().and_then(|a| a.asked_in);
             c.enter(ChangeState::Revising);
+            c.ask.as_mut().expect("needs-you has its question").asked_in = asked_in;
+            // What the author does next depends on whether the answer changes anything, and only
+            // from review does the same commit bring it back.
+            let next = if asked_in == Some(ChangeState::Review) {
+                "The change is with you until you submit it again. If the answer means something should change: commit it in the \
+                 same worktree and submit it again with the same key, and it goes back to them as the next version. If nothing \
+                 needs to change: submit the same commit again, exactly as it is — no new commit — and it goes back to their review."
+            } else {
+                "The change is with you. If the answer means something should change: commit it in the same worktree and submit \
+                 it again with the same key, and it goes back to them as the next version."
+            };
+            let said = format!("{said}\n\n{next}");
             let note = tell_author(path, state, c, &said)?;
             return Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None });
         };
@@ -2764,8 +2809,11 @@ pub fn ask_as(by: Option<&str>, r: &ChangeRef, question: &str) -> Result<Change,
         if c.state.is_over() || c.state == ChangeState::Landing {
             return Err(OttoError::conflict(format!("change {} is {}: there is nothing to decide about it", r.display(), c.state.as_str())));
         }
-        c.ask = Some(Ask { by: by.clone(), question: question.to_string(), options: options.clone(), default: default.clone(), at: Timestamp::now(), answer: None, answered_at: None });
+        // Asked again before the answer: where it stood is where it stood the first time.
+        let asked_in = if c.state == ChangeState::NeedsYou { c.ask.as_ref().and_then(|a| a.asked_in) } else { Some(c.state) };
+        c.ask = Some(Ask { by: by.clone(), question: question.to_string(), options: options.clone(), default: default.clone(), at: Timestamp::now(), answer: None, answered_at: None, asked_in: None });
         c.enter(ChangeState::NeedsYou);
+        c.ask.as_mut().expect("just asked").asked_in = asked_in;
         let what = format!("asked: {}", crate::gate::title(question, 120));
         let who = if by.is_some() { "babysitter" } else { "author" };
         c.moment(who, &what);
@@ -4710,6 +4758,68 @@ pub(crate) mod tests {
         assert!(note_texts("c-ask").last().unwrap().contains("The person answered:\n\nKeep"), "an option is matched, case aside");
         let stale = Change { state_at: Timestamp::at(crate::clock::now() - time::Duration::hours(9)), ..change("c-ask", 1) };
         assert_eq!(stuck(&stale, crate::clock::now()).as_deref(), Some("its agent hasn't moved it in 9h"));
+    }
+
+    /// Report 54: asked while in review and answered "leave it", the same commit again is its author
+    /// saying it stands, and that puts it back where the person can approve it. Nothing else that
+    /// leaves a change with its author is undone by the same commit again.
+    #[test]
+    fn an_answer_that_changes_nothing_lets_the_same_commit_back_into_review() {
+        let _h = TempHome::new();
+        test_init("c-same", "a goal").unwrap();
+        test_init("c-samel", "land changes").unwrap();
+        set_lander("c-samel");
+        let repo = repo();
+        let question = "Should the flag be renamed too?\n\n## Options\n- **Rename**\n- **Leave it** *(default)*\n";
+        submit("c-same", &submit_fix(&repo, "Shout")).unwrap();
+        ask_as(None, &r("c-same", 1), question).unwrap();
+        assert_eq!(answer(&r("c-same", 1), "leave it").unwrap().state, ChangeState::Revising);
+        assert!(note_texts("c-same").last().unwrap().contains("submit the same commit again"), "the author is told what to do when nothing changes");
+        assert!(approve(&[seen(r("c-same", 1))], None, None).is_err(), "not approvable while it is with its author");
+
+        let again = submit("c-same", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(again.unchanged && again.version == 1 && again.back_in_review, "the same commit, still v1, and back with the person");
+        let c = change("c-same", 1);
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Review, Move::You));
+        assert!(c.decision.is_none(), "back in review is not approved");
+        assert!(!submit("c-same", &submit_fix(&repo, "Shout")).unwrap().back_in_review, "only once");
+        approve(&[seen(r("c-same", 1))], None, None).unwrap();
+
+        // Sent back by the lander after that: the answered question is old news, and the same commit
+        // again does not bring it back.
+        claim("c-samel", &r("c-same", 1)).unwrap();
+        bounce("c-samel", &r("c-same", 1), "a.txt conflicts with main").unwrap();
+        let again = submit("c-same", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(again.unchanged && !again.back_in_review);
+        assert_eq!(change("c-same", 1).state, ChangeState::Revising);
+    }
+
+    #[test]
+    fn the_same_commit_again_does_not_undo_being_asked_for_changes() {
+        let _h = TempHome::new();
+        test_init("c-nope", "a goal").unwrap();
+        let repo = repo();
+        let question = "Rename it?\n\n## Options\n- **Rename**\n- **Leave it** *(default)*\n";
+        // Asked for changes, then a question about them answered: still the person's request to meet.
+        submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
+        revise(&r("c-nope", 1), "call it louder").unwrap();
+        ask_as(None, &r("c-nope", 1), question).unwrap();
+        answer(&r("c-nope", 1), "leave it").unwrap();
+        let again = submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(again.unchanged && !again.back_in_review);
+        assert_eq!(change("c-nope", 1).state, ChangeState::Revising, "asked while revising, it stays revising");
+
+        // Asked in review and answered, then asked for changes: the request is what stands.
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
+        ask_as(None, &r("c-nope", 1), question).unwrap();
+        answer(&r("c-nope", 1), "leave it").unwrap();
+        submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
+        revise(&r("c-nope", 1), "no, rename it").unwrap();
+        let again = submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(again.unchanged && !again.back_in_review);
+        assert_eq!(change("c-nope", 1).state, ChangeState::Revising);
     }
 
     #[test]

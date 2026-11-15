@@ -309,7 +309,9 @@ What reaches the run is a note that starts `About change <n>@v<k>`:
   the person to post: `otto state change reply <id> <change> --comment <its id> --text "…"`.
 - **A judgement that is the person's** — a reviewer wants it done another way, the scope grew — is
   asked about the change, not guessed: `otto state change ask <id> <change> --question-file <file>`.
-  It doesn't stop the run; the answer comes as a note.
+  It doesn't stop the run; the answer comes as a note, and leaves the change with its author. An
+  answer that changes nothing: submit the same commit again, with no new commit, and it is back in
+  the person's review.
 - **It landed** (or its pull request merged): `record-fact landedSha=<sha>` and go to `cleanup`.
 - **It was dropped** (or its pull request closed): go to `cleanup`; the run finishes without it.
 

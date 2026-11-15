@@ -443,7 +443,11 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   request: the babysitter's check script asks `gh` about every open one in one look, free when none moved.
 - **Asking without stopping.** A change's author can ask you something about it — a reviewer wants it
   done another way, the scope grew — with `otto state change ask`. The change waits on your answer
-  (`otto changes answer`); the run doesn't.
+  (`otto changes answer`); the run doesn't. Your answer leaves the change with its author: a new
+  commit comes back as the next version, and when your answer changes nothing the author submits the
+  same commit again and it is back in your review, the same version you already read. That holds
+  only for a question asked while the change was in review; a change you or the lander sent back
+  still needs a new commit.
 - **Stuck is said.** A change that has sat with an agent for 6 hours, with reviewers or CI for 3 days,
   or been sent back 3 times is listed as stuck, and you're told once.
 - **Every version stays.** With more than one, the page shows the whole of a version or what changed

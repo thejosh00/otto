@@ -447,7 +447,8 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
 - **A judgement that is the person's** — a reviewer wants it done another way, the scope grew — ask
   about the change rather than guess: `otto state change ask <id> <n> --question-file <file>`,
   written like a gate's question (options under `## Options`). It doesn't stop the run; the answer
-  comes as a note.
+  comes as a note, and leaves the change with you. An answer that changes nothing: submit the same
+  commit again, with no new commit, and it is back in their review.
 - **No longer wanted** — overtaken, or the wrong approach: `otto state change withdraw <id> <n>
   --reason "…"`.
 - **When only your changes are left** to finish the work, sleep long (`arm-timer --in`, with
