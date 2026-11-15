@@ -1976,26 +1976,27 @@ Code handed back: a wake submits it, and the lander lands it
 Usage: otto state change <COMMAND>
 
 Commands:
-  submit     Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
-  withdraw   Take back a change you no longer want: overtaken, or the wrong approach
-  reply      Draft a reply to a reviewer's comment on its pull request, for the person to post
-  ask        Ask the person something about a change — a judgement that is theirs — without stopping the run
-  due        The lander: what waits on it, across every run — approved changes to land, then cleaning up
-  watch      The babysitter: every open pull request that has moved since it last looked
-  fix        The babysitter: it changed the code on a pull request itself, as the person allowed — the lander pushes it
-  claim      The lander: take an approved change in hand, and print what lands
-  check      The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
-  landed     The lander: it is on its base branch now. otto looks, and tells its author
-  rebased    The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
-  bounce     The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
-  cleaned    The lander: its worktree and branch are gone (otto looks), or say what was left and why
-  pr-pushed  The lander: it opened the change's pull request (--url), or pushed its next version to it
-  pr-seen    The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
-  relay      The babysitter (or the lander): hand what a reviewer or CI asked of its pull request to the change's author
-  merged     The lander or the babysitter: its pull request was merged. otto looks, and tells its author
-  closed     The lander or the babysitter: its pull request was closed without merging
-  posted     The lander: it posted a reply the person said to post
-  help       Print this message or the help of the given subcommand(s)
+  submit        Hand back code committed on a branch, for the person to review and the lander to land. The same branch (or --key) again is its next version. It doesn't stop the run
+  withdraw      Take back a change you no longer want: overtaken, or the wrong approach
+  reply         Draft a reply to a reviewer's comment on its pull request, for the person to post
+  ask           Ask the person something about a change — a judgement that is theirs — without stopping the run
+  due           The lander: what waits on it, across every run — approved changes to land, then cleaning up
+  watch         The babysitter: every open pull request that has moved since it last looked
+  fix           The babysitter: it changed the code on a pull request itself, as the person allowed — the lander pushes it
+  claim         The lander: take an approved change in hand, and print what lands
+  check         The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
+  request-land  The lander: ask otto to land this commit. otto checks it against the person's approval and pushes it itself, once the wake is over; the result is in `due` at the next wake
+  landed        The lander: it is on its base branch now. otto looks, and tells its author
+  rebased       The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
+  bounce        The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
+  cleaned       The lander: its worktree and branch are gone (otto looks), or say what was left and why
+  pr-pushed     The lander: it opened the change's pull request (--url), or pushed its next version to it
+  pr-seen       The babysitter: what its pull request says now — CI, review, whether it merges — and when it said it
+  relay         The babysitter (or the lander): hand what a reviewer or CI asked of its pull request to the change's author
+  merged        The lander or the babysitter: its pull request was merged. otto looks, and tells its author
+  closed        The lander or the babysitter: its pull request was closed without merging
+  posted        The lander: it posted a reply the person said to post
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -2217,6 +2218,28 @@ Options:
 The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
 
 Usage: otto state change check --head <HEAD> <LANDER> <CHANGE>
+
+Arguments:
+  <LANDER>
+          The lander run: its number or name
+
+  <CHANGE>
+          The change: <run>/<number>
+
+Options:
+      --head <HEAD>
+          The commit you are about to put on the base branch
+
+  -h, --help
+          Print help
+```
+
+### `otto state change request-land`
+
+```text
+The lander: ask otto to land this commit. otto checks it against the person's approval and pushes it itself, once the wake is over; the result is in `due` at the next wake
+
+Usage: otto state change request-land --head <HEAD> <LANDER> <CHANGE>
 
 Arguments:
   <LANDER>
