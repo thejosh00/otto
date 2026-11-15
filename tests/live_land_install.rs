@@ -441,14 +441,21 @@ fn live_land_install() {
                 && *ts <= installed_at
         })
         .collect();
-    let for_landing = during
+    // The timer the landing armed, not the wake's own cause: a wake for something else hides it.
+    let for_landing = events
         .iter()
-        .filter(|(_, _, cause)| cause == "change-landed")
+        .filter(|(event, ts, cause)| {
+            event == "timer-armed"
+                && cause == "change-landed"
+                && !installed_at.is_empty()
+                && *ts >= landed_at
+                && *ts < installed_at
+        })
         .count();
     checks.check(
         for_landing == 0,
         "the landing didn't wake the lander while otto was installing it",
-        format!("{for_landing} wake(s) for change-landed between the landing and the end of its install"),
+        format!("it was woken for change-landed {for_landing} time(s) between the landing and the end of its install"),
     );
     checks.check(
         nudged && !during.is_empty(),
