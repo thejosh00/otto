@@ -29,7 +29,8 @@ pub enum ChangeCommand {
     /// The lander: ask otto to land this commit. otto checks it against the person's approval and
     /// pushes it itself, once the wake is over; the result is in `due` at the next wake
     RequestLand(CheckArgs),
-    /// The lander: it is on its base branch now. otto looks, and tells its author
+    /// Refused for a change that lands by a push: otto lands it and records that itself, so ask with
+    /// `request-land`. Kept for a change whose record says pull request
     Landed(LandedArgs),
     /// The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
     Rebased(RebasedArgs),

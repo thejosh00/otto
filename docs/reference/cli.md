@@ -1986,7 +1986,7 @@ Commands:
   claim         The lander: take an approved change in hand, and print what lands
   check         The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
   request-land  The lander: ask otto to land this commit. otto checks it against the person's approval and pushes it itself, once the wake is over; the result is in `due` at the next wake
-  landed        The lander: it is on its base branch now. otto looks, and tells its author
+  landed        Refused for a change that lands by a push: otto lands it and records that itself, so ask with `request-land`. Kept for a change whose record says pull request
   rebased       The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
   bounce        The lander: it couldn't land — a conflict, tests that failed — so it goes back to its author
   cleaned       The lander: its worktree and branch are gone (otto looks), or say what was left and why
@@ -2259,7 +2259,7 @@ Options:
 ### `otto state change landed`
 
 ```text
-The lander: it is on its base branch now. otto looks, and tells its author
+Refused for a change that lands by a push: otto lands it and records that itself, so ask with `request-land`. Kept for a change whose record says pull request
 
 Usage: otto state change landed [OPTIONS] --sha <SHA> <LANDER> <CHANGE>
 
