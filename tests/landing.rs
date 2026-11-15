@@ -1204,6 +1204,8 @@ fn a_landing_on_the_otto_repository_is_installed_and_survives_the_restart_of_the
     assert_eq!(result["verdict"], "landed", "{result}");
     assert_eq!(result["install"]["state"], "pending", "{result}");
     assert_eq!(s.state_of(1), "landing", "the author isn't told before the install is over");
+    let due = s.ok(&["state", "change", "due", &s.lander]);
+    assert!(due.contains("nothing to land"), "the lander has nothing to do while otto installs it: {due}");
     s.wait_for("install-done");
     let out = s.ok(&["poke"]);
     assert!(out.contains("installed"), "{out}");

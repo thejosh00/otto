@@ -145,6 +145,14 @@ pub fn read_result(run: &str, n: u32) -> Option<LandResult> {
     serde_json::from_str(&text).ok()
 }
 
+/// The step landed it and its install hasn't finished: the change is still `landing`, and there is
+/// nothing for the lander to do about it.
+pub fn installing(run: &str, n: u32) -> bool {
+    read_result(run, n).is_some_and(|l| {
+        l.verdict == LANDED && l.install.is_some_and(|i| i.state == install::PENDING)
+    })
+}
+
 fn write_result(result: &LandResult) -> Result<(), OttoError> {
     let path = result_path(&result.run, result.n)?;
     if let Some(parent) = path.parent() {

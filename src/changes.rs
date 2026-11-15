@@ -1916,6 +1916,10 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
                 let _ = back_to_the_person(&state.id, c.n);
                 continue;
             }
+            // Landed by the step, and otto is installing it: nothing for the lander until that is over.
+            if c.state == ChangeState::Landing && crate::landing::installing(&state.id, c.n) {
+                continue;
+            }
             if let Some(d) = due_of(&state, &dir, &c) {
                 out.push(d);
             }
