@@ -261,6 +261,18 @@ impl Scratch {
             .collect()
     }
 
+    /// The commits pinned for the step: `refs/otto/land/*` in the repository.
+    fn pins(&self) -> String {
+        git(
+            &self.repo(),
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/otto/land",
+            ],
+        )
+    }
+
     fn requests_left(&self) -> usize {
         std::fs::read_dir(
             self.root
@@ -792,4 +804,58 @@ fn a_step_that_cannot_run_does_not_fail_the_wake() {
         1,
         "the request waits for a step that can run"
     );
+}
+
+/// The commit is pinned by a ref from the asking until the step's answer is final: gone once it
+/// landed, gone once it was refused for good, and still there while the request is kept or the
+/// lander is to ask again.
+#[test]
+fn the_pin_is_removed_once_the_result_is_final() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    assert_eq!(s.pins(), format!("refs/otto/land/{}-1 {sha}", s.author));
+    s.wake();
+    assert_eq!(s.result(1)["verdict"], "landed");
+    assert_eq!(s.pins(), "", "landed: the pin is gone");
+
+    // Refused for good, with no approval to say which repository: gone too.
+    let (unapproved, usha) = s.submit("u");
+    s.request(&unapproved, &usha);
+    assert_eq!(s.pins(), format!("refs/otto/land/{}-2 {usha}", s.author));
+    s.wake();
+    assert_eq!(s.result(2)["verdict"], "refused");
+    assert_eq!(s.pins(), "", "refused: the pin is gone");
+
+    // Refused for good with an approval: another patch.
+    let (other, _) = s.approved("o");
+    let wrong = s.commit("o", "second");
+    s.request(&other, &wrong);
+    s.wake();
+    assert_eq!(s.result(3)["verdict"], "refused");
+    assert_eq!(s.pins(), "", "refused: the pin is gone");
+
+    // The base moved: the lander is to rebase and ask again, and the pin stays until then.
+    let (m, msha) = s.approved("m");
+    let moved = s.commit("elsewhere", "first");
+    git(
+        &s.repo(),
+        &["push", "-q", "origin", &format!("{moved}:refs/heads/main")],
+    );
+    s.request(&m, &msha);
+    s.wake();
+    assert_eq!(s.result(4)["verdict"], "base moved");
+    assert_eq!(s.pins(), format!("refs/otto/land/{}-4 {msha}", s.author));
+}
+
+/// A result that couldn't be recorded isn't final: the request is kept, and so is the pin.
+#[test]
+fn the_pin_is_kept_while_the_request_is() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    std::fs::write(s.root.join("home/landings"), "in the way\n").unwrap();
+    s.wake();
+    assert_eq!(s.requests_left(), 1);
+    assert_eq!(s.pins(), format!("refs/otto/land/{}-1 {sha}", s.author));
 }

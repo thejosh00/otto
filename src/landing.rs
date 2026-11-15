@@ -354,6 +354,11 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
             result
         };
         let _ = std::fs::remove_file(&path);
+        // Landed, or refused for good: the commit needn't be kept for this step any longer. After
+        // `base moved` or `remote refused` the lander may ask for it again, so it stays pinned.
+        if result.verdict == LANDED || result.verdict == REFUSED {
+            unpin(&r, &result);
+        }
         out.push(result);
     }
     if !out.is_empty() {
@@ -361,6 +366,31 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
     }
     let _ = fs4::fs_std::FileExt::unlock(&lock);
     Ok(out)
+}
+
+/// Take away `refs/otto/land/<run>-<n>`, which `request` made. In the repository on the approval
+/// that is git's to do, hooks off. With no approval the repository is only the index's word, so no
+/// git runs there: the ref's own file is removed, if it is where it should be.
+fn unpin(r: &ChangeRef, result: &LandResult) {
+    let name = format!("{}-{}", r.run, r.n);
+    if let Some(repo) = result.judged_on.repo.as_deref() {
+        let mut cmd = clean_git();
+        cmd.arg("-C")
+            .arg(repo)
+            .args(["update-ref", "-d", &format!("refs/otto/land/{name}")]);
+        let _ = run(cmd);
+        return;
+    }
+    let Ok((c, _)) = crate::changes::for_step(r) else {
+        return;
+    };
+    let pins = Path::new(&c.repo).join(".git/refs/otto/land");
+    let real = Path::new(&c.repo)
+        .canonicalize()
+        .map(|p| p.join(".git/refs/otto/land"));
+    if matches!((pins.canonicalize(), real), (Ok(a), Ok(b)) if a == b) {
+        let _ = std::fs::remove_file(pins.join(name));
+    }
 }
 
 /// It is on the remote's base branch: what `otto state change landed` does, done here. The main
