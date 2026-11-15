@@ -79,7 +79,7 @@ replaces it.
 | `mode` | yes | What approving a change does: `push` (lands it on its base) or `pr` (opens a pull request the babysitter watches) |
 | `mergeWhenReady` | no | With `pr`: GitHub merges it once it is approved and passing, without asking again |
 | `start` | no | How a change begins, in words, for the run that makes it: a worktree or a branch, a ticket first |
-| `land` | no | How an approved change lands, in words, for the lander: a ship script, a merge method |
+| `land` | no | How an approved change lands, in words, for the lander: a merge method, what to test first |
 | `allowChanges` | no | With `pr`: what the babysitter may change on the pull request without you, in words it judges by — `trivial`, `small`, `anything but security`. Absent, or `none`: nothing |
 
 `mode` and `mergeWhenReady` are otto's to act on; `start`, `land` and `allowChanges` are read by the

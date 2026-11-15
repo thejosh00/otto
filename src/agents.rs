@@ -229,7 +229,24 @@ mod tests {
         assert!(step.contains("**It couldn't start**"), "a run that couldn't start is its own case");
         assert!(step.contains("That isn't red"), "and isn't a failure of the change");
         assert!(step.contains("open a\n     gate") || step.contains("open a gate"), "it goes to the person");
-        assert!(!flow.contains("lectio's `scripts/ship.sh"), "no repo here has that script");
+    }
+
+    /// The lander asks otto to land a commit; it doesn't push to a base branch or run a repository's
+    /// script to do it. `live_land_approval` is what shows a model does as this says.
+    #[test]
+    fn the_lander_asks_otto_to_land_and_runs_no_ship_script() {
+        let flow = include_str!("../workflows/land-flow.md");
+        let at = flow.find("## Landing one").expect("the section that lands one");
+        let section = &flow[at..at + flow[at..].find("## Opening its pull request").expect("the next section")];
+        assert!(section.contains("otto state change request-land <id> <change> --head <what lands>"), "it asks");
+        assert!(!section.contains("push origin"), "and doesn't push to the base");
+        assert!(!section.contains("otto state change landed <id>"), "or say it landed");
+        assert!(!section.contains("merge --ff-only"), "or move the main checkout: otto does");
+        assert!(section.contains("mentions a ship script: don't run one"), "an old record's words are not followed there");
+        assert!(!flow.contains("scripts/ship.sh") && !flow.contains("ship script of its own"), "no route by a repository's script");
+        assert!(section.contains("`land again`") && section.contains("`base moved`"), "the next wake reads the result from due");
+        assert!(section.contains("rebase <the first one's requested head>"), "a second change on the same base");
+        assert!(!section.contains("gh "), "no gh on this path");
     }
 
     /// Likewise a model reads this, and `live_changes_pr` is what shows it behaves.

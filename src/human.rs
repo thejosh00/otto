@@ -1079,7 +1079,7 @@ pub struct ConfigProcessArgs {
     /// How a change begins, in words, for the run that makes it: a branch or a worktree, a ticket first
     #[arg(long)]
     pub start: Option<String>,
-    /// How an approved change lands, in words, for the lander: a ship script, a merge method
+    /// How an approved change lands, in words, for the lander: a merge method, what to test first
     #[arg(long)]
     pub land: Option<String>,
     /// With --mode pr: what the babysitter may change on a pull request without you, in words it judges by —

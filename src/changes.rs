@@ -5,7 +5,8 @@
 //! gate with the diff pasted into an output — and each left the last mile to the person. A change
 //! is that hand-back made one thing. A wake commits on a branch and submits it (`otto state change
 //! submit`); the person decides on one page (`otto changes`, the web's Changes); and a run of its
-//! own, the **lander** — the only run that pushes — lands what was approved and cleans up after it.
+//! own, the **lander**, lands what was approved and cleans up after it: it rebases and tests, and asks
+//! otto to push (`crate::landing`), which no run does to a base branch itself.
 //!
 //! - **A change doesn't stop its run.** Submitting is not a gate: the run goes on with its next
 //!   piece of work, and whatever happens to the change reaches it as a note ("About change 3@v2").
