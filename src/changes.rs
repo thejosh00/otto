@@ -1921,6 +1921,17 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
             }
         }
     }
+    // A pull request is `gh`'s work, which a sandboxed lander doesn't have: such a change isn't
+    // handed to it, and says so where the person reads it.
+    if lander_has_no_gh() {
+        out.retain(|d| {
+            if !needs_gh(d) {
+                return true;
+            }
+            let _ = not_handed(&ChangeRef { run: d.run.clone(), n: d.n });
+            false
+        });
+    }
     let rank = |d: &Due| match d.todo.as_str() {
         "finish landing" | "land again" => 0,
         "land" | "open its pull request" | "update its pull request" => 1,
@@ -1931,10 +1942,59 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
     Ok(out)
 }
 
+/// What the change says, once, when it waits for a lander that can do a pull request.
+pub const NEEDS_GH: &str = "needs a lander with `gh`: it is approved as a pull request, and the lander runs in a sandbox, where there is no `gh` and \
+                            nothing to push with. Approve it with `--push` to land it on its base instead, or name a lander that isn't sandboxed (`otto config lander`)";
+
+/// Whether the lander is a run with a sandbox record: it can ask otto to land a commit, and can't
+/// open, push to or merge a pull request.
+fn lander_has_no_gh() -> bool {
+    crate::config::lander().ok().flatten().is_some_and(|l| crate::sandbox::has_record(&l))
+}
+
+/// Whether doing what is due takes `gh` or a push to a pull request's branch.
+fn needs_gh(d: &Due) -> bool {
+    match d.todo.as_str() {
+        "open its pull request" | "update its pull request" | "merge its pull request" | "post replies" => true,
+        "land" | "finish landing" | "land again" => d.mode == Some(LandMode::Pr),
+        _ => false,
+    }
+}
+
+/// Changes due that the lander is not handed because they need `gh` and it is sandboxed.
+pub fn due_needing_gh() -> Result<Vec<Due>, OttoError> {
+    if !lander_has_no_gh() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in crate::state::read_all_runs()? {
+        let crate::state::RunEntry::Readable(state) = entry else { continue };
+        let Ok(dir) = crate::paths::run_dir(&state.id) else { continue };
+        out.extend(index_or_empty(&dir).changes.iter().filter_map(|c| due_of(&state, &dir, c)).filter(needs_gh));
+    }
+    Ok(out)
+}
+
+/// Said on the change, once, so the person sees why nothing is happening to it.
+fn not_handed(r: &ChangeRef) -> Result<(), OttoError> {
+    with_change(r, |path, _, c| {
+        if c.timeline.last().is_some_and(|m| m.what == NEEDS_GH) {
+            return Ok(());
+        }
+        c.moment("otto", NEEDS_GH);
+        moved(path, c, "otto", NEEDS_GH)
+    })
+}
+
 /// The lander takes an approved change in hand. Taking one already in hand again is fine: a wake
 /// that didn't finish landing it is picked up by the next.
 pub fn claim(lander: &str, r: &ChangeRef) -> Result<Due, OttoError> {
     let lander = require_lander(lander)?;
+    let run = crate::paths::resolve_run_id(&r.run)?;
+    if due_needing_gh()?.iter().any(|d| d.run == run && d.n == r.n) {
+        not_handed(r)?;
+        return Err(OttoError::conflict(format!("change {} {NEEDS_GH}. It is not yours to land: leave it, and go on to the next", r.display())));
+    }
     with_change(r, |path, state, c| {
         refuse_unless(c, &[ChangeState::Approved, ChangeState::Landing], "landed")?;
         if on_record(state, c).is_none() {
@@ -3991,6 +4051,38 @@ pub(crate) mod tests {
         assert_eq!(c.whose_move(), Move::Nobody);
         assert!(due().unwrap().is_empty());
         let _ = &repo.origin;
+    }
+
+    /// A lander with a sandbox record has no `gh`: a change approved as a pull request is not in what
+    /// is due to it, can't be claimed by it, and says why where the person reads it.
+    #[test]
+    fn a_sandboxed_lander_is_not_handed_a_pull_request() {
+        let _h = TempHome::new();
+        test_init("c-gh", "a goal").unwrap();
+        test_init("c-l", "land changes").unwrap();
+        let repo = repo();
+        submit("c-gh", &submit_fix(&repo, "t")).unwrap();
+        set_lander("c-l");
+        approve(&[seen(r("c-gh", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        assert_eq!(due().unwrap().iter().map(|d| d.todo.as_str()).collect::<Vec<_>>(), ["open its pull request"]);
+        assert!(due_needing_gh().unwrap().is_empty());
+
+        let record = crate::sandbox::dir().join("runs").join("c-l.json");
+        std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+        std::fs::write(&record, "{}").unwrap();
+        assert!(due().unwrap().is_empty(), "not handed to it");
+        assert_eq!(due_needing_gh().unwrap().len(), 1, "and said beside what is due");
+        let err = claim("c-l", &r("c-gh", 1)).unwrap_err();
+        assert!(err.message.contains("needs a lander with `gh`"), "{}", err.message);
+        due().unwrap();
+        let c = read_index(&crate::paths::run_dir("c-gh").unwrap()).unwrap().changes.remove(0);
+        assert_eq!(c.state, ChangeState::Approved, "still approved, not in hand");
+        assert_eq!(c.timeline.iter().filter(|m| m.what == NEEDS_GH).count(), 1, "the change says so, once: {:?}", c.timeline);
+
+        // With a lander that isn't sandboxed again, it is due as before.
+        std::fs::remove_file(&record).unwrap();
+        assert!(due_needing_gh().unwrap().is_empty());
+        assert_eq!(due().unwrap().len(), 1);
     }
 
     /// Write a run's index as a wake could: by hand, with no command of the person's.

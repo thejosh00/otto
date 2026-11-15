@@ -554,9 +554,18 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
 fn due(a: DueArgs) -> Result<(), OttoError> {
     changes::require_lander(&a.lander)?;
     let due = changes::due()?;
+    // Not handed to this lander, and not in the list (so its check script stays quiet): said beside it.
+    let not_handed: Vec<String> =
+        changes::due_needing_gh()?.iter().map(|d| format!("{:<10} not handed to this lander  {}: {}", d.reference, d.title, changes::NEEDS_GH)).collect();
     if a.json {
+        for line in &not_handed {
+            eprintln!("{line}");
+        }
         println!("{}", serde_json::to_string_pretty(&due)?);
         return Ok(());
+    }
+    for line in &not_handed {
+        println!("{line}");
     }
     if due.is_empty() {
         println!("nothing to land, and nothing to clean up");

@@ -994,7 +994,7 @@ fn differences(id: &str, state: &RunState, launcher: Result<&LauncherDef, &OttoE
 }
 
 /// Whether this run has a sandbox record at all, readable or not.
-fn has_record(run_id: &str) -> bool {
+pub(crate) fn has_record(run_id: &str) -> bool {
     // `symlink_metadata`: a dangling link is a record that can't be read, not the absence of one.
     !record_path(run_id).symlink_metadata().is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
 }
