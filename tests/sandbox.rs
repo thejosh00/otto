@@ -1238,3 +1238,110 @@ fn a_sandbox_that_will_not_start_is_not_nothing_new() {
     assert!(!marker.exists(), "poke ran it with no sandbox");
     assert!(s.journal().contains("check-error"), "{}", s.journal());
 }
+
+/// The lander, under its profile, can ask for a landing and can't do one: `request-land` works from inside
+/// (the request in its own run directory, the commit pinned by a ref in the repository), a push to the remote
+/// from inside fails, and requests it writes by hand for what the person didn't approve are refused by the
+/// step outside, which says why in the lander's journal. The remote here is a bare repository outside the workspace, which the wake can read:
+/// what stops the push is that the profile doesn't let the wake write there.
+#[test]
+fn a_sandboxed_lander_can_ask_for_a_landing_and_not_do_one() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    let (repo, origin, elsewhere) = (s.home().join("workspace/repo"), s.root.join("origin.git"), s.home().join("workspace/other/elsewhere"));
+    let git_in = |dir: &Path, args: &[&str]| -> String {
+        let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(dir).env("HOME", s.home()).output().unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let git = |args: &[&str]| git_in(&repo, args);
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git_in(&s.root, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join(".git/info/exclude"), "tracked\n.claude\n").unwrap();
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&["push", "-q", "origin", "main", "main:other"]);
+    let commit = |branch: &str, what: &str| -> String {
+        if git(&["branch", "--list", branch]).is_empty() { git(&["checkout", "-q", "-b", branch, "main"]) } else { git(&["checkout", "-q", branch]) };
+        std::fs::write(repo.join(format!("{branch}-{what}")), what).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", what]);
+        git(&["checkout", "-q", "main"]);
+        git(&["rev-parse", branch])
+    };
+    let ok = |args: &[&str]| -> String {
+        let out = s.otto().env("OTTO_BIN", OTTO).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    // The run under the profile is the lander; the other run is the author.
+    let (lander, author) = (&s.id, &s.other);
+    ok(&["config", "project", repo.to_str().unwrap(), "--process", "direct"]);
+    ok(&["config", "lander", lander]);
+    std::fs::write(s.root.join("summary.md"), "What it does.\n").unwrap();
+    let submit = |branch: &str| -> String {
+        let sha = commit(branch, "first");
+        ok(&["state", "change", "submit", author, "--repo", repo.to_str().unwrap(), "--branch", branch, "--title", branch, "--summary-file", s.root.join("summary.md").to_str().unwrap(), "--tests", "none", "--no-evidence", "none"]);
+        sha
+    };
+    let good = submit("good");
+    let unapproved = submit("unapproved");
+    for n in [1, 3] {
+        if n == 3 {
+            submit("patched");
+        }
+        ok(&["changes", "approve", &format!("{author}/{n}@v1"), "--no-wake"]);
+        ok(&["state", "change", "claim", lander, &format!("{author}/{n}")]);
+    }
+    let another_patch = commit("patched", "second");
+    // A second repository, with a commit of its own on the remote's `other`.
+    git_in(&s.root, &["clone", "-q", "-b", "other", origin.to_str().unwrap(), elsewhere.to_str().unwrap()]);
+    std::fs::write(elsewhere.join("f"), "x\n").unwrap();
+    git_in(&elsewhere, &["add", "f"]);
+    git_in(&elsewhere, &["commit", "-q", "-m", "elsewhere"]);
+    let foreign = git_in(&elsewhere, &["rev-parse", "HEAD"]);
+    let remote = |branch: &str| git_in(&origin, &["rev-parse", branch]);
+    let (main_before, other_before) = (remote("main"), remote("other"));
+    let events = || -> Vec<serde_json::Value> {
+        s.journal().lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|l| l["event"] == "land-result").collect()
+    };
+    let why = |head: &str| -> serde_json::Value { events().into_iter().find(|e| e["head"] == head).unwrap_or_else(|| panic!("no land-result for {head}: {}", s.journal())) };
+    let r = repo.display();
+
+    // Written by hand from inside, none of it what the person approved: an unapproved change, an approved
+    // change with another patch, and an approved change said to be in another repository, on another base.
+    for (name, body) in [
+        ("a", serde_json::json!({"run": author, "n": 2, "head": unapproved, "at": "2026-01-01T00:00:00Z"})),
+        ("b", serde_json::json!({"run": author, "n": 3, "head": another_patch, "at": "2026-01-01T00:00:01Z"})),
+        ("c", serde_json::json!({"run": author, "n": 1, "head": foreign, "at": "2026-01-01T00:00:02Z", "repo": elsewhere, "base": "other", "remote": origin})),
+    ] {
+        s.allowed("a request written by hand", &format!("mkdir -p \"$O/runs/{lander}/land-requests\" && cat > \"$O/runs/{lander}/land-requests/{name}.json\" <<'END'\n{body}\nEND"));
+    }
+    ok(&["poke"]);
+    assert_eq!((remote("main"), remote("other")), (main_before.clone(), other_before.clone()), "nothing was pushed: {}", s.journal());
+    assert_eq!(events().len(), 3, "{}", s.journal());
+    let (a, b, c) = (why(&unapproved), why(&another_patch), why(&foreign));
+    assert!(a["verdict"] == "refused" && a["why"].as_str().unwrap().contains("no approval on record"), "{a}");
+    assert!(b["verdict"] == "refused" && b["why"].as_str().unwrap().contains("is not what was approved"), "{b}");
+    assert!(c["verdict"] == "refused" && c["why"].as_str().unwrap().contains("is not a commit in"), "{c}");
+    assert_eq!((c["judgedOn"]["repo"].as_str(), c["judgedOn"]["base"].as_str()), (repo.to_str(), Some("main")), "the record's repository and base, not the request's: {c}");
+
+    // `request-land` itself, from inside: the request is written and the commit pinned.
+    let out = s.inside(&format!("cd '{r}' && '{OTTO}' state change request-land {lander} {author}/1 --head {good}"));
+    assert!(out.status.success(), "request-land from inside: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(s.otto_home().join("runs").join(lander).join("land-requests").join(format!("{author}-1.json")).is_file());
+    assert_eq!(std::fs::read_to_string(repo.join(".git/refs/otto/land").join(format!("{author}-1"))).unwrap().trim(), good, "the pin, written from inside");
+    // It can read the remote and can't push to it.
+    s.allowed("reading the remote", &format!("cd '{r}' && git ls-remote origin main | grep -q {main_before}"));
+    let out = s.inside(&format!("cd '{r}' && git push origin {good}:refs/heads/main"));
+    assert!(!out.status.success(), "a push from inside should fail");
+    assert_eq!(remote("main"), main_before, "the push from inside put nothing on the remote");
+    // The step, outside: this one is what the person approved.
+    ok(&["poke"]);
+    assert_eq!(remote("main"), good, "{}", s.journal());
+    assert_eq!(why(&good)["verdict"], "landed");
+    assert!(!repo.join(".git/refs/otto/land").join(format!("{author}-1")).exists(), "landed: the pin is gone");
+}
