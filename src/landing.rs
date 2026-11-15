@@ -104,7 +104,15 @@ impl LandResult {
     pub fn line(&self) -> String {
         let why = self.why.as_deref().unwrap_or("");
         match self.verdict.as_str() {
-            LANDED => format!("landed at {}{}", crate::changes::short_sha(self.pushed.as_deref().unwrap_or(&self.head)), if why.is_empty() { String::new() } else { format!(" ({why})") }),
+            LANDED => format!(
+                "landed at {}{}",
+                crate::changes::short_sha(self.pushed.as_deref().unwrap_or(&self.head)),
+                if why.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({why})")
+                }
+            ),
             BASE_MOVED => format!("base moved: {why}"),
             v => format!("{v}: {why}"),
         }
@@ -132,7 +140,10 @@ fn write_result(result: &LandResult) -> Result<(), OttoError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    crate::state::write_atomic(&path, &format!("{}\n", serde_json::to_string_pretty(result)?))
+    crate::state::write_atomic(
+        &path,
+        &format!("{}\n", serde_json::to_string_pretty(result)?),
+    )
 }
 
 fn requests_dir(lander: &str) -> Result<PathBuf, OttoError> {
@@ -152,20 +163,44 @@ pub fn request(lander: &str, r: &ChangeRef, head: &str) -> Result<Request, OttoE
     let repo = Path::new(&c.repo);
     let sha = crate::changes::rev(repo, head)?;
     let name = format!("{}-{}", r.run, r.n);
-    crate::changes::git(repo, &["update-ref", &format!("refs/otto/land/{name}"), &sha])
-        .map_err(|e| OttoError::conflict(format!("couldn't keep {} for landing (refs/otto/land/{name}): {e}", crate::changes::short_sha(&sha))))?;
-    let request = Request { run: r.run.clone(), n: r.n, head: sha, at: Timestamp::now() };
+    crate::changes::git(
+        repo,
+        &["update-ref", &format!("refs/otto/land/{name}"), &sha],
+    )
+    .map_err(|e| {
+        OttoError::conflict(format!(
+            "couldn't keep {} for landing (refs/otto/land/{name}): {e}",
+            crate::changes::short_sha(&sha)
+        ))
+    })?;
+    let request = Request {
+        run: r.run.clone(),
+        n: r.n,
+        head: sha,
+        at: Timestamp::now(),
+    };
     let dir = requests_dir(&lander)?;
     std::fs::create_dir_all(&dir)?;
-    crate::state::write_atomic(&dir.join(format!("{name}.json")), &format!("{}\n", serde_json::to_string_pretty(&request)?))?;
-    let _ = crate::state::journal(&crate::paths::run_dir(&lander)?, "land-requested", json!({"change": r.display(), "run": r.run, "n": r.n, "head": request.head}));
+    crate::state::write_atomic(
+        &dir.join(format!("{name}.json")),
+        &format!("{}\n", serde_json::to_string_pretty(&request)?),
+    )?;
+    let _ = crate::state::journal(
+        &crate::paths::run_dir(&lander)?,
+        "land-requested",
+        json!({"change": r.display(), "run": r.run, "n": r.n, "head": request.head}),
+    );
     Ok(request)
 }
 
 /// The lander's requests, in the order they were written.
 fn requests(lander: &str) -> Vec<(PathBuf, Request)> {
-    let Ok(dir) = requests_dir(lander) else { return Vec::new() };
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(dir) = requests_dir(lander) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut out: Vec<(PathBuf, Request)> = entries
         .flatten()
         .map(|e| e.path())
@@ -177,7 +212,8 @@ fn requests(lander: &str) -> Vec<(PathBuf, Request)> {
             if !meta.file_type().is_file() {
                 return None;
             }
-            let request = serde_json::from_str::<Request>(&std::fs::read_to_string(&p).ok()?).ok()?;
+            let request =
+                serde_json::from_str::<Request>(&std::fs::read_to_string(&p).ok()?).ok()?;
             Some((p, request))
         })
         .collect();
@@ -193,14 +229,21 @@ pub fn waiting(lander: &str) -> bool {
 /// The wake's parent, once a wake is over: when the run is the lander and it asked for something,
 /// run the step. Whatever goes wrong here is said, and is not the wake's failure.
 pub fn after_wake(run: &str) {
-    let Ok(Some(lander)) = crate::config::lander() else { return };
+    let Ok(Some(lander)) = crate::config::lander() else {
+        return;
+    };
     if lander != run || !waiting(&lander) {
         return;
     }
     match step(&lander) {
         Ok(results) => {
             for r in results {
-                println!("landing {}/{}: {}", crate::paths::short_id(&r.run), r.n, r.line());
+                println!(
+                    "landing {}/{}: {}",
+                    crate::paths::short_id(&r.run),
+                    r.n,
+                    r.line()
+                );
             }
         }
         Err(e) => eprintln!("otto: the landing step failed: {}", e.message),
@@ -211,12 +254,24 @@ pub fn after_wake(run: &str) {
 /// parent does this itself when it lives to; this is for when it didn't.
 pub fn backstop() -> Vec<String> {
     use crate::liveness::Liveness as _;
-    let Ok(Some(lander)) = crate::config::lander() else { return Vec::new() };
+    let Ok(Some(lander)) = crate::config::lander() else {
+        return Vec::new();
+    };
     if !waiting(&lander) || crate::liveness::LockLiveness.probe(&lander).is_busy() {
         return Vec::new();
     }
     match step(&lander) {
-        Ok(results) => results.iter().map(|r| format!("landing {}/{}: {}", crate::paths::short_id(&r.run), r.n, r.line())).collect(),
+        Ok(results) => results
+            .iter()
+            .map(|r| {
+                format!(
+                    "landing {}/{}: {}",
+                    crate::paths::short_id(&r.run),
+                    r.n,
+                    r.line()
+                )
+            })
+            .collect(),
         Err(e) => vec![format!("the landing step failed: {}", e.message)],
     }
 }
@@ -226,13 +281,19 @@ pub fn backstop() -> Vec<String> {
 pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
     let locks = crate::paths::otto_home().join("locks");
     std::fs::create_dir_all(&locks)?;
-    let lock = std::fs::OpenOptions::new().create(true).append(true).open(locks.join("landing.lock"))?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(locks.join("landing.lock"))?;
     fs4::fs_std::FileExt::lock_exclusive(&lock)?;
     let lander_dir = crate::paths::run_dir(lander)?;
     let mut out = Vec::new();
     // Read under the lock: what another pass dealt with is gone by now.
     for (path, request) in requests(lander) {
-        let r = ChangeRef { run: request.run.clone(), n: request.n };
+        let r = ChangeRef {
+            run: request.run.clone(),
+            n: request.n,
+        };
         let before = read_result(&request.run, request.n).filter(|b| b.head == request.head);
         let result = match before {
             // Judged already, and the step died before it took the request away.
@@ -240,14 +301,29 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
             _ => {
                 let result = judge(&request);
                 write_result(&result)?;
-                let _ = crate::state::journal(&lander_dir, "land-result", json!({"change": r.display(), "run": result.run, "n": result.n, "head": result.head, "verdict": result.verdict, "why": result.why, "pushed": result.pushed, "judgedOn": result.judged_on}));
+                let _ = crate::state::journal(
+                    &lander_dir,
+                    "land-result",
+                    json!({"change": r.display(), "run": result.run, "n": result.n, "head": result.head, "verdict": result.verdict, "why": result.why, "pushed": result.pushed, "judgedOn": result.judged_on}),
+                );
                 if result.verdict != LANDED {
-                    let _ = crate::changes::step_said(&r, &format!("landing {}: {}", crate::changes::short_sha(&result.head), result.line()));
+                    let _ = crate::changes::step_said(
+                        &r,
+                        &format!(
+                            "landing {}: {}",
+                            crate::changes::short_sha(&result.head),
+                            result.line()
+                        ),
+                    );
                 }
                 result
             }
         };
-        let result = if result.verdict == LANDED { finish_landed(lander, &r, result) } else { result };
+        let result = if result.verdict == LANDED {
+            finish_landed(lander, &r, result)
+        } else {
+            result
+        };
         let _ = std::fs::remove_file(&path);
         out.push(result);
     }
@@ -262,18 +338,28 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
 /// checkout is fast-forwarded when it is on the base branch and clean; the change is marked
 /// landed; its author is told and woken. Doing it twice is harmless: a change already landed stays so.
 fn finish_landed(lander: &str, r: &ChangeRef, mut result: LandResult) -> LandResult {
-    let Ok((c, _)) = crate::changes::for_step(r) else { return result };
+    let Ok((c, _)) = crate::changes::for_step(r) else {
+        return result;
+    };
     if c.state != ChangeState::Landing {
         return result;
     }
     let sha = result.pushed.clone().unwrap_or_else(|| result.head.clone());
-    let (repo, base) = (result.judged_on.repo.clone().unwrap_or_default(), result.judged_on.base.clone().unwrap_or_default());
+    let (repo, base) = (
+        result.judged_on.repo.clone().unwrap_or_default(),
+        result.judged_on.base.clone().unwrap_or_default(),
+    );
     let (updated, said) = fast_forward(Path::new(&repo), &base, &sha);
     result.checkout = Some(said.clone());
     let _ = write_result(&result);
     let note = (!updated).then_some(said);
     if let Err(e) = crate::changes::landed_by_step(lander, r, &sha, updated, note.as_deref()) {
-        eprintln!("otto: {} landed at {} and couldn't be marked landed: {}", r.display(), crate::changes::short_sha(&sha), e.message);
+        eprintln!(
+            "otto: {} landed at {} and couldn't be marked landed: {}",
+            r.display(),
+            crate::changes::short_sha(&sha),
+            e.message
+        );
     }
     result
 }
@@ -288,16 +374,40 @@ fn fast_forward(repo: &Path, base: &str, sha: &str) -> (bool, String) {
     };
     match git(&["symbolic-ref", "--short", "HEAD"]) {
         Ok(on) if on == base => {}
-        Ok(on) => return (false, format!("the main checkout is on {on}, not {base}, so it wasn't updated")),
-        Err(_) => return (false, format!("the main checkout isn't on {base}, so it wasn't updated")),
+        Ok(on) => {
+            return (
+                false,
+                format!("the main checkout is on {on}, not {base}, so it wasn't updated"),
+            )
+        }
+        Err(_) => {
+            return (
+                false,
+                format!("the main checkout isn't on {base}, so it wasn't updated"),
+            )
+        }
     }
     match git(&["status", "--porcelain", "--untracked-files=no"]) {
         Ok(s) if s.is_empty() => {}
-        _ => return (false, "the main checkout has uncommitted changes, so it wasn't updated".to_string()),
+        _ => {
+            return (
+                false,
+                "the main checkout has uncommitted changes, so it wasn't updated".to_string(),
+            )
+        }
     }
     match git(&["merge", "--ff-only", "--no-verify", "--quiet", sha]) {
-        Ok(_) => (true, format!("the main checkout's {base} was fast-forwarded")),
-        Err(e) => (false, format!("the main checkout's {base} couldn't be fast-forwarded, so it wasn't updated ({})", first_line(&e))),
+        Ok(_) => (
+            true,
+            format!("the main checkout's {base} was fast-forwarded"),
+        ),
+        Err(e) => (
+            false,
+            format!(
+                "the main checkout's {base} couldn't be fast-forwarded, so it wasn't updated ({})",
+                first_line(&e)
+            ),
+        ),
     }
 }
 
@@ -315,7 +425,18 @@ fn clean_git() -> Command {
         }
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0").env("GIT_PAGER", "cat");
-    cmd.args(["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.alternateRefsCommand=true", "-c", "protocol.ext.allow=never", "-c", "gc.auto=0"]);
+    cmd.args([
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.alternateRefsCommand=true",
+        "-c",
+        "protocol.ext.allow=never",
+        "-c",
+        "gc.auto=0",
+    ]);
     cmd
 }
 
@@ -329,18 +450,30 @@ fn scratch_git(scratch: &Path) -> Command {
 fn run_raw(mut cmd: Command, input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     use std::io::Write as _;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     let mut child = cmd.spawn().map_err(|e| format!("cannot run git: {e}"))?;
     if let Some(input) = input {
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin.write_all(input).map_err(|e| format!("cannot write to git: {e}"))?;
+        stdin
+            .write_all(input)
+            .map_err(|e| format!("cannot write to git: {e}"))?;
     }
-    let out = child.wait_with_output().map_err(|e| format!("git failed: {e}"))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("git failed: {e}"))?;
     if out.status.success() {
         Ok(out.stdout)
     } else {
         let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if said.is_empty() { "git failed".to_string() } else { said })
+        Err(if said.is_empty() {
+            "git failed".to_string()
+        } else {
+            said
+        })
     }
 }
 
@@ -353,7 +486,11 @@ fn url_refused(url: &str) -> Option<&'static str> {
     if url.starts_with('-') {
         return Some("it starts with a dash");
     }
-    if url.split('/').next().is_some_and(|scheme| scheme.contains("::")) {
+    if url
+        .split('/')
+        .next()
+        .is_some_and(|scheme| scheme.contains("::"))
+    {
         return Some("it names a helper transport");
     }
     None
@@ -363,20 +500,42 @@ fn url_refused(url: &str) -> Option<&'static str> {
 /// and no git run inside the repository. Only for a record that kept no remote.
 fn origin_of(repo: &Path) -> Option<String> {
     let mut cmd = clean_git();
-    cmd.current_dir("/").arg("config").arg("--file").arg(repo.join(".git/config")).args(["--get", "remote.origin.url"]);
+    cmd.current_dir("/")
+        .arg("config")
+        .arg("--file")
+        .arg(repo.join(".git/config"))
+        .args(["--get", "remote.origin.url"]);
     let url = run(cmd).ok().filter(|u| !u.is_empty())?;
     // A path relative to the repository means the same from anywhere once it is joined to it.
-    Some(if url.starts_with("./") || url.starts_with("../") { repo.join(&url).display().to_string() } else { url })
+    Some(if url.starts_with("./") || url.starts_with("../") {
+        repo.join(&url).display().to_string()
+    } else {
+        url
+    })
 }
 
 /// Decide one request, and push it if it is what the person approved. Every way out says why and
 /// carries what it went by.
 fn judge(request: &Request) -> LandResult {
     let mut on = JudgedOn::default();
-    let mut result = LandResult { run: request.run.clone(), n: request.n, head: request.head.clone(), verdict: REFUSED.to_string(), why: None, judged_on: JudgedOn::default(), pushed: None, checkout: None, at: Timestamp::now() };
+    let mut result = LandResult {
+        run: request.run.clone(),
+        n: request.n,
+        head: request.head.clone(),
+        verdict: REFUSED.to_string(),
+        why: None,
+        judged_on: JudgedOn::default(),
+        pushed: None,
+        checkout: None,
+        at: Timestamp::now(),
+    };
     let outcome = judge_and_push(request, &mut on);
     let (verdict, why, pushed) = match outcome {
-        Ok(Outcome::Landed { pushed_now }) => (LANDED, (!pushed_now).then(|| "the remote's base already had it: nothing pushed".to_string()), Some(request.head.clone())),
+        Ok(Outcome::Landed { pushed_now }) => (
+            LANDED,
+            (!pushed_now).then(|| "the remote's base already had it: nothing pushed".to_string()),
+            Some(request.head.clone()),
+        ),
         Err((verdict, why)) => (verdict, Some(why), None),
     };
     result.verdict = verdict.to_string();
@@ -398,7 +557,10 @@ fn refuse<T>(why: impl Into<String>) -> Result<T, Refusal> {
 }
 
 fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refusal> {
-    let r = ChangeRef { run: request.run.clone(), n: request.n };
+    let r = ChangeRef {
+        run: request.run.clone(),
+        n: request.n,
+    };
     let head = request.head.as_str();
     if !is_sha(head) {
         return refuse("the request doesn't name a commit by its full id");
@@ -419,7 +581,11 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
         return refuse("it was approved to land as a pull request, not directly");
     }
     if c.state != ChangeState::Landing {
-        return refuse(format!("change {} is {}, not being landed", r.display(), c.state.as_str()));
+        return refuse(format!(
+            "change {} is {}, not being landed",
+            r.display(),
+            c.state.as_str()
+        ));
     }
     // 2. Where it goes: the record's repository, base and remote. Nothing here is the request's.
     let repo = Path::new(&d.repo);
@@ -428,7 +594,11 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
         return refuse(format!("{} is not a repository's main checkout", d.repo));
     }
     let base = d.base.as_str();
-    if base.is_empty() || base.starts_with('-') || base.contains([' ', ':', '^', '~', '*', '?', '[', '\\']) || base.contains("..") {
+    if base.is_empty()
+        || base.starts_with('-')
+        || base.contains([' ', ':', '^', '~', '*', '?', '[', '\\'])
+        || base.contains("..")
+    {
         return refuse(format!("{base:?} is not a branch name"));
     }
     let (url, from) = match d.remote.clone() {
@@ -441,21 +611,33 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
     on.remote = Some(url.clone());
     on.remote_from = Some(from.to_string());
     if let Some(why) = url_refused(&url) {
-        return refuse(format!("its remote {url:?} isn't one otto pushes to: {why}"));
+        return refuse(format!(
+            "its remote {url:?} isn't one otto pushes to: {why}"
+        ));
     }
     // 3. A scratch repository of the step's own, with the real one's objects and nothing else of it.
-    let scratch = dir().join("scratch").join(format!("{}-{}.git", request.run, request.n));
+    let scratch = dir()
+        .join("scratch")
+        .join(format!("{}-{}.git", request.run, request.n));
     let _ = std::fs::remove_dir_all(&scratch);
     let made = (|| -> Result<(), String> {
         std::fs::create_dir_all(&scratch).map_err(|e| e.to_string())?;
         let mut init = clean_git();
-        init.current_dir(&scratch).args(["init", "--quiet", "--bare", "."]);
+        init.current_dir(&scratch)
+            .args(["init", "--quiet", "--bare", "."]);
         run(init)?;
         let objects = objects.canonicalize().map_err(|e| e.to_string())?;
-        std::fs::write(scratch.join("objects/info/alternates"), format!("{}\n", objects.display())).map_err(|e| e.to_string())
+        std::fs::write(
+            scratch.join("objects/info/alternates"),
+            format!("{}\n", objects.display()),
+        )
+        .map_err(|e| e.to_string())
     })();
     if let Err(e) = made {
-        return refuse(format!("couldn't make a scratch repository under {}: {e}", dir().display()));
+        return refuse(format!(
+            "couldn't make a scratch repository under {}: {e}",
+            dir().display()
+        ));
     }
     let git = |args: &[&str]| {
         let mut cmd = scratch_git(&scratch);
@@ -465,33 +647,83 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
     let outcome = (|| {
         // The remote's base, asked of the remote now: the checkout's origin/<base> is a ref a wake can write.
         let refspec = format!("+refs/heads/{base}:refs/landing/base");
-        if let Err(e) = git(&["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", &url, &refspec]) {
-            return Err((REMOTE_REFUSED, format!("couldn't fetch {base} from {url}: {}", first_line(&e))));
+        if let Err(e) = git(&[
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "--no-recurse-submodules",
+            "--",
+            &url,
+            &refspec,
+        ]) {
+            return Err((
+                REMOTE_REFUSED,
+                format!("couldn't fetch {base} from {url}: {}", first_line(&e)),
+            ));
         }
-        let b = git(&["rev-parse", "--verify", "--quiet", "refs/landing/base^{commit}"]).map_err(|_| (REMOTE_REFUSED, format!("{url} gave no {base}")))?;
+        let b = git(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/landing/base^{commit}",
+        ])
+        .map_err(|_| (REMOTE_REFUSED, format!("{url} gave no {base}")))?;
         on.remote_base = Some(b.clone());
         if git(&["cat-file", "-e", &format!("{head}^{{commit}}")]).is_err() {
-            return refuse(format!("{} is not a commit in {}", crate::changes::short_sha(head), d.repo));
+            return refuse(format!(
+                "{} is not a commit in {}",
+                crate::changes::short_sha(head),
+                d.repo
+            ));
         }
         // 4. Once only: what an earlier pass of this step pushed and didn't live to record.
         if git(&["merge-base", "--is-ancestor", head, &b]).is_ok() {
-            let ours = read_result(&request.run, request.n).is_some_and(|p| p.head == head && p.verdict == PUSHING && p.judged_on.approved_sha.as_deref() == Some(a.sha.as_str()));
+            let ours = read_result(&request.run, request.n).is_some_and(|p| {
+                p.head == head
+                    && p.verdict == PUSHING
+                    && p.judged_on.approved_sha.as_deref() == Some(a.sha.as_str())
+            });
             if ours || head == a.sha {
                 return Ok(Outcome::Landed { pushed_now: false });
             }
             return refuse(format!("the remote's {base} already contains {}, and it isn't the approved commit or one this step pushed", crate::changes::short_sha(head)));
         }
         if git(&["merge-base", "--is-ancestor", &b, head]).is_err() {
-            return Err((BASE_MOVED, format!("{} doesn't contain the remote's {base} ({}): rebase onto it and ask again", crate::changes::short_sha(head), crate::changes::short_sha(&b))));
+            return Err((
+                BASE_MOVED,
+                format!(
+                    "{} doesn't contain the remote's {base} ({}): rebase onto it and ask again",
+                    crate::changes::short_sha(head),
+                    crate::changes::short_sha(&b)
+                ),
+            ));
         }
         // The whole defence: the approved commit, or the approved patch on the remote's base.
         if head != a.sha {
             let mut diff = scratch_git(&scratch);
-            diff.args(["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", &b, head]);
-            let patch = run_raw(diff, None).map_err(|e| (REFUSED, format!("couldn't read its patch: {}", first_line(&e))))?;
+            diff.args([
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--find-renames",
+                &b,
+                head,
+            ]);
+            let patch = run_raw(diff, None).map_err(|e| {
+                (
+                    REFUSED,
+                    format!("couldn't read its patch: {}", first_line(&e)),
+                )
+            })?;
             let mut id = scratch_git(&scratch);
             id.args(["patch-id", "--stable"]);
-            let id = run_raw(id, Some(&patch)).ok().and_then(|o| String::from_utf8_lossy(&o).split_whitespace().next().map(str::to_string));
+            let id = run_raw(id, Some(&patch)).ok().and_then(|o| {
+                String::from_utf8_lossy(&o)
+                    .split_whitespace()
+                    .next()
+                    .map(str::to_string)
+            });
             on.patch_id = id.clone();
             if id.as_deref() != Some(a.patch_id.as_str()) {
                 return refuse(format!(
@@ -503,11 +735,41 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
             }
         }
         // 5. Said before the push, so a step that dies here is known to have got this far.
-        let pushing = LandResult { run: request.run.clone(), n: request.n, head: head.to_string(), verdict: PUSHING.to_string(), why: None, judged_on: on.clone(), pushed: None, checkout: None, at: Timestamp::now() };
-        write_result(&pushing).map_err(|e| (REFUSED, format!("couldn't record the landing before pushing: {}", e.message)))?;
-        match git(&["push", "--quiet", "--no-verify", "--no-recurse-submodules", "--", &url, &format!("{head}:refs/heads/{base}")]) {
+        let pushing = LandResult {
+            run: request.run.clone(),
+            n: request.n,
+            head: head.to_string(),
+            verdict: PUSHING.to_string(),
+            why: None,
+            judged_on: on.clone(),
+            pushed: None,
+            checkout: None,
+            at: Timestamp::now(),
+        };
+        write_result(&pushing).map_err(|e| {
+            (
+                REFUSED,
+                format!("couldn't record the landing before pushing: {}", e.message),
+            )
+        })?;
+        match git(&[
+            "push",
+            "--quiet",
+            "--no-verify",
+            "--no-recurse-submodules",
+            "--",
+            &url,
+            &format!("{head}:refs/heads/{base}"),
+        ]) {
             Ok(_) => Ok(Outcome::Landed { pushed_now: true }),
-            Err(e) => Err((REMOTE_REFUSED, e.lines().filter(|l| !l.trim().is_empty()).take(3).collect::<Vec<_>>().join(" / "))),
+            Err(e) => Err((
+                REMOTE_REFUSED,
+                e.lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" / "),
+            )),
         }
     })();
     let _ = std::fs::remove_dir_all(&scratch);

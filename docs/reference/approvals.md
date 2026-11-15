@@ -29,6 +29,7 @@ record. The run's index says what state a change is in; it is not the authority 
 | `allowChanges` | As a pull request: what the babysitter may change without you, in your words |
 | `note` | Your `--note`, if you gave one |
 | `at` | When you approved |
+| `remote` | The repository's `origin` address when you approved: where the landing step pushes it. Absent on an approval from before it was kept, for which the step reads the repository's own `remote.origin.url` |
 | `mergeAsked` | `{at, head}`: when you said to merge its pull request (`otto changes merge`), and the commit the pull request had then |
 | `answered` | `{at, version, by}`: when you answered what the babysitter asked about its pull request (`otto changes answer`), the latest version then, and who answered. It lets the babysitter's fix through as the one next version. A new approval clears it |
 
