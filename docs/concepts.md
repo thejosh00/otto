@@ -408,8 +408,10 @@ otto changes merge 3/2             # its pull request is approved and passing: m
 - **What you approve is what lands.** The patch is kept as it was submitted, and your approval names
   that version, its commit and its `git patch-id`. You name the version you looked at
   (`3/2@v1`; the web UI sends the one it showed): if a newer one arrived since, approving is refused
-  (exit 2, or 409) and nothing is approved unseen. Just before it pushes, the lander checks the commit
-  it is about to put on the base (`otto state change check`): the approved commit, or a clean rebase of
+  (exit 2, or 409) and nothing is approved unseen. The lander doesn't push to a base branch: it rebases and tests, checks the commit
+  it means to land (`otto state change check`), and asks otto to land it (`otto state change request-land`). Once that wake is over
+  otto judges the commit itself, outside any wake, against the approval on record and the remote's base, and pushes it with the
+  repository's hooks and git configuration out of reach. What passes is the same either time: the approved commit, or a clean rebase of
   the same patch onto a base that moved. If the code around it changed, it comes back to you as a new
   version; if it conflicts, it goes back to its author.
 - **Your approval is kept outside the run.** Approving writes a record under `$OTTO_HOME/approvals/`
@@ -422,9 +424,10 @@ otto changes merge 3/2             # its pull request is approved and passing: m
   you first — and flags a change over a few hundred lines, or two open changes that touch the same
   file. The inbox doesn't list them; it says how many wait, with a link.
 - **Only the lander lands.** It is one of otto's [system agents](#system-agents), named in
-  `config.json` (`otto config lander <run>`), and otto refuses the landing commands from any other run. So only the lander needs to be able to push; the runs that
-  write code can run under a launcher that can't. otto checks what it says, too: a change is landed
-  only once its base branch contains it, and cleaned up only once its worktree and branch are gone.
+  `config.json` (`otto config lander <run>`), and otto refuses the landing commands from any other run. No run needs to be able to push to a base branch, the lander included: it asks, and otto pushes. (A pull request still
+  takes a lander with `gh`, so one that runs in a sandbox is not handed a change approved as a pull request, and the change says so.)
+  otto doesn't take the lander's word either: a change is landed
+  only once otto has put it on its base branch itself, and cleaned up only once its worktree and branch are gone.
 - **What comes after landing stays with its author.** Installing it, marking a ticket, telling someone:
   the author is told it landed, and woken to do it.
 - **Or as a pull request.** A process with `--mode pr`, or `otto changes approve 3/2@v1 --pr` for one

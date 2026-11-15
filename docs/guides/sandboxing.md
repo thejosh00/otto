@@ -269,13 +269,16 @@ Not a promise past the list above:
 - **Files in a writable repo that run later:** `.envrc`, `.vscode/`, `Makefile`, `.mcp.json`. Under a person's
   own tools these run with everything. Give a run its worktree and not the main checkout where that matters.
 - **A worktree's `.git` file** can be pointed at a directory of a wake's own making, with hooks in it, which
-  runs in whoever next uses git in that worktree (the lander, until 1.5).
+  runs in whoever next uses git in that worktree: the lander. Since 1.5 the push to a base branch isn't made
+  there: otto makes it from a repository of its own, so a sandboxed lander's wake has nothing to push with.
 - **`~/Library/Caches`** stays writable, as macOS frameworks keep caches there. pip's and Go's are moved to the
   run's own; anything else that caches there and runs it later isn't.
 - **Signals.** A wake can kill other processes of yours.
 - **Skills linked from a closed project** (`~/.claude/skills/x -> ~/workspace/otto/skills/x`) can't be read unless
   the record lists them.
-- **What's listed under 1.5** is separate work. 1.4 is done on both sides: approving writes the record under
+- **1.5 covers changes that land by a push.** The lander asks (`otto state change request-land`) and otto pushes, outside
+  the wake; `otto state change landed` from the lander is refused for them. A pull request still needs `gh` and a lander
+  that isn't sandboxed: a sandboxed lander is not handed one, and the change says it needs a lander with `gh`. 1.4 is done on both sides: approving writes the record under
   `approvals/`, and `otto state change check` passes only on it.
 - **A rollback past this comparison.** An older binary ignores the record, so `run.json` decides again until it's reinstalled.
   The same goes for approvals: after `./install.sh --rollback` to a binary from before the check read the approval

@@ -558,7 +558,8 @@ fn two_changes_on_one_base_land_in_the_order_asked() {
     );
 }
 
-/// The wake's parent was killed between the request and the step: one poke pass lands it, once.
+/// A request is there and no wake's parent ran the step for it: one poke pass lands it, once.
+/// Nothing is killed here; `a_parent_killed_after_the_request_leaves_it_for_poke_to_land_once` does that.
 #[test]
 fn a_request_the_parent_never_got_to_is_landed_once_by_poke() {
     let s = Scratch::new();

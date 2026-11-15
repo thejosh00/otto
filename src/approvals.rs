@@ -9,9 +9,9 @@
 //! record's `write` list opens it). It holds everything a check needs about what was approved, so
 //! none of it has to come from the index.
 //!
-//! Nothing reads it as the authority yet: `changes::check` still reads the run's index. That is
-//! the next change. Until then the record is written, kept in step by the person's commands, and
-//! unused.
+//! It is the authority: `changes::check`, `claim` and `due` read what was approved, where and how
+//! it lands from here (`changes::on_record`), and so does the landing step (`crate::landing`),
+//! which pushes an approved change itself. The run's index gives only where a change is.
 
 use std::path::PathBuf;
 

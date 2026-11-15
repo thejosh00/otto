@@ -161,6 +161,11 @@ Landing this way uses no `gh` and no push.
 
 ## Opening its pull request
 
+Everything about a pull request, here and in the sections after, takes `gh` and a push to its
+branch. A lander that runs in a sandbox has neither, so it isn't handed these: `due` leaves them
+out and says so, and `claim` refuses with `needs a lander with gh`. Leave such a change where it
+is; the person sees why on the change.
+
 The person approved it as a pull request: it is reviewed there, and you keep it moving. Lock, claim,
 fetch, as for landing one. No rebase — the pull request shows whether it merges.
 

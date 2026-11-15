@@ -385,9 +385,11 @@ then tell them    → otto state message <id> --kind report --title "Today's rep
 
 When the work changes code in a repository, it goes back to the person as a **change**: commits on
 a branch of their own, which the person reviews on one page and a run of its own — the lander —
-puts on the base branch once they approve — pushed, or as a pull request it keeps moving. You never
-push, merge or rebase the base branch yourself, and you don't open or comment on the PR: that is the
-lander's, and only the lander may.
+gets onto the base branch once they approve — pushed, or as a pull request it keeps moving. You never
+push, merge or rebase the base branch yourself, and you don't open or comment on the PR. The lander
+rebases and tests an approved change and asks otto to land it; the push to the base branch is otto's
+own, made outside any wake once it has checked the commit against the approval. A pull request is
+the lander's to open and keep moving, and only the lander may.
 
 ```
 otto config project <repo>               # its process: how a change starts here, and what approving it does
@@ -411,7 +413,7 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
   change. What you wrap decides what the work is; how code reaches its base branch is otto's,
   because that is the step that can't be undone. Do the rest of what it says alongside the change
   (record it in its app, write its hand-back note), but not its way of landing: a message asking
-  the person to merge is what the change already asks, and a push is the lander's. Whatever it
+  the person to merge is what the change already asks, and a push is never a wake's. Whatever it
   says follows the merge, like restarting the service, waits for the note that it landed.
 - **One concern a change.** A person reviews it in a sitting, so two unrelated fixes are two
   branches and two changes. Over a few hundred lines, otto says so; split it if it is more than one
