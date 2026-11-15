@@ -690,7 +690,7 @@ fn git_run(dir: &Path, args: &[&str], input: Option<&[u8]>, index: Option<&Path>
 }
 
 /// Trimmed at the end only: `status --porcelain` starts a line with a space that means something.
-fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_raw(dir, args, None).map(|out| String::from_utf8_lossy(&out).trim_end().to_string())
 }
 
@@ -727,7 +727,7 @@ pub fn base_ref(repo: &Path, base: &str) -> String {
     if ok(repo, &["rev-parse", "--verify", "--quiet", &remote]) { format!("origin/{base}") } else { base.to_string() }
 }
 
-fn rev(repo: &Path, what: &str) -> Result<String, OttoError> {
+pub(crate) fn rev(repo: &Path, what: &str) -> Result<String, OttoError> {
     git(repo, &["rev-parse", "--verify", "--quiet", &format!("{what}^{{commit}}")]).map_err(|_| OttoError::usage(format!("{what}: no such commit in {}", repo.display())))
 }
 
@@ -809,7 +809,7 @@ fn uncommitted(worktree: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn short_sha(sha: &str) -> &str {
+pub(crate) fn short_sha(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
 }
 
@@ -1500,6 +1500,7 @@ pub fn approve(refs: &[Looked], how: Option<How>, note: Option<&str>) -> Result<
                 allow_changes: decision.allow_changes.clone(),
                 note: decision.note.clone(),
                 at: decision.at,
+                remote: origin_url(&c.repo),
                 merge_asked: None,
                 answered: None,
             })
@@ -2012,27 +2013,73 @@ pub fn landed(lander: &str, r: &ChangeRef, sha: &str, note: Option<&str>) -> Res
                 c.repo
             )));
         }
-        c.landed = Some(Landed { sha: sha.clone(), at: Timestamp::now(), local_base, note: note.clone() });
-        c.enter(ChangeState::Landed);
-        let what = format!("landed on {} at {}{}", c.base, short_sha(&sha), note.as_ref().map(|n| format!(" — {n}")).unwrap_or_default());
-        c.moment("lander", &what);
-        let checkout = if local_base {
-            String::new()
-        } else {
-            format!("\n\nThe main checkout's own {} doesn't have it yet; anything you run from there runs the old code until it is updated.", c.base)
-        };
-        let body = format!(
-            "It landed on {} at {}.{}{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing \
-             more to the change itself.",
-            c.base,
-            short_sha(&sha),
-            note.as_ref().map(|n| format!(" The lander says: {n}")).unwrap_or_default()
-        );
-        tell_author(path, state, c, &body)?;
-        wake_soon(path, state, WakeCause::ChangeLanded)?;
-        moved(path, c, &lander, &what)?;
+        mark_landed(path, state, c, &lander, &sha, local_base, note)?;
         Ok(c.clone())
     })
+}
+
+/// What landing does to the change once its commit is known to be on the base branch: marked
+/// landed, its author told and woken. `landed` (the lander said so, otto looked) and the landing
+/// step (`crate::landing`, which pushed it) both end here.
+fn mark_landed(path: &Path, state: &mut RunState, c: &mut Change, lander: &str, sha: &str, local_base: bool, note: Option<String>) -> Result<(), OttoError> {
+    let (sha, lander) = (sha.to_string(), lander.to_string());
+    c.landed = Some(Landed { sha: sha.clone(), at: Timestamp::now(), local_base, note: note.clone() });
+    c.enter(ChangeState::Landed);
+    let what = format!("landed on {} at {}{}", c.base, short_sha(&sha), note.as_ref().map(|n| format!(" — {n}")).unwrap_or_default());
+    c.moment("lander", &what);
+    let checkout = if local_base {
+        String::new()
+    } else {
+        format!("\n\nThe main checkout's own {} doesn't have it yet; anything you run from there runs the old code until it is updated.", c.base)
+    };
+    let body = format!(
+        "It landed on {} at {}.{}{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing \
+         more to the change itself.",
+        c.base,
+        short_sha(&sha),
+        note.as_ref().map(|n| format!(" The lander says: {n}")).unwrap_or_default()
+    );
+    tell_author(path, state, c, &body)?;
+    wake_soon(path, state, WakeCause::ChangeLanded)?;
+    moved(path, c, &lander, &what)?;
+    Ok(())
+}
+
+/// The landing step pushed `sha` to the change's base branch itself (`crate::landing`): the change
+/// is marked landed without asking this checkout's refs, which a wake can write.
+pub(crate) fn landed_by_step(lander: &str, r: &ChangeRef, sha: &str, local_base: bool, note: Option<&str>) -> Result<Change, OttoError> {
+    with_change(r, |path, state, c| {
+        refuse_unless(c, &[ChangeState::Landing], "marked landed")?;
+        mark_landed(path, state, c, lander, sha, local_base, note.map(str::to_string))?;
+        Ok(c.clone())
+    })
+}
+
+/// The landing step says what it decided about a change, on the change, without moving it.
+pub(crate) fn step_said(r: &ChangeRef, what: &str) -> Result<(), OttoError> {
+    with_change(r, |path, _, c| {
+        c.moment("otto", what);
+        moved(path, c, "otto", what)
+    })
+}
+
+/// The change as its index has it, its run, and the approval on record for it.
+pub(crate) fn for_step(r: &ChangeRef) -> Result<(Change, Option<OnRecord>), OttoError> {
+    let state = crate::state::read_run(&r.run)?;
+    let dir = crate::paths::run_dir(&r.run)?;
+    let c = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
+    let a = on_record(&state, &c);
+    Ok((c, a))
+}
+
+/// Wake the lander now, when it is asleep: the landing step has a result for it.
+pub(crate) fn wake_lander(lander: &str) -> Result<(), OttoError> {
+    crate::state::transaction(lander, |path, state| wake_soon(path, state, WakeCause::ChangeLanded))
+}
+
+/// Where the repository's `origin` is, as its own config says when the person approves.
+fn origin_url(repo: &str) -> Option<String> {
+    git(Path::new(repo), &["config", "--get", "remote.origin.url"]).ok().map(|u| u.trim().to_string()).filter(|u| !u.is_empty())
 }
 
 /// The lander couldn't land it — a conflict, tests red after a rebase — and it goes back to its

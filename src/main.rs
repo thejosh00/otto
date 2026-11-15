@@ -20,6 +20,7 @@ mod gate;
 mod human;
 mod inbox;
 mod install;
+mod landing;
 mod launchd;
 mod liveness;
 mod messages;

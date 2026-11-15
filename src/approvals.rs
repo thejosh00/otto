@@ -49,6 +49,10 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub at: Timestamp,
+    /// Where the repository's `origin` was when the person approved: what the landing step
+    /// (`crate::landing`) pushes to. Absent on a record written before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
     /// The person said to merge its pull request, and the commit the pull request had when they did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_asked: Option<MergeAsked>,

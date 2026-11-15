@@ -26,6 +26,9 @@ pub enum ChangeCommand {
     Claim(LanderArgs),
     /// The lander: refuse to push a commit that isn't what the person approved — exit 2 means DO NOT ACT
     Check(CheckArgs),
+    /// The lander: ask otto to land this commit. otto checks it against the person's approval and
+    /// pushes it itself, once the wake is over; the result is in `due` at the next wake
+    RequestLand(CheckArgs),
     /// The lander: it is on its base branch now. otto looks, and tells its author
     Landed(LandedArgs),
     /// The lander: it was rebased onto a base that moved and its patch changed, so it goes back to the person
@@ -399,6 +402,16 @@ pub fn run(command: ChangeCommand) -> Result<(), OttoError> {
         }
         ChangeCommand::Check(a) => {
             println!("{}", changes::check(&a.lander, &ChangeRef::parse(&a.change)?, &a.head)?);
+            Ok(())
+        }
+        ChangeCommand::RequestLand(a) => {
+            let r = ChangeRef::parse(&a.change)?;
+            let request = crate::landing::request(&a.lander, &r, &a.head)?;
+            println!(
+                "asked: otto lands {} as {} once this wake is over, if it is what the person approved. Stop work on this change; `otto state change due` says how it went at the next wake",
+                changes::short_sha(&request.head),
+                r.display()
+            );
             Ok(())
         }
         ChangeCommand::Landed(a) => {

@@ -367,7 +367,11 @@ fn run_one_wake(args: &WakeArgs, exec: &mut dyn Exec) -> Result<(), OttoError> {
         limit: if output.code != 0 { transcript::limit_for(&args.id, &session) } else { None },
     };
 
-    finish_wake(&id, &run_path, started_at, &output, &result)
+    let finished = finish_wake(&id, &run_path, started_at, &output, &result);
+    // The lander asked for something to be landed: otto does it here, outside the wake, with no
+    // model. What goes wrong in it is its own, and never makes a wake that completed a failed one.
+    crate::landing::after_wake(&id);
+    finished
 }
 
 /// Account, validate, record. Runs on every path out of a spawn, including a kill.
