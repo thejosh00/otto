@@ -697,3 +697,95 @@ fn nothing_a_wake_planted_in_the_repository_runs_or_redirects_the_push() {
         );
     }
 }
+
+/// A commit already on the remote's base is a landing only when it is the approved commit or one
+/// this step was pushing when it died: a rebased commit somebody else put there is not marked
+/// landed on the lander's word, and the one the step was pushing is recorded without a second push.
+#[test]
+fn a_rebased_commit_already_on_the_base_counts_only_if_the_step_was_pushing_it() {
+    for step_was_pushing in [false, true] {
+        let s = Scratch::new();
+        let (r, sha) = s.approved("a");
+        let elsewhere = s.root.join("elsewhere");
+        git(
+            &s.root,
+            &[
+                "clone",
+                "-q",
+                s.origin().to_str().unwrap(),
+                elsewhere.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(elsewhere.join("theirs"), "theirs").unwrap();
+        git(&elsewhere, &["add", "."]);
+        git(&elsewhere, &["commit", "-q", "-m", "theirs"]);
+        git(&elsewhere, &["push", "-q", "origin", "main"]);
+        git(&s.repo(), &["fetch", "-q", "origin"]);
+        git(&s.repo(), &["rebase", "-q", "origin/main", "a"]);
+        git(&s.repo(), &["checkout", "-q", "main"]);
+        let rebased = git(&s.repo(), &["rev-parse", "a"]);
+        git(
+            &s.repo(),
+            &[
+                "push",
+                "-q",
+                "origin",
+                &format!("{rebased}:refs/heads/main"),
+            ],
+        );
+        if step_was_pushing {
+            let dir = s.root.join("home/landings").join(&s.author);
+            std::fs::create_dir_all(&dir).unwrap();
+            let pushing = serde_json::json!({"run": s.author, "n": 1, "head": rebased, "verdict": "pushing", "judgedOn": {"approvedSha": sha}, "at": "2026-01-01T00:00:00Z"});
+            std::fs::write(dir.join("1.json"), pushing.to_string()).unwrap();
+        }
+        s.request(&r, &rebased);
+        s.wake();
+        let result = s.result(1);
+        if step_was_pushing {
+            assert_eq!(result["verdict"], "landed", "{result}");
+            assert!(
+                result["why"].as_str().unwrap().contains("nothing pushed"),
+                "{result}"
+            );
+            assert_eq!(s.state_of(1), "landed");
+        } else {
+            assert_eq!(result["verdict"], "refused", "{result}");
+            assert!(
+                result["why"].as_str().unwrap().contains("already contains"),
+                "{result}"
+            );
+            assert_eq!(s.state_of(1), "landing");
+        }
+        assert_eq!(s.remote("main"), rebased);
+    }
+}
+
+/// The step failing is its own failure: the wake that asked still completed, and nothing was pushed.
+#[test]
+fn a_step_that_cannot_run_does_not_fail_the_wake() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    let before = s.remote("main");
+    // Where the step keeps its results is a file: it can make no scratch repository and record nothing.
+    std::fs::write(s.root.join("home/landings"), "in the way").unwrap();
+    s.request(&r, &sha);
+    let completed = s.lander_events("wake-complete").len();
+    s.wake();
+    assert_eq!(
+        s.lander_events("wake-complete").len(),
+        completed + 1,
+        "the wake completed"
+    );
+    assert_eq!(
+        s.remote("main"),
+        before,
+        "nothing pushed without a record of it"
+    );
+    assert_eq!(s.state_of(1), "landing");
+    assert_eq!(
+        s.requests_left(),
+        1,
+        "the request waits for a step that can run"
+    );
+}
