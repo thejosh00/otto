@@ -6,6 +6,11 @@
 //! `install.sh`, detached in its own session so it outlives the agent and service it restarts.
 //! The result record says `pending` until a later pass (the next step, or poke) reads how it went;
 //! only then is the change marked landed and its author told, with how the install went.
+//!
+//! Only a landing the step itself pushes is installed. A pull request the lander records as merged
+//! (`otto state change landed`) installs nothing: that runs inside the lander's wake, where a model
+//! would be starting the install. The otto repository lands by a push, so every landing there is
+//! covered; if it ever moves to pull requests, installing after a merge is built with that work.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
