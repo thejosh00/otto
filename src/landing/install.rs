@@ -317,3 +317,53 @@ pub(super) fn settle(lander: &str, result: LandResult) -> String {
         format!("landing {}: installed {short}", r.display())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Never backwards: a clean build that already has the landed commit is left; a `-dirty` one
+    /// is replaced; a build ahead of nothing is replaced; another checkout is not otto's.
+    #[test]
+    fn the_installed_build_is_only_replaced_by_something_newer_or_when_dirty() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().canonicalize().unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let one = git(&repo, &["rev-parse", "HEAD"]);
+        git(&repo, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let two = git(&repo, &["rev-parse", "HEAD"]);
+        let linked = Some(repo.as_path());
+        assert_eq!(decide(&repo, linked, &two[..7], &one), Decision::UpToDate);
+        assert_eq!(decide(&repo, linked, &two[..7], &two), Decision::UpToDate);
+        assert_eq!(
+            decide(&repo, linked, &format!("{}-dirty", &two[..7]), &one),
+            Decision::Install { dirty: true }
+        );
+        assert_eq!(
+            decide(&repo, linked, &one[..7], &two),
+            Decision::Install { dirty: false }
+        );
+        assert_eq!(decide(&repo, None, &one[..7], &two), Decision::NotOtto);
+        assert_eq!(
+            decide(&repo, Some(Path::new("/elsewhere")), &one[..7], &two),
+            Decision::NotOtto
+        );
+        assert_eq!(
+            decide(&repo, linked, "commit unknown", &two),
+            Decision::NotOtto
+        );
+        assert_eq!(decide(&repo, linked, "1234567", &two), Decision::NotOtto);
+    }
+}

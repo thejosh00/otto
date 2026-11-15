@@ -1071,3 +1071,223 @@ fn the_lander_saying_it_landed_is_refused_and_told_to_ask() {
     let due = s.ok(&["state", "change", "due", &s.lander, "--json"]);
     assert!(due.contains("\"remote\""), "{due}");
 }
+
+// ---- Installing after a landing on the otto repository (src/landing/install.rs) ----
+
+/// A stand-in for install.sh: it says what it was given, and on request does what `otto agent
+/// start` does to the job that started it (kills its process group), fails, or dies.
+const STAND_IN: &str = r#"#!/bin/sh
+root="$OTTO_HOME/.."
+{
+	echo "args: $*"
+	echo "target: ${CARGO_TARGET_DIR-unset}"
+	echo "cwd: $(pwd)"
+	echo "head: $(git rev-parse HEAD)"
+	echo "hooks: $(ls .git/hooks 2>/dev/null | grep -v sample | tr '\n' ' ')"
+} >"$root/install-ran"
+if [ -f "$root/want-kill" ]; then
+	i=0
+	while [ ! -s "$root/kill-pgid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+	kill -9 -- -"$(cat "$root/kill-pgid")" 2>/dev/null
+	sleep 0.3
+fi
+if [ -f "$root/want-die" ]; then
+	touch "$root/install-done"
+	kill -9 $PPID $$
+fi
+[ -f "$root/want-fail" ] && { echo "the build broke"; touch "$root/install-done"; exit 3; }
+touch "$root/install-done"
+"#;
+
+impl Scratch {
+    /// Make the scratch repository look like the otto checkout: the marker files and a stand-in
+    /// install.sh on main. `linked`: the skills link points at it. `built`: its history holds the
+    /// commit the otto under test was built from.
+    fn otto_repo(linked: bool, built: bool) -> Scratch {
+        let s = Scratch::new();
+        let repo = s.repo();
+        std::fs::create_dir_all(repo.join("harness")).unwrap();
+        std::fs::write(repo.join("harness/wake.md"), "harness").unwrap();
+        std::fs::create_dir_all(repo.join("skills/manage-pr")).unwrap();
+        std::fs::write(repo.join("skills/manage-pr/SKILL.md"), "skill").unwrap();
+        std::fs::write(repo.join("install.sh"), STAND_IN).unwrap();
+        std::fs::set_permissions(repo.join("install.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-q", "-m", "otto"]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+        if built {
+            let version = s.ok(&["--version"]);
+            let commit = version.split('(').nth(1).and_then(|v| v.split(')').next()).unwrap().trim_end_matches("-dirty").to_string();
+            git(&repo, &["fetch", "-q", env!("CARGO_MANIFEST_DIR"), "HEAD"]);
+            git(&repo, &["branch", "built", &commit]);
+        }
+        let skills = s.root.join("userhome/.claude/skills");
+        std::fs::create_dir_all(&skills).unwrap();
+        let target = if linked { repo.join("skills/manage-pr") } else { s.root.join("elsewhere/skills/manage-pr") };
+        std::os::unix::fs::symlink(target, skills.join("manage-pr")).unwrap();
+        s
+    }
+
+    /// otto in a process group of its own, as a launchd job is, with CARGO_TARGET_DIR set; the
+    /// group is written where the stand-in install looks for one to kill.
+    fn otto_as_a_job(&self, args: &[&str]) {
+        use std::os::unix::process::CommandExt;
+        let mut child = support::otto_command()
+            .args(args)
+            .current_dir(self.repo())
+            .env("OTTO_HOME", self.root.join("home"))
+            .env("HOME", self.root.join("userhome"))
+            .env("TMUX_TMPDIR", &self.root)
+            .env("OTTO_BIN", OTTO)
+            .env("CARGO_TARGET_DIR", self.root.join("shared-target"))
+            .env_remove("TMUX")
+            .env_remove("OTTO_RUN_ID")
+            .env_remove("OTTO_RUN_DIR")
+            .env_remove("OTTO_CHAT")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        std::fs::write(self.root.join("kill-pgid"), child.id().to_string()).unwrap();
+        let _ = child.wait();
+    }
+
+    fn flag(&self, name: &str) {
+        std::fs::write(self.root.join(name), "").unwrap();
+    }
+
+    fn wait_for(&self, name: &str) {
+        for _ in 0..300 {
+            if self.root.join(name).exists() {
+                // The wrapper writes the status just after the script ends.
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("{name} never appeared");
+    }
+
+    fn landed_note(&self, n: u64) -> String {
+        self.changes().iter().find(|c| c["n"] == n).unwrap()["landed"]["note"].as_str().unwrap_or("").to_string()
+    }
+
+    /// Everything under the lander's run, as one text: where a message to the person would be.
+    fn lander_files(&self) -> String {
+        fn walk(dir: &Path, out: &mut String) {
+            for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if let Ok(text) = std::fs::read_to_string(&path) {
+                    out.push_str(&text);
+                }
+            }
+        }
+        let mut out = String::new();
+        walk(&self.root.join("home/runs").join(&self.lander), &mut out);
+        out
+    }
+}
+
+/// From the wake's parent: the landing is installed from a clean clone of the landed commit, the
+/// install outlives the death of the job that started it, the result says pending meanwhile, and
+/// the author is told only once poke has seen it finish.
+#[test]
+fn a_landing_on_the_otto_repository_is_installed_and_survives_the_restart_of_the_wakes_parent() {
+    let s = Scratch::otto_repo(true, true);
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    s.flag("want-kill");
+    s.otto_as_a_job(&["wake", &s.lander]);
+    assert_eq!(s.remote("main"), sha);
+    let result = s.result(1);
+    assert_eq!(result["verdict"], "landed", "{result}");
+    assert_eq!(result["install"]["state"], "pending", "{result}");
+    assert_eq!(s.state_of(1), "landing", "the author isn't told before the install is over");
+    s.wait_for("install-done");
+    let out = s.ok(&["poke"]);
+    assert!(out.contains("installed"), "{out}");
+    let result = s.result(1);
+    assert_eq!(result["install"]["state"], "installed", "{result}");
+    assert_eq!(s.state_of(1), "landed");
+    assert!(s.landed_note(1).contains("otto installed this commit"), "{}", s.landed_note(1));
+    let ran = std::fs::read_to_string(s.root.join("install-ran")).unwrap();
+    assert!(ran.contains(&format!("args: --skills-repo {}", s.repo().display())), "{ran}");
+    assert!(ran.contains("target: unset"), "{ran}");
+    assert!(ran.contains(&format!("head: {sha}")), "{ran}");
+    assert!(ran.contains("hooks: \n") || ran.trim_end().ends_with("hooks:"), "{ran}");
+    let cwd = ran.lines().find_map(|l| l.strip_prefix("cwd: ")).unwrap();
+    assert_ne!(Path::new(cwd), s.repo(), "installed from a clone, not the main checkout");
+    assert!(!Path::new(cwd).exists(), "the clone is gone afterwards");
+    s.ok(&["poke"]);
+    assert_eq!(s.lander_events("land-install").len(), 1, "finished once");
+}
+
+/// From poke: the same, when the pass that lands it is the reviver's and the install restarts it.
+#[test]
+fn a_landing_poke_makes_is_installed_and_survives_the_restart_of_the_reviver() {
+    let s = Scratch::otto_repo(true, true);
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    s.flag("want-kill");
+    s.otto_as_a_job(&["poke"]);
+    assert_eq!(s.remote("main"), sha);
+    assert_eq!(s.result(1)["install"]["state"], "pending");
+    s.wait_for("install-done");
+    s.ok(&["poke"]);
+    assert_eq!(s.result(1)["install"]["state"], "installed");
+    assert_eq!(s.state_of(1), "landed");
+}
+
+/// A repository that only looks like otto's — the name's files, an install.sh — installs nothing:
+/// neither one the skills aren't linked to, nor one whose history lacks the installed build's commit.
+#[test]
+fn a_repository_that_only_looks_like_ottos_installs_nothing() {
+    for (linked, built) in [(false, true), (true, false)] {
+        let s = Scratch::otto_repo(linked, built);
+        let (r, sha) = s.approved("a");
+        s.request(&r, &sha);
+        s.wake();
+        assert_eq!(s.state_of(1), "landed", "linked {linked} built {built}");
+        let result = s.result(1);
+        assert!(result["install"].is_null(), "{result}");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!s.root.join("install-ran").exists(), "linked {linked} built {built}");
+    }
+}
+
+/// The install fails: the landing stands, the person is told, and the author's note says so.
+#[test]
+fn a_failed_install_leaves_the_landing_and_tells_the_person_and_the_author() {
+    let s = Scratch::otto_repo(true, true);
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    s.flag("want-fail");
+    s.wake();
+    s.wait_for("install-done");
+    let out = s.ok(&["poke"]);
+    assert!(out.contains("failed"), "{out}");
+    assert_eq!(s.remote("main"), sha, "the landing stands");
+    assert_eq!(s.state_of(1), "landed");
+    let result = s.result(1);
+    assert_eq!(result["install"]["state"], "failed", "{result}");
+    assert!(result["install"]["why"].as_str().unwrap().contains("exited 3: the build broke"), "{result}");
+    assert!(s.landed_note(1).contains("installing this commit failed"), "{}", s.landed_note(1));
+    assert!(s.lander_files().contains("Installing otto after a landing failed"), "the person has a message");
+}
+
+/// The install died without saying how it went: poke reports it as failed rather than waiting for ever.
+#[test]
+fn an_install_that_died_is_reported_by_poke() {
+    let s = Scratch::otto_repo(true, true);
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    s.flag("want-die");
+    s.wake();
+    s.wait_for("install-done");
+    let out = s.ok(&["poke"]);
+    assert!(out.contains("died"), "{out}");
+    assert_eq!(s.state_of(1), "landed");
+    assert!(s.landed_note(1).contains("died before it finished"), "{}", s.landed_note(1));
+    assert!(s.lander_files().contains("Installing otto after a landing failed"));
+}
