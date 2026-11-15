@@ -240,6 +240,11 @@ pub(super) fn finish_pending(lander: &str) -> Vec<String> {
             lines.push(settle(lander, result));
         }
     }
+    // The change is landed now, and cleaning up after it is the lander's: the wake it wasn't given
+    // when the landing was made.
+    if !lines.is_empty() {
+        let _ = crate::changes::wake_lander(lander);
+    }
     lines
 }
 

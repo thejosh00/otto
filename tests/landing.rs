@@ -1206,9 +1206,20 @@ fn a_landing_on_the_otto_repository_is_installed_and_survives_the_restart_of_the
     assert_eq!(s.state_of(1), "landing", "the author isn't told before the install is over");
     let due = s.ok(&["state", "change", "due", &s.lander]);
     assert!(due.contains("nothing to land"), "the lander has nothing to do while otto installs it: {due}");
+    // Report 55: and it is neither woken for that nothing, nor left to guess why its change isn't listed.
+    let woken = |s: &Scratch| s.lander_events("timer-armed").iter().filter(|e| e["cause"] == "change-landed").count();
+    assert_eq!(woken(&s), 0, "the lander isn't woken while otto installs it");
+    assert!(due.contains("installing") && due.contains("it landed, and otto is installing it"), "{due}");
+    let json = s.ok(&["state", "change", "due", &s.lander, "--json"]);
+    assert_eq!(json.trim(), "[]", "the check script's list stays empty");
+    let list = s.ok(&["changes"]);
+    assert!(list.contains("landed; otto is installing it"), "{list}");
     s.wait_for("install-done");
     let out = s.ok(&["poke"]);
     assert!(out.contains("installed"), "{out}");
+    assert_eq!(woken(&s), 1, "the lander is woken to clean up once the install is over");
+    let due = s.ok(&["state", "change", "due", &s.lander]);
+    assert!(due.contains("clean up") && !due.contains("installing"), "{due}");
     let result = s.result(1);
     assert_eq!(result["install"]["state"], "installed", "{result}");
     assert_eq!(s.state_of(1), "landed");

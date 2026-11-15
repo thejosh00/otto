@@ -105,6 +105,15 @@ impl LandResult {
         self.verdict != PUSHING
     }
 
+    /// Landed, and the install that follows it hasn't finished.
+    pub fn is_installing(&self) -> bool {
+        self.verdict == LANDED
+            && self
+                .install
+                .as_ref()
+                .is_some_and(|i| i.state == install::PENDING)
+    }
+
     /// `landed at <sha>`, `base moved`, `remote refused: <why>`, `refused: <why>`.
     pub fn line(&self) -> String {
         let why = self.why.as_deref().unwrap_or("");
@@ -148,9 +157,7 @@ pub fn read_result(run: &str, n: u32) -> Option<LandResult> {
 /// The step landed it and its install hasn't finished: the change is still `landing`, and there is
 /// nothing for the lander to do about it.
 pub fn installing(run: &str, n: u32) -> bool {
-    read_result(run, n).is_some_and(|l| {
-        l.verdict == LANDED && l.install.is_some_and(|i| i.state == install::PENDING)
-    })
+    read_result(run, n).is_some_and(|l| l.is_installing())
 }
 
 fn write_result(result: &LandResult) -> Result<(), OttoError> {
@@ -407,7 +414,9 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
         }
         out.push(result);
     }
-    if !out.is_empty() {
+    // A landing otto is still installing leaves the lander nothing to do, and nothing in `due`
+    // to say so: it is woken when the install is over (`install::finish_pending`), not now.
+    if out.iter().any(|r| !r.is_installing()) {
         let _ = crate::changes::wake_lander(lander);
     }
     let _ = fs4::fs_std::FileExt::unlock(&lock);

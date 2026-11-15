@@ -1978,6 +1978,25 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
     Ok(out)
 }
 
+/// Changes the landing step put on their base branch and otto is still installing: not in `due`,
+/// because there is nothing for the lander to do about them, and said beside it so that isn't a puzzle.
+pub fn installing() -> Result<Vec<(String, String)>, OttoError> {
+    let mut out = Vec::new();
+    for entry in crate::state::read_all_runs()? {
+        let crate::state::RunEntry::Readable(state) = entry else { continue };
+        let Ok(dir) = crate::paths::run_dir(&state.id) else { continue };
+        for c in index_or_empty(&dir).changes {
+            if c.state == ChangeState::Landing && on_record(&state, &c).is_some() && crate::landing::installing(&state.id, c.n) {
+                out.push((format!("{}/{}", crate::paths::short_id(&state.id), c.n), c.title.clone()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// What `due` says of a change otto is installing.
+pub const INSTALLING: &str = "it landed, and otto is installing it. Nothing for you to do about it yet: you are woken to clean up once the install is over";
+
 /// What the change says, once, when it waits for a lander that can do a pull request.
 pub const NEEDS_GH: &str = "needs a lander with `gh`: it is approved as a pull request, and the lander runs in a sandbox, where there is no `gh` and \
                             nothing to push with. Approve it with `--push` to land it on its base instead, or name a lander that isn't sandboxed (`otto config lander`)";

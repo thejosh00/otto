@@ -565,14 +565,17 @@ fn due(a: DueArgs) -> Result<(), OttoError> {
     // Not handed to this lander, and not in the list (so its check script stays quiet): said beside it.
     let not_handed: Vec<String> =
         changes::due_needing_gh()?.iter().map(|d| format!("{:<10} not handed to this lander  {}: {}", d.reference, d.title, changes::NEEDS_GH)).collect();
+    // Landed and being installed by otto: not in the list either, for the same reason.
+    let installing: Vec<String> =
+        changes::installing()?.iter().map(|(reference, title)| format!("{:<10} {:<15} {}: {}", reference, "installing", title, changes::INSTALLING)).collect();
     if a.json {
-        for line in &not_handed {
+        for line in not_handed.iter().chain(&installing) {
             eprintln!("{line}");
         }
         println!("{}", serde_json::to_string_pretty(&due)?);
         return Ok(());
     }
-    for line in &not_handed {
+    for line in not_handed.iter().chain(&installing) {
         println!("{line}");
     }
     if due.is_empty() {
