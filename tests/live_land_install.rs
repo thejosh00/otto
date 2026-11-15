@@ -9,7 +9,11 @@
 //! skills link (a scratch `OTTO_CLAUDE_SKILLS_DIR`) points at it, its history holds this binary's
 //! commit, and its install.sh is a stand-in that takes a little while and installs nothing.
 //!
-//! One or two wakes, ~3 minutes. An `OTTO_HOME` of its own under the scratch repo. The real
+//! And what it does when it is woken for something else while that install runs (report 55): the
+//! landing itself doesn't wake it, `due` names the change as installing, and it neither goes
+//! looking through otto's landing records nor touches the change. The test wakes it once, mid-install.
+//!
+//! Two or three wakes, ~6 minutes. An `OTTO_HOME` of its own under the scratch repo. The real
 //! install.sh is never run and `~/.local/bin` is never touched.
 //!
 //!   cargo test --test live_land_install -- --ignored --nocapture
@@ -83,6 +87,30 @@ fn commands_run(run: &Run) -> (usize, Vec<String>) {
     (read, commands)
 }
 
+/// The lander's journal, as (event, ts, cause).
+fn journal(run: &Run) -> Vec<(String, String, String)> {
+    std::fs::read_to_string(run.dir.join("journal.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .map(|v| {
+            let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+            (s("event"), s("ts"), s("cause"))
+        })
+        .collect()
+}
+
+/// Whether the landing step's result for the author's change 1 says its install is still running.
+fn install_pending(home: &std::path::Path, author: &Run) -> bool {
+    let Some(id) = author.dir.file_name() else {
+        return false;
+    };
+    std::fs::read_to_string(home.join("landings").join(id).join("1.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|r| r["install"]["state"] == "pending")
+}
+
 #[test]
 #[ignore = "spawns real claude sessions and spends real money — run with --ignored"]
 fn live_land_install() {
@@ -128,7 +156,7 @@ fn live_land_install() {
     let ran = scratch.path().join("install-ran");
     write_file(
         &repo.join("install.sh"),
-        &format!("#!/bin/sh\nsleep 20\necho \"$*\" > '{}'\n", ran.display()),
+        &format!("#!/bin/sh\nsleep 120\necho \"$*\" > '{}'\n", ran.display()),
     );
     std::fs::set_permissions(
         repo.join("install.sh"),
@@ -328,6 +356,7 @@ fn live_land_install() {
     );
 
     let start = Instant::now();
+    let mut nudged = false;
     let state = loop {
         let c = change(&author, 1);
         let state = c["state"].as_str().unwrap_or("").to_string();
@@ -337,6 +366,13 @@ fn live_land_install() {
             || start.elapsed() > TIMEOUT
         {
             break state;
+        }
+        // Once, while otto installs it: the lander is due for some other reason (here, its timer).
+        if !nudged && install_pending(&home, &author) && !lander.wake_running() {
+            nudged = otto(&["state", "arm-timer", &lander.id, "--in", "1"])
+                .status
+                .success();
+            std::thread::sleep(Duration::from_secs(2));
         }
         let _ = otto(&["poke"]);
         std::thread::sleep(Duration::from_secs(15));
@@ -383,6 +419,54 @@ fn live_land_install() {
         lander.events("land-requested") == 1,
         "the lander asked once, and waited out the install",
         format!("land-requested {} time(s)", lander.events("land-requested")),
+    );
+
+    checks.step("4c - the install didn't cost the lander a wake with nothing in it (report 55)");
+    let events = journal(&lander);
+    let at = |name: &str| {
+        events
+            .iter()
+            .find(|(event, _, _)| event == name)
+            .map(|(_, ts, _)| ts.clone())
+            .unwrap_or_default()
+    };
+    let (landed_at, installed_at) = (at("land-result"), at("land-install"));
+    let during: Vec<&(String, String, String)> = events
+        .iter()
+        .filter(|(event, ts, _)| {
+            event == "wake-started"
+                && !landed_at.is_empty()
+                && !installed_at.is_empty()
+                && *ts >= landed_at
+                && *ts <= installed_at
+        })
+        .collect();
+    let for_landing = during
+        .iter()
+        .filter(|(_, _, cause)| cause == "change-landed")
+        .count();
+    checks.check(
+        for_landing == 0,
+        "the landing didn't wake the lander while otto was installing it",
+        format!("{for_landing} wake(s) for change-landed between the landing and the end of its install"),
+    );
+    checks.check(
+        nudged && !during.is_empty(),
+        format!(
+            "it was woken for something else mid-install ({} wake(s)), and read `due` then",
+            during.len()
+        ),
+        format!(
+            "no wake fell inside the install (nudged: {nudged}, landed {landed_at}, installed {installed_at}): what it does then wasn't seen"
+        ),
+    );
+    let woken_after = events.iter().any(|(event, ts, cause)| {
+        event == "timer-armed" && cause == "change-landed" && !installed_at.is_empty() && *ts >= installed_at
+    });
+    checks.check(
+        woken_after,
+        "and it was woken to clean up once the install was over",
+        "no change-landed wake was armed after the install finished",
     );
 
     checks.step("5 - the lander asked nothing");
@@ -442,6 +526,15 @@ fn live_land_install() {
             said.is_empty(),
             "it never said `landed` itself",
             format!("it ran: {said:?}"),
+        );
+        let looked: Vec<&String> = commands
+            .iter()
+            .filter(|c| c.contains("landings"))
+            .collect();
+        checks.check(
+            looked.is_empty(),
+            "it never went looking through otto's landing records",
+            format!("it ran: {looked:?}"),
         );
         let asked: Vec<&String> = commands
             .iter()
