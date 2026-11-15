@@ -23,6 +23,7 @@ REPO=$S/repo; ORIGIN=$S/origin.git; WT=$S/repo-wt
 mkdir -p "$S/landerbin"
 cat >"$S/landerbin/git" <<SH
 #!/bin/sh
+echo "\$1" >>"$REPO/.git/lander-git-calls.txt"
 for a in "\$@"; do [ "\$a" = push ] && echo "\$*" >>"$REPO/.git/lander-pushes.txt"; done
 exec "$REAL_GIT" "\$@"
 SH
@@ -61,17 +62,19 @@ echo "A farewell, beside the greeting." >"$S/summary.md"
 "$OTTO" stop "$AUTHOR" --reason "a stand-in: it writes nothing" >/dev/null 2>&1
 
 # The lander, under a sandbox record written before its first wake: it may write the repository and its
-# worktrees' parent, and nothing of the remote.
+# worktrees' parent, the runs' directories (taking a change in hand is a write in its author's), and nothing
+# of the remote. A run of its own, named as the lander: `otto install` has
+# already made the system lander, which is left as it was made, not started.
 NEXT=$((AUTHOR + 1))
-python3 - "$OTTO_HOME/sandbox/runs/$NEXT.json" "$HOME" "$REPO" "$WT" "$S/.work-trees" <<'PY'
+python3 - "$OTTO_HOME/sandbox/runs/$NEXT.json" "$HOME" "$REPO" "$WT" "$S/.work-trees" "$OTTO_HOME/runs" <<'PY'
 import json,sys
-json.dump({"launcher":"sandbox","workdir":sys.argv[2]+"/workspace","write":[sys.argv[3],sys.argv[4],sys.argv[5]]},open(sys.argv[1],"w"))
+json.dump({"launcher":"sandbox","workdir":sys.argv[2]+"/workspace","write":sys.argv[3:]},open(sys.argv[1],"w"))
 PY
 mkdir -p "$S/.work-trees"
-"$OTTO" state init --name lander --perpetual --period 10m --launcher sandbox --instructions "$HERE/../../workflows/land-flow.md" \
+"$OTTO" state init --name sandboxed-lander --perpetual --period 10m --launcher sandbox --instructions "$OTTO_HOME/agents/land-flow.md" \
   --repo "$REPO" --workdir "$HOME/workspace" --goal "Land the changes I approve, and clean up after them" >/dev/null 2>"$OUT/init-stderr.txt" || { echo "no lander"; cat "$OUT/init-stderr.txt"; exit 1; }
-LANDER=$(ids lander); [ "$LANDER" = "$NEXT" ] || { echo "the lander's id was $LANDER, the record is for $NEXT"; exit 1; }
-"$OTTO" config lander lander >/dev/null || { echo "config lander failed"; exit 1; }
+LANDER=$(ids sandboxed-lander); [ "$LANDER" = "$NEXT" ] || { echo "the lander's id was $LANDER, the record is for $NEXT"; exit 1; }
+"$OTTO" config lander sandboxed-lander >/dev/null || { echo "config lander failed"; exit 1; }
 
 echo "== approving; the lander is woken"
 "$OTTO" changes approve "author/1@v1" 2>&1 | cut -c1-200
@@ -81,6 +84,7 @@ state() { python3 -c "import json,sys;c=json.load(open('$OTTO_HOME/runs/$AUTHOR/
 for _ in $(seq 1 160); do
   [ "$(state)" = "landed cleaned" ] && break
   case "$(state)" in revising*|needs-you*) break;; esac
+  grep -q '"event":"gate-opened"' "$J" 2>/dev/null && break
   "$OTTO" poke >/dev/null 2>&1
   /bin/sleep 15
 done
@@ -101,6 +105,9 @@ ok "the change landed and was cleaned up ($(state))" "$([ "$(state)" = "landed c
 ok "the remote's main moved from $BEFORE to the commit approved, $APPROVED (it is $AFTER)" "$([ "$AFTER" = "$APPROVED" ] && echo yes || echo no)"
 ok "the lander asked: land-requested in its journal ($(count land-requested))" "$([ "$(count land-requested)" -gt 0 ] && echo yes || echo no)"
 ok "otto judged and pushed it: a land-result saying landed" "$(grep '"event":"land-result"' "$J" | grep -q '"verdict":"landed"' && echo yes || echo no)"
+CALLS=$(wc -l <"$REPO/.git/lander-git-calls.txt" 2>/dev/null | tr -d ' '); CALLS=${CALLS:-0}
+sort "$REPO/.git/lander-git-calls.txt" 2>/dev/null | uniq -c >"$OUT/lander-git-calls.txt"
+ok "the git that records pushes is the one the lander used: it was run $CALLS times" "$([ "$CALLS" -gt 0 ] && echo yes || echo no)"
 ok "the lander's process pushed nothing: its git was never asked to push" "$([ -s "$REPO/.git/lander-pushes.txt" ] && echo no || echo yes)"
 ok "the lander ran under its sandbox: the wrapper refused nothing, and a profile was written for it" "$([ "$(count sandbox-refused)" = 0 ] && ls "$OTTO_HOME"/sandbox/profiles/"$LANDER".*.sb >/dev/null 2>&1 && echo yes || echo no)"
 ok "the lander opened no gate" "$([ "$(count gate-opened)" = 0 ] && echo yes || echo no)"
