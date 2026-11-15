@@ -260,11 +260,14 @@ pub fn after_wake(run: &str) {
 /// Poke's pass: a lander with no wake running and a request nothing has dealt with. The wake's
 /// parent does this itself when it lives to; this is for when it didn't.
 pub fn backstop() -> Vec<String> {
-    use crate::liveness::Liveness as _;
+    backstop_with(&crate::liveness::LockLiveness)
+}
+
+fn backstop_with(liveness: &dyn crate::liveness::Liveness) -> Vec<String> {
     let Ok(Some(lander)) = crate::config::lander() else {
         return Vec::new();
     };
-    if !waiting(&lander) || crate::liveness::LockLiveness.probe(&lander).is_busy() {
+    if !waiting(&lander) || liveness.probe(&lander).is_busy() {
         return Vec::new();
     }
     match step(&lander) {
@@ -833,4 +836,50 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::liveness::fake::FakeLiveness;
+    use crate::paths::test_support::TempHome;
+    use crate::state::commands::test_init;
+
+    /// Poke's pass leaves a lander with a wake running alone — that wake's parent runs the step
+    /// when it is over — and deals with the request of one that has none.
+    #[test]
+    fn the_backstop_skips_a_lander_with_a_live_wake() {
+        let _h = TempHome::new();
+        test_init("lander", "a goal").unwrap();
+        crate::config::save_lander(Some("lander")).unwrap();
+        let dir = requests_dir("lander").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let request = Request {
+            run: "nobody".to_string(),
+            n: 1,
+            head: "0".repeat(40),
+            at: Timestamp::now(),
+        };
+        let path = dir.join("nobody-1.json");
+        std::fs::write(&path, serde_json::to_string(&request).unwrap()).unwrap();
+
+        let mut unknown = FakeLiveness::new();
+        unknown.set_unknown("lander");
+        for busy in [FakeLiveness::with_running(&["lander"]), unknown] {
+            assert_eq!(backstop_with(&busy), Vec::<String>::new());
+            assert!(
+                path.exists(),
+                "the request is the live wake's parent's to deal with"
+            );
+            assert!(read_result("nobody", 1).is_none(), "nothing was judged");
+        }
+
+        // Another run's wake is nothing to do with it.
+        let said = backstop_with(&FakeLiveness::with_running(&["someone-else"]));
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].contains("refused"), "{said:?}");
+        assert!(!path.exists(), "judged, and the request taken away");
+        assert_eq!(read_result("nobody", 1).unwrap().verdict, REFUSED);
+        assert_eq!(backstop_with(&FakeLiveness::new()), Vec::<String>::new());
+    }
 }
