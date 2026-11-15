@@ -1639,6 +1639,9 @@ pub struct Due {
     pub state: ChangeState,
     /// `land`, `finish landing` (claimed and not done: a wake that didn't finish), or `clean up`.
     pub todo: String,
+    /// `land again`: what the landing step (`crate::landing`) said about the last commit asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub landing: Option<String>,
     pub repo: String,
     pub base: String,
     pub branch: String,
@@ -1773,10 +1776,17 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
     }
     let d = a.as_ref().map(|a| &a.record);
     let pr_mode = d.is_some_and(|d| d.mode == LandMode::Pr);
+    // The landing step looked at what the lander last asked for and didn't land it: round again, with why.
+    let again = (c.state == ChangeState::Landing)
+        .then(|| crate::landing::read_result(run, c.n))
+        .flatten()
+        .filter(|l| l.is_final() && l.verdict != crate::landing::LANDED)
+        .map(|l| format!("{} — asked for {}", l.line(), short_sha(&l.head)));
     let todo = match c.state {
         ChangeState::Approved if c.pr.is_some() => "update its pull request",
         ChangeState::Approved if pr_mode => "open its pull request",
         ChangeState::Approved => "land",
+        ChangeState::Landing if again.is_some() => "land again",
         ChangeState::Landing => "finish landing",
         _ if c.state.is_over() && c.cleaned.is_none() => "clean up",
         _ if c.state.is_over() => return None,
@@ -1792,6 +1802,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         title: c.title.clone(),
         state: c.state,
         todo: todo.to_string(),
+        landing: again,
         // Where it lands is what the person approved, not what the index says now.
         repo: d.map(|d| d.repo.clone()).unwrap_or_else(|| c.repo.clone()),
         base: d.map(|d| d.base.clone()).unwrap_or_else(|| c.base.clone()),
@@ -1857,6 +1868,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 title: c.title.clone(),
                 state: c.state,
                 todo: "look at its pull request".to_string(),
+                landing: None,
                 repo: c.repo.clone(),
                 base: c.base.clone(),
                 branch: c.branch.clone(),
@@ -1904,7 +1916,7 @@ pub fn due() -> Result<Vec<Due>, OttoError> {
         }
     }
     let rank = |d: &Due| match d.todo.as_str() {
-        "finish landing" => 0,
+        "finish landing" | "land again" => 0,
         "land" | "open its pull request" | "update its pull request" => 1,
         "merge its pull request" | "post replies" => 2,
         _ => 3,

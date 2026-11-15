@@ -753,6 +753,14 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
         report.lines.extend(crate::logs::gap_note(crate::clock::Timestamp::now()));
     }
 
+    // The backstop for the landing step: the lander asked for something to be landed and the
+    // wake's parent never got to it (it was killed). Before the runs are read, so the lander it
+    // wakes is seen by this pass.
+    if !args.dry_run {
+        for line in crate::landing::backstop() {
+            report.lines.push(format!("otto poke: {line}"));
+        }
+    }
     let runs = crate::state::read_all_runs().unwrap_or_default();
     let mut exec = RealExec;
     let decisions = pass_once(

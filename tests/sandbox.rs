@@ -514,10 +514,13 @@ fn otto_state_past_its_own_run_can_not_be_written() {
         ("who may assign", "echo x > \"$O/feedback-driver\"".to_string()),
         ("a new file in $OTTO_HOME", "echo x > \"$O/approvals\"".to_string()),
         ("an approval on record", format!("mkdir -p \"$O/approvals/{id}\" && echo x > \"$O/approvals/{id}/1.json\"", id = s.id)),
+        ("a landing result", format!("mkdir -p \"$O/landings/{id}\" && echo x > \"$O/landings/{id}/1.json\"", id = s.id)),
+        ("the landing step's scratch repository", "mkdir -p \"$O/landings/scratch/1-1.git/hooks\"".to_string()),
     ] {
         s.refused(what, &script);
     }
     assert!(!s.otto_home().join("approvals").exists());
+    assert!(!s.otto_home().join("landings").exists());
 }
 
 /// The person's approvals (`$OTTO_HOME/approvals`) are closed after the record's grants: a record that

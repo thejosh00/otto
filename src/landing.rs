@@ -207,6 +207,20 @@ pub fn after_wake(run: &str) {
     }
 }
 
+/// Poke's pass: a lander with no wake running and a request nothing has dealt with. The wake's
+/// parent does this itself when it lives to; this is for when it didn't.
+pub fn backstop() -> Vec<String> {
+    use crate::liveness::Liveness as _;
+    let Ok(Some(lander)) = crate::config::lander() else { return Vec::new() };
+    if !waiting(&lander) || crate::liveness::LockLiveness.probe(&lander).is_busy() {
+        return Vec::new();
+    }
+    match step(&lander) {
+        Ok(results) => results.iter().map(|r| format!("landing {}/{}: {}", crate::paths::short_id(&r.run), r.n, r.line())).collect(),
+        Err(e) => vec![format!("the landing step failed: {}", e.message)],
+    }
+}
+
 /// Every request the lander has, judged and — where it is what the person approved — pushed.
 /// One at a time across the whole machine: the wake's parent and poke never overlap.
 pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
