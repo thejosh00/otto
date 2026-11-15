@@ -859,3 +859,61 @@ fn the_pin_is_kept_while_the_request_is() {
     assert_eq!(s.requests_left(), 1);
     assert_eq!(s.pins(), format!("refs/otto/land/{}-1 {sha}", s.author));
 }
+
+/// The wake's parent really is killed, by the lander's own stub, after the request is written and
+/// before any step can run: nothing is judged or pushed by the dead parent, one poke pass lands
+/// it, and a second does nothing.
+#[test]
+fn a_parent_killed_after_the_request_leaves_it_for_poke_to_land_once() {
+    use std::os::unix::process::ExitStatusExt;
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    let before = s.remote("main");
+    let stub = s.root.join("stub");
+    let (once, killed) = (s.root.join("asked"), s.root.join("killed"));
+    let handoff = std::fs::read_to_string(&stub).unwrap();
+    // The first time: ask, then find the `otto` this wake belongs to and kill it outright.
+    std::fs::write(
+        &stub,
+        format!(
+            "#!/bin/sh\nif [ ! -e '{once}' ]; then\n  : > '{once}'\n  '{OTTO}' state change request-land \"$OTTO_RUN_ID\" {r} --head {sha} >/dev/null || exit 1\n  p=$PPID\n  while [ \"$p\" -gt 1 ]; do\n    c=$(ps -o comm= -p \"$p\")\n    case \"$c\" in */otto) kill -9 \"$p\" && echo \"$c\" > '{killed}'; break;; esac\n    p=$(ps -o ppid= -p \"$p\" | tr -d ' ')\n  done\n  exit 0\nfi\n{}",
+            handoff.trim_start_matches("#!/bin/sh\n"),
+            once = once.display(),
+            killed = killed.display(),
+        ),
+    )
+    .unwrap();
+    let out = s.otto(&["wake", &s.lander]);
+    assert_eq!(
+        out.status.signal(),
+        Some(9),
+        "the wake's parent was killed: {}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(killed.exists(), "the stub found its otto and killed it");
+    assert_eq!(s.requests_left(), 1, "the request outlived the parent");
+    assert_eq!(s.lander_events("land-requested").len(), 1);
+    assert_eq!(
+        s.lander_events("land-result").len(),
+        0,
+        "the parent judged nothing"
+    );
+    assert!(!s.root.join("home/landings").join(&s.author).exists());
+    assert_eq!(s.remote("main"), before, "and pushed nothing");
+
+    s.ok(&["poke"]);
+    assert_eq!(s.remote("main"), sha, "one poke pass landed it");
+    assert_eq!(s.state_of(1), "landed");
+    assert_eq!(s.result(1)["verdict"], "landed");
+    assert_eq!(s.lander_events("land-result").len(), 1);
+    assert_eq!(s.requests_left(), 0);
+    s.ok(&["poke"]);
+    assert_eq!(
+        s.lander_events("land-result").len(),
+        1,
+        "a second pass does nothing"
+    );
+    assert_eq!(s.lander_events("land-requested").len(), 1);
+    assert_eq!(s.remote("main"), sha);
+}
