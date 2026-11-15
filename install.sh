@@ -23,12 +23,21 @@ set -euo pipefail
 
 with_service=0
 rollback=0
-for arg in "$@"; do
-	case "$arg" in
+# --skills-repo DIR: link the skills to that checkout, not this one. For an install from a
+# temporary clone (otto's own, after a landing), whose directory is gone afterwards.
+skills_repo=""
+while [ $# -gt 0 ]; do
+	case "$1" in
 	--service) with_service=1 ;;
 	--rollback) rollback=1 ;;
-	*) echo "usage: $0 [--service] [--rollback]" >&2; exit 2 ;;
+	--skills-repo)
+		[ $# -ge 2 ] || { echo "usage: $0 [--service] [--rollback] [--skills-repo DIR]" >&2; exit 2; }
+		skills_repo="$2"
+		shift
+		;;
+	*) echo "usage: $0 [--service] [--rollback] [--skills-repo DIR]" >&2; exit 2 ;;
 	esac
+	shift
 done
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -68,7 +77,7 @@ if ! command -v otto >/dev/null 2>&1; then
 fi
 
 echo "==> otto install (skills)"
-"$bin_dir/otto" install --repo "$repo_dir"
+"$bin_dir/otto" install --repo "${skills_repo:-$repo_dir}"
 
 echo "==> otto agent start (launchd reviver)"
 "$bin_dir/otto" agent start

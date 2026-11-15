@@ -28,6 +28,8 @@ use crate::changes::{ChangeRef, ChangeState, LandMode};
 use crate::clock::Timestamp;
 use crate::error::OttoError;
 
+pub mod install;
+
 pub const PUSHING: &str = "pushing";
 pub const LANDED: &str = "landed";
 pub const BASE_MOVED: &str = "base moved";
@@ -92,6 +94,9 @@ pub struct LandResult {
     /// What happened to the main checkout after it landed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<String>,
+    /// The install that follows a landing on the otto repository, when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install: Option<install::Install>,
     pub at: Timestamp,
 }
 
@@ -105,12 +110,17 @@ impl LandResult {
         let why = self.why.as_deref().unwrap_or("");
         match self.verdict.as_str() {
             LANDED => format!(
-                "landed at {}{}",
+                "landed at {}{}{}",
                 crate::changes::short_sha(self.pushed.as_deref().unwrap_or(&self.head)),
                 if why.is_empty() {
                     String::new()
                 } else {
                     format!(" ({why})")
+                },
+                match self.install.as_ref().map(|i| i.state.as_str()) {
+                    Some(install::PENDING) => ", install pending".to_string(),
+                    Some(install::NOT_NEEDED) | None => String::new(),
+                    Some(state) => format!(", install {state}"),
                 }
             ),
             BASE_MOVED => format!("base moved: {why}"),
@@ -276,28 +286,36 @@ fn backstop_with(liveness: &dyn crate::liveness::Liveness) -> Vec<String> {
     let Ok(Some(lander)) = crate::config::lander() else {
         return Vec::new();
     };
+    // An install a landing started is finished here whatever the lander is doing: the pass that
+    // started it may be one the install itself restarted.
+    let mut lines = match landing_lock() {
+        Ok(lock) => {
+            let lines = install::finish_pending(&lander);
+            let _ = fs4::fs_std::FileExt::unlock(&lock);
+            lines
+        }
+        Err(_) => Vec::new(),
+    };
     if !waiting(&lander) || liveness.probe(&lander).is_busy() {
-        return Vec::new();
+        return lines;
     }
     match step(&lander) {
-        Ok(results) => results
-            .iter()
-            .map(|r| {
-                format!(
-                    "landing {}/{}: {}",
-                    crate::paths::short_id(&r.run),
-                    r.n,
-                    r.line()
-                )
-            })
-            .collect(),
-        Err(e) => vec![format!("the landing step failed: {}", e.message)],
+        Ok(results) => lines.extend(results.iter().map(|r| {
+            format!(
+                "landing {}/{}: {}",
+                crate::paths::short_id(&r.run),
+                r.n,
+                r.line()
+            )
+        })),
+        Err(e) => lines.push(format!("the landing step failed: {}", e.message)),
     }
+    lines
 }
 
 /// Every request the lander has, judged and — where it is what the person approved — pushed.
 /// One at a time across the whole machine: the wake's parent and poke never overlap.
-pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
+fn landing_lock() -> Result<std::fs::File, OttoError> {
     let locks = crate::paths::otto_home().join("locks");
     std::fs::create_dir_all(&locks)?;
     let lock = std::fs::OpenOptions::new()
@@ -305,6 +323,14 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
         .append(true)
         .open(locks.join("landing.lock"))?;
     fs4::fs_std::FileExt::lock_exclusive(&lock)?;
+    Ok(lock)
+}
+
+pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
+    let lock = landing_lock()?;
+    for line in install::finish_pending(lander) {
+        println!("{line}");
+    }
     let lander_dir = crate::paths::run_dir(lander)?;
     let mut out = Vec::new();
     // Read under the lock: what another pass dealt with is gone by now.
@@ -412,7 +438,8 @@ fn finish_landed(lander: &str, r: &ChangeRef, mut result: LandResult) -> LandRes
     let Ok((c, _)) = crate::changes::for_step(r) else {
         return result;
     };
-    if c.state != ChangeState::Landing {
+    // An install was started for it already: `install::finish_pending` is what ends that.
+    if c.state != ChangeState::Landing || result.install.is_some() {
         return result;
     }
     let sha = result.pushed.clone().unwrap_or_else(|| result.head.clone());
@@ -422,6 +449,36 @@ fn finish_landed(lander: &str, r: &ChangeRef, mut result: LandResult) -> LandRes
     );
     let (updated, said) = fast_forward(Path::new(&repo), &base, &sha);
     result.checkout = Some(said.clone());
+    // A landing on the otto repository is installed, and its author is told once that is over.
+    match install::decide(
+        Path::new(&repo),
+        install::linked_checkout().as_deref(),
+        env!("OTTO_BUILD_COMMIT"),
+        &sha,
+    ) {
+        install::Decision::Install { dirty } => {
+            let started = install::start(&result, Path::new(&repo), &sha, dirty, updated);
+            let pending = started.state == install::PENDING;
+            result.install = Some(started);
+            if pending {
+                let _ = write_result(&result);
+                return result;
+            }
+            let line = install::settle(lander, result.clone());
+            eprintln!("otto: {line}");
+            return result;
+        }
+        install::Decision::UpToDate => {
+            result.install = Some(install::Install {
+                state: install::NOT_NEEDED.to_string(),
+                why: Some("the installed otto already has this commit".to_string()),
+                pid: None,
+                replaced_dirty: None,
+                local_base: updated,
+            });
+        }
+        install::Decision::NotOtto => {}
+    }
     let _ = write_result(&result);
     let note = (!updated).then_some(said);
     if let Err(e) = crate::changes::landed_by_step(lander, r, &sha, updated, note.as_deref()) {
@@ -598,6 +655,7 @@ fn judge(request: &Request) -> LandResult {
         judged_on: JudgedOn::default(),
         pushed: None,
         checkout: None,
+            install: None,
         at: Timestamp::now(),
     };
     let outcome = judge_and_push(request, &mut on);
@@ -815,6 +873,7 @@ fn judge_and_push(request: &Request, on: &mut JudgedOn) -> Result<Outcome, Refus
             judged_on: on.clone(),
             pushed: None,
             checkout: None,
+            install: None,
             at: Timestamp::now(),
         };
         write_result(&pushing).map_err(|e| {
