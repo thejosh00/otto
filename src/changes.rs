@@ -2634,7 +2634,8 @@ fn first_line(text: &str) -> String {
 pub fn merged(by: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
     let (by, role) = require_lander_or_babysitter(by)?;
     with_change(r, |path, state, c| {
-        refuse_unless(&r.run, c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "marked merged")?;
+        refuse_unless(&r.run, c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising, ChangeState::NeedsYou], "marked merged")?;
+        let was_asking = c.state == ChangeState::NeedsYou;
         let repo = Path::new(&c.repo);
         let sha = rev(repo, sha)?;
         let base = base_ref(repo, &c.base);
@@ -2645,7 +2646,11 @@ pub fn merged(by: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
         c.landed = Some(Landed { sha: sha.clone(), at: Timestamp::now(), local_base, note: None });
         c.replies.retain(|r| r.state == ReplyState::Posted);
         c.enter(ChangeState::Merged);
-        let what = format!("its pull request was merged into {} at {}", c.base, short_sha(&sha));
+        let mut what = format!("its pull request was merged into {} at {}", c.base, short_sha(&sha));
+        if was_asking {
+            let who = if c.ask.as_ref().is_some_and(|a| a.by.is_some()) { "the babysitter" } else { "its author" };
+            what.push_str(&format!("; what {who} asked about it no longer needs an answer"));
+        }
         c.moment(role, &what);
         let checkout = if local_base { String::new() } else { format!(" The main checkout's own {} doesn't have it yet.", c.base) };
         let body = format!("{what}.{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing more to the change itself.");
@@ -4845,6 +4850,29 @@ pub(crate) mod tests {
         let again = submit("c-nope", &submit_fix(&repo, "Shout")).unwrap();
         assert!(again.unchanged && !again.back_in_review);
         assert_eq!(change("c-nope", 1).state, ChangeState::Revising);
+    }
+
+    /// A merge on the forge is a fact, not a decision: a question still open about the change
+    /// doesn't stop it being recorded, and once merged there is nothing left to answer.
+    #[test]
+    fn a_pull_request_merged_while_its_question_is_open_is_recorded_merged() {
+        let _h = TempHome::new();
+        test_init("c-mq", "a goal").unwrap();
+        test_init("c-mql", "land changes").unwrap();
+        test_init("c-mqb", "look after pull requests").unwrap();
+        set_lander("c-mql");
+        set_babysitter("c-mqb");
+        let repo = repo();
+        submit("c-mq", &submit_fix(&repo, "Shout")).unwrap();
+        approve(&[seen(r("c-mq", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let v1 = claim("c-mql", &r("c-mq", 1)).unwrap().sha.unwrap();
+        pr_pushed("c-mql", &r("c-mq", 1), &v1, Some("https://github.com/o/app/pull/11"), false).unwrap();
+        ask_as(None, &r("c-mq", 1), "Sam wants the flag renamed.\n\n## Options\n- **Rename**\n- **Keep**\n").unwrap();
+        sh(&repo.wt, &["push", "--quiet", "origin", &format!("{v1}:main")]);
+        let c = merged("c-mqb", &r("c-mq", 1), &v1).unwrap();
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Merged, Move::Lander));
+        assert!(c.timeline.last().unwrap().what.ends_with("what its author asked about it no longer needs an answer"), "{:?}", c.timeline.last());
+        assert!(answer(&r("c-mq", 1), "keep").unwrap_err().message.contains("merged"));
     }
 
     #[test]
