@@ -488,6 +488,11 @@ fn a_moved_base_is_not_forced_and_the_clean_rebase_lands() {
         "{due}"
     );
 
+    // Asked again for the same commit, it is judged again, not answered from the last result.
+    s.request(&r, &sha);
+    s.wake();
+    assert_eq!(s.lander_events("land-result").len(), 2);
+
     git(&s.repo(), &["fetch", "-q", "origin"]);
     git(&s.repo(), &["rebase", "-q", "origin/main", "a"]);
     git(&s.repo(), &["checkout", "-q", "main"]);
@@ -511,7 +516,6 @@ fn two_changes_on_one_base_land_in_the_order_asked() {
     git(&s.repo(), &["checkout", "-q", "main"]);
     let b = git(&s.repo(), &["rev-parse", "b"]);
     s.request(&ra, &a);
-    std::thread::sleep(std::time::Duration::from_millis(1100));
     s.request(&rb, &b);
     s.wake();
     assert_eq!(

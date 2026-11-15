@@ -217,7 +217,14 @@ fn requests(lander: &str) -> Vec<(PathBuf, Request)> {
             Some((p, request))
         })
         .collect();
-    out.sort_by(|a, b| a.1.at.cmp(&b.1.at).then(a.0.cmp(&b.0)));
+    // `at` is to the second: within one, the order the files were written, then their names.
+    let written = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    out.sort_by(|a, b| {
+        a.1.at
+            .cmp(&b.1.at)
+            .then(written(&a.0).cmp(&written(&b.0)))
+            .then(a.0.cmp(&b.0))
+    });
     out
 }
 
@@ -294,13 +301,35 @@ pub fn step(lander: &str) -> Result<Vec<LandResult>, OttoError> {
             run: request.run.clone(),
             n: request.n,
         };
+        // Not a run id at all: there is nowhere to keep a result for it, and nothing to judge.
+        if crate::approvals::run_dir(&request.run).is_err() {
+            let _ = crate::state::journal(
+                &lander_dir,
+                "land-result",
+                json!({"run": request.run, "n": request.n, "head": request.head, "verdict": REFUSED, "why": "the request doesn't name a run"}),
+            );
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
         let before = read_result(&request.run, request.n).filter(|b| b.head == request.head);
         let result = match before {
-            // Judged already, and the step died before it took the request away.
-            Some(b) if b.is_final() => b,
+            // Landed already, and the step died before it took the request away: only what
+            // follows a landing is left to do. Any other result is judged afresh — the remote
+            // may answer differently now.
+            Some(b) if b.verdict == LANDED => b,
             _ => {
                 let result = judge(&request);
-                write_result(&result)?;
+                // A result that can't be kept is said, and doesn't hold up the requests after it.
+                // The request stays: a landing that happened is found on the remote next time.
+                if let Err(e) = write_result(&result) {
+                    eprintln!(
+                        "otto: landing {}: {} — and the result couldn't be recorded: {}",
+                        r.display(),
+                        result.line(),
+                        e.message
+                    );
+                    continue;
+                }
                 let _ = crate::state::journal(
                     &lander_dir,
                     "land-result",
