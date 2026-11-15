@@ -193,6 +193,15 @@ pub fn request(lander: &str, r: &ChangeRef, head: &str) -> Result<Request, OttoE
     Ok(request)
 }
 
+/// The commits the lander has asked for and the step hasn't looked at yet, other than `but`'s own.
+pub(crate) fn requested_heads(lander: &str, but: &ChangeRef) -> Vec<String> {
+    requests(lander)
+        .into_iter()
+        .filter(|(_, q)| !(q.run == but.run && q.n == but.n))
+        .map(|(_, q)| q.head)
+        .collect()
+}
+
 /// The lander's requests, in the order they were written.
 fn requests(lander: &str) -> Vec<(PathBuf, Request)> {
     let Ok(dir) = requests_dir(lander) else {

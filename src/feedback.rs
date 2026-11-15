@@ -880,7 +880,7 @@ mod tests {
         crate::changes::approve(&[seen(r(run, 1))], None, None).unwrap();
         let sha = crate::changes::claim(&lander, &r(run, 1)).unwrap().sha.unwrap();
         sh(&repo.wt, &["push", "--quiet", "origin", &format!("{sha}:main")]);
-        crate::changes::landed(&lander, &r(run, 1), &sha, None).unwrap();
+        crate::changes::landed_by_step(&lander, &r(run, 1), &sha, false, None).unwrap();
         repo
     }
 

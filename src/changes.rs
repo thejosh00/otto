@@ -1643,6 +1643,9 @@ pub struct Due {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub landing: Option<String>,
     pub repo: String,
+    /// The remote it lands on, as it was when the person approved: what the lander fetches from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
     pub base: String,
     pub branch: String,
     pub worktree: Option<String>,
@@ -1805,6 +1808,7 @@ fn due_of(author: &RunState, dir: &Path, c: &Change) -> Option<Due> {
         landing: again,
         // Where it lands is what the person approved, not what the index says now.
         repo: d.map(|d| d.repo.clone()).unwrap_or_else(|| c.repo.clone()),
+        remote: d.and_then(|d| d.remote.clone()),
         base: d.map(|d| d.base.clone()).unwrap_or_else(|| c.base.clone()),
         branch: d.map(|d| d.branch.clone()).unwrap_or_else(|| c.branch.clone()),
         worktree: c.worktree.clone(),
@@ -1870,6 +1874,7 @@ pub fn watch() -> Result<Vec<Due>, OttoError> {
                 todo: "look at its pull request".to_string(),
                 landing: None,
                 repo: c.repo.clone(),
+                remote: None,
                 base: c.base.clone(),
                 branch: c.branch.clone(),
                 worktree: c.worktree.clone(),
@@ -1956,7 +1961,7 @@ pub fn claim(lander: &str, r: &ChangeRef) -> Result<Due, OttoError> {
 /// wake can write. The run's index gives only where the change is — being landed, or on its pull
 /// request — and its latest version's number: its `decision`, repository and base are not looked at.
 pub fn check(lander: &str, r: &ChangeRef, head: &str) -> Result<String, OttoError> {
-    require_lander(lander)?;
+    let lander_id = require_lander(lander)?;
     let state = crate::state::read_run(&r.run)?;
     let dir = crate::paths::run_dir(&r.run)?;
     let c = read_index(&dir)?.changes.into_iter().find(|c| c.n == r.n).ok_or_else(|| OttoError::not_found(format!("{} has no change {}", state.label(), r.n)))?;
@@ -1966,7 +1971,15 @@ pub fn check(lander: &str, r: &ChangeRef, head: &str) -> Result<String, OttoErro
     let base = base_ref(repo, &d.base);
     let sha = rev(repo, head)?;
     // A commit with no patch of its own against the base — the base itself, say — matches nothing.
-    let same_patch = || patch_id_against(repo, &base, &sha).is_ok_and(|id| id == a.patch_id);
+    // Or against a commit the lander has already asked otto to land in this wake: the second change
+    // on one base is rebased onto the first one's requested head, which the base doesn't have yet.
+    // This is the lander's own check before it asks; the landing step judges against the remote.
+    let same_patch = || {
+        patch_id_against(repo, &base, &sha).is_ok_and(|id| id == a.patch_id)
+            || crate::landing::requested_heads(&lander_id, r).iter().any(|h| {
+                h != &sha && ok(repo, &["merge-base", "--is-ancestor", h, &sha]) && patch_id_against(repo, h, &sha).is_ok_and(|id| id == a.patch_id)
+            })
+    };
     // Merging its pull request: what merges must be what the pull request had when the person said
     // to merge it, not a commit someone else added since. Where the record allows later versions
     // without the person, what the lander pushed for the latest one.
@@ -2005,17 +2018,26 @@ pub fn check(lander: &str, r: &ChangeRef, head: &str) -> Result<String, OttoErro
     )))
 }
 
-/// It landed: `sha` is on the base branch now. otto looks for itself — the base, as the remote
-/// knows it after the push, must contain it. The author is told, and woken to do what follows.
+/// The lander says it landed. For a change that lands by a push to its base branch that is not
+/// the lander's to say: the landing step (`crate::landing`) pushes it and marks it landed, so this
+/// is refused, naming `request-land`. Only a change whose record says pull request gets past that,
+/// and then otto looks for itself: the base must contain the commit.
 pub fn landed(lander: &str, r: &ChangeRef, sha: &str, note: Option<&str>) -> Result<Change, OttoError> {
     let lander = require_lander(lander)?;
     let note = check_say(note, "--note")?;
     with_change(r, |path, state, c| {
         refuse_unless(c, &[ChangeState::Landing], "marked landed")?;
+        if !on_record(state, c).is_some_and(|a| a.record.mode == LandMode::Pr) {
+            return Err(OttoError::conflict(format!(
+                "change {} isn't marked landed by the lander: otto lands it and records that itself. Ask for it with                  `otto state change request-land {} {} --head <the commit that lands>`, stop work on it, and `otto state change due`                  says how it went at the next wake",
+                r.display(),
+                crate::paths::short_id(&lander),
+                r.display()
+            )));
+        }
         let repo = Path::new(&c.repo);
         let sha = rev(repo, sha)?;
-        // On its base branch: the remote's, or — for a repo that ships from its main checkout, as one
-        // with a ship script of its own may — the local one.
+        // On its base branch: the remote's, or the main checkout's own.
         let base = base_ref(repo, &c.base);
         let local_base = ok(repo, &["merge-base", "--is-ancestor", &sha, &format!("refs/heads/{}", c.base)]);
         if !local_base && !ok(repo, &["merge-base", "--is-ancestor", &sha, &base]) {
@@ -3922,7 +3944,7 @@ pub(crate) mod tests {
         let repo = repo();
         submit("c-land", &submit_fix(&repo, "t")).unwrap();
         set_lander("c-l");
-        approve(&[seen(r("c-land", 1))], None, None).unwrap();
+        approve(&[seen(r("c-land", 1))], Some(How { mode: LandMode::Push, merge_when_ready: false }), None).unwrap();
         assert!(claim("c-other", &r("c-land", 1)).unwrap_err().message.contains("isn't the lander"));
         let d = claim("c-l", &r("c-land", 1)).unwrap();
         assert_eq!(d.todo, "land");
@@ -3948,9 +3970,10 @@ pub(crate) mod tests {
         assert!(err.message.starts_with("DO NOT ACT"), "{}", err.message);
 
         // Not landed until the base has it.
-        assert!(landed("c-l", &r("c-land", 1), &rebased_sha, None).unwrap_err().message.contains("doesn't contain"));
+        // The lander doesn't say it landed, even once the base has it: the landing step does.
         sh(&repo.wt, &["push", "--quiet", "origin", &format!("{rebased_sha}:main")]);
-        let c = landed("c-l", &r("c-land", 1), &rebased_sha, None).unwrap();
+        assert!(landed("c-l", &r("c-land", 1), &rebased_sha, None).unwrap_err().message.contains("request-land"));
+        let c = landed_by_step("c-l", &r("c-land", 1), &rebased_sha, false, None).unwrap();
         assert_eq!((c.state, c.whose_move()), (ChangeState::Landed, Move::Lander), "landed, with cleaning up still to do");
         assert!(!c.landed.as_ref().unwrap().local_base, "the main checkout's main is behind");
         let state = crate::state::read_run("c-land").unwrap();

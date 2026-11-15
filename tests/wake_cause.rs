@@ -187,12 +187,16 @@ fn a_change_approved_starts_the_lander_and_a_change_landed_brings_its_author_bac
     );
     s.ok(&["wake", &author]);
 
-    git(&repo, &["merge", "-q", "--ff-only", "demo/one"]);
-    let sha = git(&repo, &["rev-parse", "HEAD"]);
+    // The lander asks; otto pushes it to the remote once the lander's wake is over, and marks it landed.
+    let origin = s.root.join("origin.git");
+    git(&s.root, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "main"]);
+    let sha = git(&repo, &["rev-parse", "demo/one"]);
     s.next_wake_does(
         &lander,
         &format!(
-            "'{OTTO}' state change claim \"$OTTO_RUN_ID\" {author}/1\n'{OTTO}' state change landed \"$OTTO_RUN_ID\" {author}/1 --sha {sha}\n"
+            "'{OTTO}' state change claim \"$OTTO_RUN_ID\" {author}/1\n'{OTTO}' state change request-land \"$OTTO_RUN_ID\" {author}/1 --head {sha}\n"
         ),
     );
     let lander_wakes = s.causes(&lander).len();
@@ -200,6 +204,10 @@ fn a_change_approved_starts_the_lander_and_a_change_landed_brings_its_author_bac
     s.wait_for_detached(&lander, lander_wakes + 1);
     assert_eq!(s.causes(&lander).last().unwrap(), "change-approved");
 
+    let until = Instant::now() + Duration::from_secs(30);
+    while !s.journal(&author).iter().any(|l| l["event"] == "timer-armed" && l["cause"] == "change-landed") && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let armed = s.journal(&author);
     assert!(
         armed.iter().any(|l| l["event"] == "timer-armed" && l["cause"] == "change-landed"),

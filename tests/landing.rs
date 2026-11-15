@@ -527,7 +527,17 @@ fn two_changes_on_one_base_land_in_the_order_asked() {
     git(&s.repo(), &["rebase", "-q", "a", "b"]);
     git(&s.repo(), &["checkout", "-q", "main"]);
     let b = git(&s.repo(), &["rev-parse", "b"]);
+    // The lander's own check: the second, rebased onto the first, isn't the approved patch against
+    // a base that doesn't have the first yet; once the first is asked for, it is.
+    let check = |r: &str, head: &str| s.otto(&["state", "change", "check", &s.lander, r, "--head", head]);
+    assert!(!check(&rb, &b).status.success(), "before the first is asked for");
     s.request(&ra, &a);
+    let out = check(&rb, &b);
+    assert!(
+        out.status.success(),
+        "on the first one's requested head: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     s.request(&rb, &b);
     s.wake();
     assert_eq!(
@@ -1041,4 +1051,22 @@ fn the_repositorys_credential_helper_is_not_run_for_an_http_remote() {
         !marker.exists(),
         "credential.helper from the repository's config was run"
     );
+}
+
+/// The lander can't say a change landed: `landed` is refused for one that lands by a push, and the
+/// refusal names what to do instead. Nothing is marked, even with the commit already on the base.
+#[test]
+fn the_lander_saying_it_landed_is_refused_and_told_to_ask() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    git(&s.repo(), &["push", "-q", "origin", &format!("{sha}:main")]);
+    git(&s.repo(), &["fetch", "-q", "origin"]);
+    let out = s.otto(&["state", "change", "landed", &s.lander, &r, "--sha", &sha]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "refused");
+    assert!(err.contains("request-land"), "{err}");
+    assert_eq!(s.state_of(1), "landing");
+    // What claim prints carries the remote to fetch from.
+    let due = s.ok(&["state", "change", "due", &s.lander, "--json"]);
+    assert!(due.contains("\"remote\""), "{due}");
 }

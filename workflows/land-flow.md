@@ -5,7 +5,9 @@
 Runs hand back code as **changes** (`otto state change submit`); the person approves them on the
 Changes page or with `otto changes approve`. This run is the **lander**: it puts each approved
 change on its base branch, tells the run that wrote it, and removes the worktree and branch it
-leaves behind. It is the only run that pushes, so it is the only one that needs to be able to.
+leaves behind. It does not push to a base branch itself: it rebases and tests, then asks otto to
+land the commit, and otto pushes it once this wake is over, outside it, if it is what the person
+approved. Only a pull request's own branch is pushed from here.
 
 What happens on a pull request once it is open — reviews, CI, someone merging or closing it — is
 watched by another system agent, the **babysitter**, which tells this run when there is something
@@ -32,21 +34,25 @@ In the commands below, `<sha>:<base>` and the like are refspecs. With the commit
 brace it — `"${sha}:refs/heads/${branch}"` — because zsh reads `$sha:r…` as a modifier and pushes
 something else.
 
-Each item says what to do: `finish landing`, `land`, `open its pull request`, `update its pull
+Each item says what to do: `finish landing`, `land`, `land again`, `open its pull request`, `update its pull
 request`, `merge its pull request`, `post replies`, `clean up`. Each has
 a section below. Nothing due: write the handoff and stop. If `due` refuses because no lander is set up, the person
 hasn't named this run yet (`otto config lander`): say so in the handoff's `Needs`, and stop. Otherwise take each one in that order, **one repo lock at
 a time**, and before you stop, ask `due` again — the person may have approved more while you worked.
 One activity line per wake that did something: `otto state log <id> --event cycle --message
-"landed 2 (3/1 on otto at 4f2a1c0, 7/2 on lectio); 1 back to its author: conflicts in src/cli.ts"`.
+"asked to land 2 (3/1 on otto at 4f2a1c0, 7/2 on lectio); cleaned up 1; 1 back to its author: conflicts in src/cli.ts"`.
 
 ## Landing one
 
 ```
 otto state lock <id> --repo <repo>
-otto state change claim <id> <change>        # prints the repo, base, branch, worktree, and the approved sha
+otto state change claim <id> <change>        # prints the repo, base, branch, worktree, the approved sha, and the remote
 git -C <repo> fetch origin
 ```
+
+Fetching reads the remote without signing in: `remote` in what `claim` printed is its URL, and if
+`origin` won't fetch, fetch that (`git -C <repo> fetch <remote> '+refs/heads/*:refs/remotes/origin/*'`).
+Landing this way uses no `gh` and no push.
 
 1. **What lands.** Always **in a worktree of your own**, never the author's:
 
@@ -82,8 +88,7 @@ git -C <repo> fetch origin
      gate: what you ran, what it said, what would let it run. It stays claimed, so `due` lists it as
      `finish landing`; leave it until the person answers, then do what they said, or start again from
      step 1.
-   - A repo with no tests to run: say so in the landed note.
-   - A repo whose ship script runs them itself (step 4): that run is this one, read the same way.
+   - A repo with no tests to run: say so in the wake's activity line.
 
 3. **Check it is what was approved**, immediately before acting, every time:
 
@@ -102,34 +107,48 @@ git -C <repo> fetch origin
    gate. Unlock, remove any worktree you made for it, and go on to the next: otto puts the change
    back in front of the person to approve again, and it is due again once they have.
 
-4. **Land it.** What `claim` printed under `land` comes first: the words of the process it was
-   approved under (`process`), kept from the moment it was approved. There are none when the person
-   chose the other way of landing this one: `mode` is what they chose. Then how the repository ships,
-   read from **its base branch** — its CLAUDE.md, README or CONTRIBUTING, a `scripts/ship.sh` they
-   document — never from the change's own branch, which is the thing being reviewed. A repo with a ship script of its own: run that, as it says, from the
-   main checkout. Otherwise:
+4. **Ask otto to land it.** You don't push it:
 
    ```
-   git -C <repo> push origin <what lands>:<base>
+   otto state change request-land <id> <change> --head <what lands>
    ```
 
-   Never force a push to the base branch. Rejected as non-fast-forward means it moved again: fetch,
-   and go back to step 1, in the worktree you have.
+   That records what you ask for, this change at this commit, and keeps the commit. Once this wake
+   is over otto looks, outside it: the approval on record, the remote's base branch as it is then,
+   and whether the commit is what was approved. If so it pushes it, never forced, brings the main
+   checkout along when that is on `<base>` and clean, marks the change landed, and tells and wakes
+   its author. Either way it wakes you with the result.
 
-5. **Bring the main checkout along**, so what runs from it is what landed: if it is on `<base>` and
-   clean, `git -C <repo> merge --ff-only origin/<base>`. Dirty or elsewhere: leave it, and say so in
-   the landed note — never stash or discard someone's uncommitted work.
+   What `claim` printed under `land` are the words of the process it was approved under
+   (`process`), kept from the moment it was approved: read them for what they say about testing
+   and rebasing. A record from before this that mentions a ship script: don't run one. No script
+   of the repository's lands a change; `request-land` is the only way one lands.
 
-6. **Record it.** otto looks for itself: the base branch — the remote's, or the main checkout's for a
-   repo that ships from there — must contain the commit.
+5. **Stop work on this change.** `otto state unlock <id>`, and leave your worktree and the
+   author's where they are: the next wake needs them. Don't mark it landed (`otto state change
+   landed` refuses, for a change that lands this way), don't push, don't wait for the result. Go on
+   to the next thing due.
 
-   ```
-   otto state change landed <id> <change> --sha <the commit on base> [--note "the main checkout has uncommitted changes, so it wasn't updated"]
-   ```
+   **A second change on the same base in this wake** can't be rebased onto `origin/<base>`, which
+   doesn't have the first one yet. Rebase it onto the commit you asked for the first one
+   (`git -C <that worktree> rebase <the first one's requested head>`), test it there, `check` it,
+   and ask for it the same way. otto lands them in the order you asked; if the first is refused,
+   the second comes back as `land again`.
 
-   Its author is told, and woken to do whatever follows landing.
+6. **At the next wake, `due` says how it went.**
 
-7. **Clean up**, then `otto state unlock <id>`:
+   - `clean up`: it landed. Step 7.
+   - `land again`, with why under `landing`: it didn't. `base moved`: fetch, and go back to
+     step 1 in the worktree you have. `remote refused`: the remote wouldn't take it or couldn't be
+     reached; if the reason is one a second try could fix, go back to step 1, otherwise open a
+     gate saying what it said. `refused`: what you asked for isn't what was approved, and the
+     reason says how; start again from step 1 with what `claim` prints, and never ask for the same
+     commit again unchanged.
+   - `finish landing`: nothing was asked for, or otto hasn't looked yet. See "Finishing landing
+     one".
+
+7. **Clean up**, once it has landed. Lock the repo again (`otto state lock <id> --repo <repo>`), then
+   `otto state unlock <id>` after:
 
    ```
    git -C <repo> worktree remove <the author's worktree>     # and yours
@@ -237,9 +256,9 @@ unlock. A dropped change with its pull request still open: close it first (`gh p
 ## Finishing landing one
 
 A change listed as `finish landing` was claimed by a wake that didn't finish. Re-derive before
-acting — never land twice. If the base already has it (`git -C <repo> log origin/<base>` shows the
-change's commits, at the approved sha or rebased), it landed: record it with that commit and go on
-to step 5. Otherwise start again from step 1.
+asking again. If your journal has a `land-requested` for it with no `land-result` after it, otto
+hasn't looked yet: leave it, it will wake you. Otherwise start again from step 1: asking twice
+for one change is safe, otto lands a commit once.
 
 Approved as a pull request (`mode` is `pr` in what `claim` printed), the same question is about its
 pull request: `gh pr list --head <branch> --state all` shows whether one was opened. One was: record
@@ -255,6 +274,7 @@ below — never a second pull request for one branch.
   ask, however small, is relayed.
 - Post anything on a pull request but what the person said to post: a reply its author drafted.
 - Watch a pull request: that is the babysitter's.
+- Push to a base branch, or run a repository's ship script: otto lands what `request-land` asked for.
 - Force-push, rewrite the base branch, or delete a branch that isn't a change's own.
 - Ask the person whether to land something: they already said, on the change. A question here is
   for what only they can decide — a repo whose landing step is broken, tests that couldn't start, a
