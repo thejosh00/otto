@@ -521,6 +521,8 @@ fn otto_state_past_its_own_run_can_not_be_written() {
     }
     assert!(!s.otto_home().join("approvals").exists());
     assert!(!s.otto_home().join("landings").exists());
+    // What the lander writes to ask for a landing is in its own run directory, which stays open.
+    s.allowed("a request to land, in its own run directory", &format!("mkdir -p \"$O/runs/{id}/land-requests\" && echo x > \"$O/runs/{id}/land-requests/1-1.json\"", id = s.id));
 }
 
 /// The person's approvals (`$OTTO_HOME/approvals`) are closed after the record's grants: a record that
