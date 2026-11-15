@@ -147,3 +147,14 @@ fn no_service_installed_means_no_service_calls() {
         assert!(!calls.contains("service"), "{args:?}: {calls}");
     }
 }
+
+/// An install from a temporary clone (otto's own, after a landing) must leave the skills linked to
+/// the main checkout: the clone is gone afterwards.
+#[test]
+fn the_skills_are_linked_to_the_checkout_named_not_the_one_installed_from() {
+    let sandbox = Sandbox::new(Service::NeverInstalled);
+    let calls = sandbox.install(&["--skills-repo", "/the/main/checkout"]);
+    assert!(calls.lines().any(|c| c == "new install --repo /the/main/checkout"), "{calls}");
+    let calls = Sandbox::new(Service::NeverInstalled).install(&[]);
+    assert!(calls.lines().any(|c| c.starts_with("new install --repo ") && c.ends_with("/repo")), "{calls}");
+}
