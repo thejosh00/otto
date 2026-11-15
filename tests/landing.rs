@@ -917,3 +917,128 @@ fn a_parent_killed_after_the_request_leaves_it_for_poke_to_land_once() {
     assert_eq!(s.lander_events("land-requested").len(), 1);
     assert_eq!(s.remote("main"), sha);
 }
+
+impl Scratch {
+    /// As `approved`, with the repository's origin — and so the remote on the approval — at `url`.
+    fn approved_at(&self, branch: &str, url: &str) -> (String, String) {
+        let (r, sha) = self.submit(branch);
+        git(&self.repo(), &["remote", "set-url", "origin", url]);
+        self.ok(&["changes", "approve", &format!("{r}@v1"), "--no-wake"]);
+        self.ok(&["state", "change", "claim", &self.lander, &r]);
+        (r, sha)
+    }
+
+    /// A script that leaves `marker-<name>` when anything runs it, and fails.
+    fn marker_script(&self, name: &str) -> (PathBuf, PathBuf) {
+        let (script, marker) = (
+            self.root.join(format!("run-{name}")),
+            self.root.join(format!("marker-{name}")),
+        );
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, marker)
+    }
+}
+
+/// The remote on the approval is reached over ssh, where `core.sshCommand` in the repository's
+/// config and `GIT_SSH_COMMAND` in the environment would each be run as the ssh: the step runs
+/// neither. Nothing listens at the address, so it fails to reach the remote and says so.
+#[test]
+fn the_repositorys_ssh_command_is_not_run_for_an_ssh_remote() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved_at("a", "ssh://git@127.0.0.1:1/nowhere.git");
+    let (from_config, config_marker) = s.marker_script("ssh-config");
+    let (from_env, env_marker) = s.marker_script("ssh-env");
+    git(
+        &s.repo(),
+        &["config", "core.sshCommand", from_config.to_str().unwrap()],
+    );
+    s.request(&r, &sha);
+    let out = support::otto_command()
+        .args(["poke"])
+        .current_dir(s.repo())
+        .env("OTTO_HOME", s.root.join("home"))
+        .env("HOME", s.root.join("userhome"))
+        .env("TMUX_TMPDIR", &s.root)
+        .env("OTTO_BIN", OTTO)
+        .env("GIT_SSH_COMMAND", &from_env)
+        .env("GIT_SSH", &from_env)
+        .env_remove("TMUX")
+        .env_remove("OTTO_RUN_ID")
+        .env_remove("OTTO_RUN_DIR")
+        .env_remove("OTTO_CHAT")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let result = s.result(1);
+    assert_eq!(result["verdict"], "remote refused", "{result}");
+    assert_eq!(
+        result["judgedOn"]["remote"], "ssh://git@127.0.0.1:1/nowhere.git",
+        "{result}"
+    );
+    assert!(
+        result["why"].as_str().unwrap().contains("couldn't fetch"),
+        "{result}"
+    );
+    assert!(
+        !config_marker.exists(),
+        "core.sshCommand from the repository's config was run"
+    );
+    assert!(
+        !env_marker.exists(),
+        "GIT_SSH_COMMAND from the environment was run"
+    );
+}
+
+/// The remote on the approval is reached over http and asks who is there, which is when git runs
+/// a `credential.helper`: the one in the repository's config is not run.
+#[test]
+fn the_repositorys_credential_helper_is_not_run_for_an_http_remote() {
+    use std::io::{Read as _, Write as _};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let asked = Arc::new(AtomicUsize::new(0));
+    let count = asked.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut seen = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(n) if n > 0 => seen.extend_from_slice(&buf[..n]),
+                    _ => break,
+                }
+            }
+            count.fetch_add(1, Ordering::SeqCst);
+            let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"scratch\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    });
+    let s = Scratch::new();
+    let url = format!("http://127.0.0.1:{port}/nowhere.git");
+    let (r, sha) = s.approved_at("a", &url);
+    let (helper, marker) = s.marker_script("credential");
+    git(
+        &s.repo(),
+        &["config", "credential.helper", helper.to_str().unwrap()],
+    );
+    s.request(&r, &sha);
+    s.ok(&["poke"]);
+    let result = s.result(1);
+    assert_eq!(result["verdict"], "remote refused", "{result}");
+    assert_eq!(result["judgedOn"]["remote"], url.as_str(), "{result}");
+    assert!(
+        asked.load(Ordering::SeqCst) > 0,
+        "the remote was asked, and wanted to know who: {result}"
+    );
+    assert!(
+        !marker.exists(),
+        "credential.helper from the repository's config was run"
+    );
+}
