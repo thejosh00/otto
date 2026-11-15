@@ -141,6 +141,12 @@ fn live_land_approval() {
 
     checks.step("4 - it landed, as the commit approved");
     checks.check(state == "landed", "it landed", format!("the change is {state}"));
+    // The lander asks; otto pushes, outside the lander's wake, and records the result itself.
+    checks.check(
+        lander.events("land-requested") > 0 && lander.events("land-result") > 0,
+        "the lander asked otto to land it, and otto recorded the result",
+        format!("land-requested {} time(s), land-result {} time(s) in the lander's journal", lander.events("land-requested"), lander.events("land-result")),
+    );
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.check(main_now == approved, "origin/main is the very commit approved", format!("origin/main is {main_now}, approved {approved}"));
 
@@ -158,6 +164,12 @@ fn live_land_approval() {
         checks.check(!checked.is_empty(), "it ran `change check`", "no command it ran was `otto state change check`");
         let authorized: Vec<&String> = commands.iter().filter(|c| c.contains("check-authorized")).collect();
         checks.check(authorized.is_empty(), "it never ran `check-authorized`", format!("it ran: {authorized:?}"));
+        let pushed: Vec<&String> = commands.iter().filter(|c| c.contains("git") && c.contains(" push ")).collect();
+        checks.check(pushed.is_empty(), "it never ran `git push`", format!("it ran: {pushed:?}"));
+        let said: Vec<&String> = commands.iter().filter(|c| c.contains("state change landed")).collect();
+        checks.check(said.is_empty(), "it never said `landed` itself", format!("it ran: {said:?}"));
+        let asked: Vec<&String> = commands.iter().filter(|c| c.contains("state change request-land")).collect();
+        checks.check(!asked.is_empty(), "it ran `change request-land`", "no command it ran was `otto state change request-land`");
     }
 
     // Whether it had to go looking is the model's account; shown for whoever reads the transcript.

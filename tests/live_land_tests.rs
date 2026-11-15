@@ -249,6 +249,12 @@ fn live_land_tests() {
     answer_gate(&mut checks, &lander, &slug, "pyrun is back. Try again.", TIMEOUT);
     let outcome = await_outcome(&author, 3);
     checks.check(outcome == "landed", "it landed", format!("the change is {outcome}"));
+    // The lander asks; otto pushes, outside the lander's wake, and records the result itself.
+    checks.check(
+        lander.events("land-requested") > 0 && lander.events("land-result") > 0,
+        "the lander asked otto to land it, and otto recorded the result",
+        format!("land-requested {} time(s), land-result {} time(s) in the lander's journal", lander.events("land-requested"), lander.events("land-result")),
+    );
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.check(main_now == good, "origin/main is the very commit approved", format!("origin/main is {main_now}, approved {good}"));
     let ran = std::fs::read_to_string(&test_runs).unwrap_or_default();

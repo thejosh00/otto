@@ -173,6 +173,12 @@ fn live_changes() {
     let sha = c["landed"]["sha"].as_str().unwrap_or("").to_string();
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.check(main_now != remote_main_before, "origin/main moved", "origin/main didn't move");
+    // The lander asks; otto pushes, outside the lander's wake, and records the result itself.
+    checks.check(
+        lander.events("land-requested") > 0 && lander.events("land-result") > 0,
+        "the lander asked otto to land it, and otto recorded the result",
+        format!("land-requested {} time(s), land-result {} time(s) in the lander's journal", lander.events("land-requested"), lander.events("land-result")),
+    );
     let greet = stdout(&git(&origin, &["show", "main:greet.py"]));
     checks.check(greet.contains("Goodbye"), "origin/main has the farewell", "origin/main has no farewell");
     let readme = git(&origin, &["show", "main:README.md"]);

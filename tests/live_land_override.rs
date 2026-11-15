@@ -101,6 +101,12 @@ fn live_land_override() {
 
     checks.step("4 - it landed the way the person chose");
     checks.check(state == "landed", "it landed", format!("the change is {state}"));
+    // The lander asks; otto pushes, outside the lander's wake, and records the result itself.
+    checks.check(
+        lander.events("land-requested") > 0 && lander.events("land-result") > 0,
+        "the lander asked otto to land it, and otto recorded the result",
+        format!("land-requested {} time(s), land-result {} time(s) in the lander's journal", lander.events("land-requested"), lander.events("land-result")),
+    );
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     checks.check(main_now == approved, "origin/main is the very commit approved", format!("origin/main is {main_now}, approved {approved}"));
     let moments = change(&author, 1)["timeline"].to_string();

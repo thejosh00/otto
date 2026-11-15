@@ -193,6 +193,12 @@ fn live_land_no_record() {
 
     checks.step("5 - the change on record landed, as the commit approved");
     checks.check(state == "landed", "author/1 landed", format!("author/1 is {state}"));
+    // The lander asks; otto pushes, outside the lander's wake, and records the result itself.
+    checks.check(
+        lander.events("land-requested") > 0 && lander.events("land-result") > 0,
+        "the lander asked otto to land it, and otto recorded the result",
+        format!("land-requested {} time(s), land-result {} time(s) in the lander's journal", lander.events("land-requested"), lander.events("land-result")),
+    );
     let main_now = stdout(&git(&origin, &["rev-parse", "main"]));
     let has = |sha: &str| git(&origin, &["merge-base", "--is-ancestor", sha, "main"]).status.success();
     checks.check(has(&approved), "origin/main contains the commit approved", format!("origin/main is {main_now}, which does not contain {approved}"));

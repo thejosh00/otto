@@ -8,6 +8,9 @@
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
 #
+# Not run from here, by hand: test/sandbox/real-wake.sh (a wake under the sandbox) and test/sandbox/real-land.sh
+# (a sandboxed lander asks, and otto lands the change without the lander's process pushing).
+#
 # Each test binary gets an OTTO_HOME and a tmux server of its own (tests/support), so none of this touches your runs
 # or your feedback. live_revive's launchd half (live_revive_launchd) is the exception: it needs the
 # installed agent, so it runs among your runs, and only by hand.
