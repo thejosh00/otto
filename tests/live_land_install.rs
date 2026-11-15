@@ -1,5 +1,5 @@
 //! tests/live_land_install.rs — prove a real lander lets otto's install after a landing run its
-//! course, against a real model. WRITTEN AND COMPILED, NOT YET RUN.
+//! course, against a real model.
 //!
 //! What `cargo test` cannot reach: what a model does when the landing step's result says
 //! `landed at <sha>, install pending` while the change is still `landing` (otto marks it landed and
