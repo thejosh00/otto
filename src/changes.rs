@@ -740,9 +740,20 @@ pub fn default_base(repo: &Path) -> Option<String> {
 
 /// Where the base branch is, as far as this checkout knows: the remote's copy when there is a
 /// remote, which is what landing means; else the local branch, for a repo with no remote.
+///
+/// The remote's copy is a tracking ref, and it lags: otto's landing pushes to the remote's URL from
+/// a repository of its own, which moves the remote and not this ref. So when the local branch
+/// holds everything the tracking ref does and more, the local branch is where the base is. When
+/// they have diverged, or the tracking ref is ahead, it is the tracking ref as before.
 pub fn base_ref(repo: &Path, base: &str) -> String {
-    let remote = format!("refs/remotes/origin/{base}");
-    if ok(repo, &["rev-parse", "--verify", "--quiet", &remote]) { format!("origin/{base}") } else { base.to_string() }
+    let (remote, local) = (format!("refs/remotes/origin/{base}"), format!("refs/heads/{base}"));
+    if !ok(repo, &["rev-parse", "--verify", "--quiet", &remote]) {
+        return base.to_string();
+    }
+    let ahead = ok(repo, &["rev-parse", "--verify", "--quiet", &local])
+        && rev(repo, &local).ok() != rev(repo, &remote).ok()
+        && ok(repo, &["merge-base", "--is-ancestor", &remote, &local]);
+    if ahead { local } else { format!("origin/{base}") }
 }
 
 pub(crate) fn rev(repo: &Path, what: &str) -> Result<String, OttoError> {
@@ -1135,13 +1146,24 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             }
         }
         // Anything from here on is a new version for the person to read. Nothing is written yet.
+        // The same commit measured against a base that moved is a new version to read, and not a new
+        // commit: what showed it works still does, so it comes along when nothing new is given.
+        let same_commit = existing.is_some_and(|i| index.changes[i].latest().sha == sha);
         if stands.is_some() {
-            return Err(OttoError::usage(
+            return Err(OttoError::usage(if same_commit {
+                "--stands is for the same commit against the same base. The base branch has moved since this was submitted, so \
+                 the same commit is a new version to read: submit it without --stands, and its evidence comes along"
+            } else {
                 "--stands is for the same commit, handed back as it is. A new commit is a new version: say what changed in its \
-                 summary, and submit it without --stands",
-            ));
+                 summary, and submit it without --stands"
+            }));
         }
-        if s.evidence.is_empty() && no_evidence.is_none() {
+        let carried: Option<(Vec<Evidence>, Option<String>)> = existing
+            .map(|i| index.changes[i].latest())
+            .filter(|v| v.sha == sha && s.evidence.is_empty() && no_evidence.is_none() && (!v.evidence.is_empty() || v.no_evidence.is_some()))
+            .map(|v| (v.evidence.clone(), v.no_evidence.clone()));
+        let no_evidence = no_evidence.or_else(|| carried.as_ref().and_then(|(_, why)| why.clone()));
+        if s.evidence.is_empty() && carried.is_none() && no_evidence.is_none() {
             return Err(OttoError::usage(
                 "a new commit needs what shows it works, or why nothing does. Submit again with one of:\n  \
                  --evidence <path>      a screenshot, a transcript, tests failing before and passing after: a file or a folder\n  \
@@ -1176,7 +1198,11 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
         let summary_rel = write_said(path, &dir, k, summary)?;
         let whole = file.map(|text| write_whole(path, &dir, k, text)).transpose()?;
         let pr_file = pr.map(|text| write_pr(path, &dir, k, text)).transpose()?;
-        let evidence = keep_evidence(path, &dir, k, &s.evidence)?;
+        let mut evidence = keep_evidence(path, &dir, k, &s.evidence)?;
+        if let Some((earlier, _)) = &carried {
+            let found: Vec<Found> = earlier.iter().map(|e| Found { from: path.join(&e.path), name: e.name.clone(), bytes: e.bytes, kind: e.kind }).collect();
+            evidence = keep_evidence(path, &dir, k, &found)?;
+        }
         let version = ChangeVersion {
             k,
             sha: sha.clone(),
