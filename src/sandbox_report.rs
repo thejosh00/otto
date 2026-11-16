@@ -285,7 +285,7 @@ pub fn render(label: &str, short: &str, window: &str, notes: &[String], report: 
     out.push(String::new());
     out.push(CAVEAT.to_string());
     out.push(format!(
-        "To open a path, add it to \"read\" or \"write\" in the run's record by hand, or with `otto sandbox observe {short} --read <path>` / `--write <path>` (docs/guides/sandboxing.md, \"Moving a run in and out\"). This report changes nothing."
+        "To open a path, add it to \"read\" or \"write\" in the run's record by hand, or with `--read <path>` / `--write <path>` on `otto sandbox observe {short}` or `otto sandbox enforce {short}`, whichever the run is under now (docs/guides/sandboxing.md, \"Moving a run in and out\"). This report changes nothing."
     ));
     out.join("\n") + "\n"
 }

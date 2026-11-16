@@ -141,7 +141,7 @@ Would be denied (allowed and logged, the run is under observation): 3
       1×  file-write-create        /Users/you/workspace/notes/today.md   at 2026-11-15 09:01:02, by bash
 
 This guides a decision and proves nothing: a sandboxed process can write lines to the log itself, so read it as a hint of what to open, never as evidence of what a run did.
-To open a path, add it to "read" or "write" in the run's record by hand, or with `otto sandbox observe 5 --read <path>` / `--write <path>` (docs/guides/sandboxing.md, "Moving a run in and out"). This report changes nothing.
+To open a path, add it to "read" or "write" in the run's record by hand, or with `--read <path>` / `--write <path>` on `otto sandbox observe 5` or `otto sandbox enforce 5`, whichever the run is under now (docs/guides/sandboxing.md, "Moving a run in and out"). This report changes nothing.
 ```
 
 - **It guides, and proves nothing.** A process inside the sandbox can write to the log, so a line may be forged

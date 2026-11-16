@@ -212,3 +212,16 @@ fn a_run_that_does_not_exist_and_a_time_that_is_not_one_are_refused() {
     assert!(!until.status.success());
     assert!(said(&until).contains("--until takes"), "{}", said(&until));
 }
+
+/// An enforced run told to use `observe --read` would be put back under observation: the advice names both.
+#[test]
+fn the_advice_on_opening_a_path_names_enforce_as_well_as_observe() {
+    let s = Scratch::new();
+    let id = s.run("enforced", "claude");
+    s.ok(&["sandbox", "enforce", &id]);
+    let log = s.root.join("log.txt");
+    std::fs::write(&log, log_lines(&id)).unwrap();
+    let text = s.ok(&["sandbox", "report", &id, "--log-file", log.to_str().unwrap()]);
+    assert!(text.contains("otto sandbox enforce"), "{text}");
+    assert!(text.contains("whichever the run is under now"), "{text}");
+}
