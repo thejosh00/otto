@@ -525,6 +525,37 @@ fn otto_state_past_its_own_run_can_not_be_written() {
     s.allowed("a request to land, in its own run directory", &format!("mkdir -p \"$O/runs/{id}/land-requests\" && echo x > \"$O/runs/{id}/land-requests/1-1.json\"", id = s.id));
 }
 
+/// `otto sandbox observe`, `enforce` and `off` refuse when `OTTO_RUN_ID` or `OTTO_CHAT` is set
+/// (`tests/sandbox_commands.rs`), and a wake can clear a variable. So with both cleared, from inside the
+/// profile: each gets as far as the record and can't write or remove it, and the run is left as it was.
+#[test]
+fn the_sandbox_commands_can_not_be_run_from_inside() {
+    if !can_nest() {
+        return;
+    }
+    let s = Scratch::new(one_repo);
+    // The sandboxed launcher already defined, so nothing but the record stands between the command and its end.
+    let config = s.otto_home().join("config.json");
+    let mut with_sandboxed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    let command = format!("{} -- {}", s.otto_home().join("sandbox/wrapper").display(), s.root.join("stub").display());
+    with_sandboxed["launchers"].as_array_mut().unwrap().push(serde_json::json!({"name": "sandbox-claude", "command": command}));
+    std::fs::write(&config, with_sandboxed.to_string()).unwrap();
+    let run_json = s.otto_home().join("runs").join(&s.id).join("run.json");
+    let launcher = || serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&run_json).unwrap()).unwrap()["launcher"]["kind"].clone();
+    let before = (std::fs::read(s.record_path()).unwrap(), std::fs::read(&config).unwrap(), launcher());
+    for args in [format!("enforce {} --write \"$H/.ssh\"", s.id), format!("observe {} --read \"$H/.ssh\"", s.id), format!("off {}", s.id)] {
+        let out = s.inside(&format!("env -u OTTO_RUN_ID -u OTTO_CHAT '{OTTO}' sandbox {args}"));
+        let said = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(!out.status.success(), "otto sandbox {args} from inside should fail: {said}");
+        assert!(!said.contains("the person's to run"), "it got past the variable, to the write the profile refuses: {said}");
+        assert_eq!((std::fs::read(s.record_path()).unwrap(), std::fs::read(&config).unwrap(), launcher()), before, "otto sandbox {args}: {said}");
+    }
+    // The same commands from outside do go through, so it was the profile that stopped them.
+    let out = s.otto().args(["sandbox", "off", &s.id]).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(!s.record_path().exists());
+}
+
 /// The person's approvals (`$OTTO_HOME/approvals`) are closed after the record's grants: a record that
 /// lists the folder itself under `write`, or all of `$OTTO_HOME`, opens none of it. Not to add one, change
 /// one, remove one or move the folder away.
