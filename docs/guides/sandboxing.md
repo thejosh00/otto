@@ -86,11 +86,14 @@ Words in front keep working (`env LEGENDA_DIR=… ~/.otto/sandbox/wrapper -- cla
 
 ### Moving a run in and out
 
-You don't write the launcher or the record by hand. Three commands do it, one run at a time:
+You don't write the launcher or the record by hand. Four commands do it, one run at a time, in this order:
 
 ```sh
-otto sandbox observe 5      # nothing blocked; what the record doesn't allow is logged
-otto sandbox enforce 5      # what the record doesn't allow is blocked
+otto sandbox observe 5      # 1. nothing blocked; what the record doesn't allow is logged
+otto sandbox report 5       # 2. after a few wakes: what would have been blocked
+otto sandbox observe 5 --read ~/workspace/notes     # 3. open what's missing (or edit the record)
+otto sandbox enforce 5      # 4. what the record doesn't allow is blocked
+otto sandbox report 5       # 5. watch: what was blocked since
 otto sandbox off 5          # the undo: no record, and the launcher the run had before
 ```
 
@@ -119,7 +122,47 @@ undo it. Each is in the run's journal as [`sandbox-observed`, `sandbox-enforced`
 - **`off` leaves the `sandbox-…` launcher in `config.json`**, since other runs may be under it, and doesn't keep
   what the record listed. Deleting the record and setting `launcher.kind` back in `run.json` by hand still works.
 
-**They are yours alone.** From a wake or a chat (`OTTO_RUN_ID` or `OTTO_CHAT` set) all three refuse and change
+#### Reading the report
+
+`otto sandbox report <run>` reads the machine's log for the lines that run's profile wrote, and folds them into a
+few you can decide from: each operation and path (or service name), how many times, when first and last, and by
+which programs, most frequent first. Under observation they are what *would* be blocked; once enforced, what
+*was*:
+
+```
+$ otto sandbox report 5
+Sandbox report for #5 legenda-curate
+  window    2026-11-15 09:00:12 to now (when the run was last put under observation or enforced)
+  note      the record's mode is now report: nothing is blocked, and what it doesn't allow is logged
+
+Would be denied (allowed and logged, the run is under observation): 3
+     41×  file-read-data           /Users/you/workspace/legenda/data/ (17 paths under it, grouped)   first 2026-11-15 09:00:14, last 10:02:51, by node, git
+      2×  file-read-data           /Users/you/.ssh   first 2026-11-15 09:00:20, last 10:00:19, by ls
+      1×  file-write-create        /Users/you/workspace/notes/today.md   at 2026-11-15 09:01:02, by bash
+
+This guides a decision and proves nothing: a sandboxed process can write lines to the log itself, so read it as a hint of what to open, never as evidence of what a run did.
+To open a path, add it to "read" or "write" in the run's record by hand, or with `otto sandbox observe 5 --read <path>` / `--write <path>` (docs/guides/sandboxing.md, "Moving a run in and out"). This report changes nothing.
+```
+
+- **It guides, and proves nothing.** A process inside the sandbox can write to the log, so a line may be forged
+  and a missing line isn't proof of innocence. Every report says so. Use it to decide what to add to the record;
+  don't use it as an account of what a run did.
+- **It changes nothing.** It never edits a record, `run.json` or a journal. What to open is yours to decide:
+  add the path with `--read` or `--write` on `observe` or `enforce`, or edit the record. Not everything listed
+  should be opened: `~/.ssh` above is there to be refused.
+- **The window** starts when the run was last put under observation or enforced (its journal's latest
+  `sandbox-observed` or `sandbox-enforced`), or when its record was last written if the journal doesn't say.
+  `--since` and `--until` take an age (`45m`, `2h`, `3d`), a date or a timestamp. The log keeps only so much:
+  a window that reaches back past what it kept shows less, and doesn't say so.
+- **One line for a noisy path.** The same operation on the same path is one line with a count; five or more
+  paths under one directory, for one operation, are one line that says it is grouped. At most 30 lines are shown,
+  and it says how many were left out; `--json` has the same findings for a script.
+- **Other runs' lines are left out**: a line is the run's only if the message after it is exactly
+  `otto-run-<its id>`.
+- It reads the log with `/usr/bin/log`, so it works for you in a terminal. Anyone can run it, as it only reads,
+  but inside a sandbox the log may not be readable.
+
+**The first three are yours alone.** From a wake or a chat (`OTTO_RUN_ID` or `OTTO_CHAT` set) `observe`, `enforce` and `off` refuse and change
 nothing. A wake can clear a variable, so that isn't what holds: the profile closes `$OTTO_HOME/sandbox/` and
 `config.json` to writes, and a run that edits its own `run.json` is refused for disagreeing with its record.
 
