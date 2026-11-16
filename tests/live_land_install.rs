@@ -357,6 +357,8 @@ fn live_land_install() {
 
     let start = Instant::now();
     let mut nudged = false;
+    // What otto says on refusing to approve the change again, asked while its install was pending.
+    let mut refusal: Option<(bool, String)> = None;
     let state = loop {
         let c = change(&author, 1);
         let state = c["state"].as_str().unwrap_or("").to_string();
@@ -366,6 +368,17 @@ fn live_land_install() {
             || start.elapsed() > TIMEOUT
         {
             break state;
+        }
+        // Once, while otto installs it: the harness asks for something otto refuses of a change
+        // that is landing (it writes nothing). Kept only if the install was still pending after.
+        if refusal.is_none() && install_pending(&home, &author) {
+            let out = otto(&["changes", "approve", "author/1@v1", "--no-wake"]);
+            if install_pending(&home, &author) {
+                refusal = Some((
+                    out.status.success(),
+                    String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                ));
+            }
         }
         // Once, while otto installs it: the lander is due for some other reason (here, its timer).
         if !nudged && install_pending(&home, &author) && !lander.wake_running() {
@@ -467,6 +480,16 @@ fn live_land_install() {
             "no wake fell inside the install (nudged: {nudged}, landed {landed_at}, installed {installed_at}): what it does then wasn't seen"
         ),
     );
+    match &refusal {
+        Some((succeeded, said)) => checks.check(
+            !succeeded
+                && said.contains("it landed, and otto is installing it")
+                && !said.contains("the lander is landing it"),
+            "asked mid-install to approve it again, otto refused, saying it landed and otto is installing it",
+            format!("asked mid-install to approve it again, otto (succeeded: {succeeded}) said: {said}"),
+        ),
+        None => checks.skip("the harness didn't catch the install pending, so what a refusal says then wasn't seen"),
+    }
     let woken_after = events.iter().any(|(event, ts, cause)| {
         event == "timer-armed" && cause == "change-landed" && !installed_at.is_empty() && *ts >= installed_at
     });
