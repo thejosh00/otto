@@ -73,9 +73,10 @@ with a message listing the launchers that exist.
 ## otto's own sandbox
 
 otto ships a sandbox built on macOS's Seatbelt: a launcher whose command is a wrapper, and a record for each
-run saying what it may touch. **Nothing uses it yet.** `otto install` puts the wrapper in place, which opens
-nothing and moves no run; a run is under it only once a person has given it both a launcher and a record, and
-the commands for that come later (`plans/v3.md`, 1.7). A run with no record behaves exactly as it did.
+run saying what it may touch. **No run is under it until you put it there.** `otto install` puts the wrapper in
+place, which opens nothing and moves no run; a run is under it only once it has both a launcher and a record, and
+[three commands](#moving-a-run-in-and-out) that only you can run give it both. A run with no record behaves
+exactly as it did.
 
 ```json
 { "name": "sandbox", "command": "~/.otto/sandbox/wrapper -- claude", "grantFlag": "--allow" }
@@ -83,13 +84,53 @@ the commands for that come later (`plans/v3.md`, 1.7). A run with no record beha
 
 Words in front keep working (`env LEGENDA_DIR=… ~/.otto/sandbox/wrapper -- claude`), and that variable arrives.
 
+### Moving a run in and out
+
+You don't write the launcher or the record by hand. Three commands do it, one run at a time:
+
+```sh
+otto sandbox observe 5      # nothing blocked; what the record doesn't allow is logged
+otto sandbox enforce 5      # what the record doesn't allow is blocked
+otto sandbox off 5          # the undo: no record, and the launcher the run had before
+```
+
+`observe` and `enforce` write the run's record and switch its launcher **together**, so the two never disagree
+(a run where they do is [refused at its next wake](#a-run-that-disagrees-with-its-record)). Each prints what it
+wrote: the record's path, the mode, the launcher and its command, what is open to read and to write, and how to
+undo it. Each is in the run's journal as [`sandbox-observed`, `sandbox-enforced` or
+`sandbox-off`](../reference/journal.md).
+
+- **The launcher** is the one the run had, with the wrapper in front of its `claude`, added to `config.json` as
+  `sandbox-<its name>` if it isn't there: `sandbox-claude`, or for a launcher `legenda-curator` whose command is
+  `env LEGENDA_DIR=… claude`, `sandbox-legenda-curator` running `env LEGENDA_DIR=… ~/.otto/sandbox/wrapper -- claude`.
+  That name is how `off` knows what to put back, so `off` refuses, changing nothing, if the launcher the run had
+  is no longer in `config.json`. A launcher whose command has no word `claude` can't be given the wrapper this way:
+  the command says so, and you add `sandbox-<its name>` yourself.
+- **A first record** opens the run's repos from its `run.json` to writes and nothing else, and starts in the
+  run's working directory, which opens nothing. That is less than most runs need, on purpose: observing is how
+  you find what is missing. Add to it with `--read <path>` and `--write <path>` (repeatable, on `observe` or
+  `enforce`), or edit the record.
+- **An existing record is kept.** `enforce` after `observe` changes the mode and nothing else, so what you added,
+  by flag or by hand, is still there. `enforce` on a run with no record writes a first one, and says it wasn't
+  observed first.
+- **It applies from the next wake.** A wake that is running is not touched, and the command says so. A run that is
+  done, failed or stopped is refused: `otto resume` it first.
+- **A run blocked for disagreeing with its record** is unblocked by whichever command made the two agree.
+- **`off` leaves the `sandbox-…` launcher in `config.json`**, since other runs may be under it, and doesn't keep
+  what the record listed. Deleting the record and setting `launcher.kind` back in `run.json` by hand still works.
+
+**They are yours alone.** From a wake or a chat (`OTTO_RUN_ID` or `OTTO_CHAT` set) all three refuse and change
+nothing. A wake can clear a variable, so that isn't what holds: the profile closes `$OTTO_HOME/sandbox/` and
+`config.json` to writes, and a run that edits its own `run.json` is refused for disagreeing with its record.
+
 ### The record decides
 
-`$OTTO_HOME/sandbox/runs/<id>.json` is written by a person and can't be written by any wake:
+`$OTTO_HOME/sandbox/runs/<id>.json` is written by `otto sandbox observe` or `enforce`, which only a person can run,
+and is yours to edit. No wake can write it:
 
 ```json
 {
-  "launcher": "sandbox",
+  "launcher": "sandbox-claude",
   "workdir": "/Users/me/workspace",
   "read": ["/Users/me/workspace/lib"],
   "write": ["/Users/me/workspace/svc", "/Users/me/workspace/.work-trees/svc"],
@@ -176,8 +217,9 @@ If they differ, nothing starts, and:
 - an older binary reads all of this, seeing `blocked (instructions)` with the same reason.
 
 **The way back** is to make them agree, by putting `run.json` back or changing the record. Then answer the question,
-or `otto wake` it. To take a run out of the sandbox, delete the record and put its launcher back to one that isn't
-the wrapper. Answering while they still differ gets the same refusal and the same question.
+or `otto wake` it; `otto sandbox observe` or `enforce` makes them agree and unblocks it in one step. To take a run
+out of the sandbox, `otto sandbox off <run>` (or by hand: delete the record and put its launcher back to one that
+isn't the wrapper). Answering while they still differ gets the same refusal and the same question.
 
 **In the wrapper, too, anything wrong and nothing starts.** No record, a bad record, no sign-in, a profile that won't compile: it says
 why on stderr and in the journal as [`sandbox-refused`](../reference/journal.md), and never runs the command
