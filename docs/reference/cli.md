@@ -1314,6 +1314,7 @@ Commands:
   observe  Put a run under observation: write its sandbox record with nothing blocked and every would-be denial logged, and switch its launcher to the sandboxed one, together. Yours to run, never a wake's
   enforce  Enforce a run's sandbox record: what it doesn't list is blocked. Keeps everything an existing record lists. Yours to run, never a wake's
   off      Take a run out of the sandbox: remove its record and put back the launcher it had. Yours to run, never a wake's
+  report   What a run under observation would have been denied, and what an enforced one was, from the machine's log: each operation and path with a count, first and last seen. Reads only, and changes nothing. It guides a decision and proves nothing, as a sandboxed process can write to the log itself. Inside a sandbox it may not be able to read the log
   wrap     What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
   help     Print this message or the help of the given subcommand(s)
 
@@ -1378,6 +1379,34 @@ Arguments:
           The run: its number or name (a unique prefix of the name will do)
 
 Options:
+  -h, --help
+          Print help
+```
+
+### `otto sandbox report`
+
+```text
+What a run under observation would have been denied, and what an enforced one was, from the machine's log: each operation and path with a count, first and last seen. Reads only, and changes nothing. It guides a decision and proves nothing, as a sandboxed process can write to the log itself. Inside a sandbox it may not be able to read the log
+
+Usage: otto sandbox report [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --since <WHEN>
+          From when: an age (45m, 2h, 3d), a date or a timestamp. Without it, from when the run was last put under observation or enforced
+
+      --until <WHEN>
+          Until when, in the same forms. Without it, until now
+
+      --json
+          The same report as JSON
+
+      --log-file <FILE>
+          Read log lines from this file, as `/usr/bin/log show` printed them, and don't read the machine's log
+
   -h, --help
           Print help
 ```
