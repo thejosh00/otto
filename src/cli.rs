@@ -148,6 +148,8 @@ pub enum SandboxCommand {
     Enforce(crate::sandbox::switch::OnArgs),
     /// Take a run out of the sandbox: remove its record and put back the launcher it had. Yours to run, never a wake's
     Off(crate::sandbox::switch::OffArgs),
+    /// What a run under observation would have been denied, and what an enforced one was, from the machine's log: each operation and path with a count, first and last seen. Reads only, and changes nothing. It guides a decision and proves nothing, as a sandboxed process can write to the log itself. Inside a sandbox it may not be able to read the log
+    Report(crate::sandbox::report::ReportArgs),
     /// What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
     Wrap {
         /// `--allow <dir>…`, ignored because the record decides, then `--` and the command

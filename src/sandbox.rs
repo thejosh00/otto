@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 /// `otto sandbox observe`, `enforce` and `off`: the person's commands that write a record and switch a launcher.
 #[path = "sandbox_switch.rs"]
 pub mod switch;
+#[path = "sandbox_report.rs"]
+pub mod report;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 

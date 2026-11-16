@@ -124,6 +124,7 @@ fn run(command: Command) -> Result<(), OttoError> {
             SandboxCommand::Observe(args) => sandbox::switch::on(sandbox::Mode::Report, args),
             SandboxCommand::Enforce(args) => sandbox::switch::on(sandbox::Mode::Enforce, args),
             SandboxCommand::Off(args) => sandbox::switch::off(args),
+            SandboxCommand::Report(args) => sandbox::report::run(args),
         },
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {
