@@ -294,16 +294,24 @@ fn change_wants_its_author(report: &Report) -> bool {
 }
 
 /// Its change is out. Refused while another is, which is how `next`'s one-at-a-time holds for a run
-/// that didn't ask it first. Said again of a report being built, or one whose change landed, it
-/// points the report at this change: one built as several changes in turn follows the latest, so
-/// a first part landing doesn't read as the whole of it wanting verifying.
+/// that didn't ask it first: unless this is the change the other is being built as, because one
+/// change can settle two reports and each is then verified on its own. The refusal names that
+/// change, so a wake holding a second report it settles knows what to say instead. Said again of a
+/// report being built, or one whose change landed, it points the report at this change: one built
+/// as several changes in turn follows the latest, so a first part landing doesn't read as the
+/// whole of it wanting verifying.
 pub fn building(id: u32, change: &str) -> Result<Report, OttoError> {
     // The run's whole id, not its short form: what's unambiguous today may not stay so.
     let change = crate::changes::ChangeRef::parse(change)?;
     let change = format!("{}/{}", change.run, change.n);
     edit(|reports| {
-        if let Some(other) = reports.iter().find(|r| r.status == Status::Building && r.id != id) {
-            return Err(OttoError::conflict(format!("report {} is being built already — one at a time", other.id)));
+        let elsewhere = |r: &&Report| r.status == Status::Building && r.id != id && r.change.as_deref() != Some(change.as_str());
+        if let Some(other) = reports.iter().find(elsewhere) {
+            let its = other.change.as_deref().unwrap_or("its change");
+            return Err(OttoError::conflict(format!(
+                "report {} is being built already, as change {its} — one at a time. If {its} settles report {id} too, say so: `otto feedback building {id} --change {its}`; if report {id} only repeats it, `otto feedback close {id} --duplicate-of {} --why \"…\"`; otherwise it waits until report {} is verified",
+                other.id, other.id, other.id
+            )));
         }
         let i = index_of(reports, id)?;
         if !matches!(reports[i].status, Status::Building | Status::Landed) {
@@ -701,6 +709,11 @@ mod tests {
         "f-build/1".to_string()
     }
 
+    /// A second change of the same run. Call it after `a_change`.
+    fn another_change() -> String {
+        "f-build/2".to_string()
+    }
+
     /// A report from before the file had any of this still reads, as what it was.
     #[test]
     fn an_old_report_reads_as_a_wake_s_and_closed_if_it_was_handled() {
@@ -737,11 +750,47 @@ mod tests {
         assert_eq!(next().unwrap().id, 1);
         building(1, &change).unwrap();
         assert!(next().is_none(), "one at a time");
-        let err = building(2, &change).unwrap_err();
+        let other = another_change();
+        let err = building(2, &other).unwrap_err();
         assert!(err.message.contains("report 1"), "{}", err.message);
         assert_eq!(status_of(2), Status::Open, "refused means unchanged");
         landed(1).unwrap();
         assert_eq!(next().unwrap().id, 2, "landed lets the next one go");
+    }
+
+    /// Report 57: a second report the same change settles couldn't be tied to it, and the refusal
+    /// didn't say what to do instead.
+    #[test]
+    fn a_second_report_rides_the_change_already_building_and_another_change_is_refused_saying_how() {
+        let _h = TempHome::new();
+        let change = a_change();
+        let other = another_change();
+        add("first").unwrap();
+        add("second, which the same change settles").unwrap();
+        add("third, a change of its own").unwrap();
+        building(1, &change).unwrap();
+
+        let err = building(3, &other).unwrap_err();
+        assert_eq!(status_of(3), Status::Open, "refused means unchanged");
+        for said in ["report 1 is being built already", "one at a time", "otto feedback building 3 --change f-build/1", "otto feedback close 3 --duplicate-of 1", "until report 1 is verified"] {
+            assert!(err.message.contains(said), "the refusal should say {said:?}: {}", err.message);
+        }
+
+        let second = building(2, &change).unwrap();
+        assert_eq!((second.status, second.change.as_deref()), (Status::Building, Some("f-build/1")), "the same change carries both");
+        assert_eq!(status_of(1), Status::Building, "and the first is as it was");
+        assert!(next().is_none(), "still one change at a time");
+        assert!(building(3, &other).is_err(), "and still nothing on another change");
+        assert_eq!(status_of(3), Status::Open);
+
+        landed(1).unwrap();
+        verified(1).unwrap();
+        assert_eq!(status_of(2), Status::Building, "each is verified on its own");
+        assert!(next().is_none(), "the second is still out");
+        landed(2).unwrap();
+        verified(2).unwrap();
+        assert_eq!(next().unwrap().id, 3);
+        building(3, &other).unwrap();
     }
 
     #[test]
@@ -921,7 +970,7 @@ mod tests {
         assert!(verified(1).is_err(), "not over until the last part lands");
 
         add("another").unwrap();
-        assert!(building(2, "f-parts/2").is_err(), "still one report at a time");
+        assert!(building(2, "f-parts/1").is_err(), "still one change at a time");
         close(2, "only here to be refused", None).unwrap();
         assert!(building(2, "f-parts/2").is_err(), "an item that's over isn't building again");
     }
