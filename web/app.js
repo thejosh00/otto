@@ -948,7 +948,9 @@ function changeStateText(l) {
     case "landing":
       // The run's index says approved, but check found no approval on record: the list hands it back to the person.
       if (l.move === "you") return "Its run says approved, with no approval of yours on record — yours to approve again";
-      return l.state === "approved" ? "Approved — waiting for the lander" : "The lander is landing it";
+      if (l.state === "approved") return "Approved — waiting for the lander";
+      // The landing step put it on its base branch; the change stays `landing` until otto has installed it.
+      return l.installing ? "Landed — otto is installing it" : "The lander is landing it";
     case "landed": return l.move === "lander" ? `Landed at ${shortSha(l.landedSha)} — cleaning up` : `Landed at ${shortSha(l.landedSha)}`;
     case "needs-you": return "Its agent asks you something about it";
     case "ready-to-merge": return `${prName(l)} is approved and passing — yours to merge`;
@@ -969,7 +971,7 @@ function changeChip(l) {
     : l.state === "dropped" || l.state === "closed" ? ["update", l.state === "closed" ? "Closed" : "Dropped"]
     : l.state === "revising" ? ["draft", "Being revised"]
     : l.state === "pr-open" ? ["report", l.move === "ci" ? "Waiting on CI" : l.move === "lander" ? "Lander on it" : l.move === "babysitter" ? "Babysitter on it" : "In review"]
-    : ["report", l.state === "landing" ? "Landing" : "Approved"];
+    : ["report", l.installing ? "Installing" : l.state === "landing" ? "Landing" : "Approved"];
   return h(`span.kind.${cls}`, text);
 }
 

@@ -1290,7 +1290,7 @@ fn write_whole(run_dir: &Path, dir: &str, k: u32, text: &str) -> Result<(String,
 pub fn withdraw(r: &ChangeRef, reason: &str) -> Result<Change, OttoError> {
     let reason = check_say(Some(reason), "--reason")?.ok_or_else(|| OttoError::usage("say why, with --reason"))?;
     with_change(r, |path, _state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "withdrawn")?;
+        refuse_unless(&r.run, c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "withdrawn")?;
         c.decision = None;
         c.enter(ChangeState::Dropped);
         c.moment("author", format!("withdrew it: {reason}"));
@@ -1300,16 +1300,19 @@ pub fn withdraw(r: &ChangeRef, reason: &str) -> Result<Change, OttoError> {
     })
 }
 
-fn refuse_unless(c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
-    refuse_named(&format!("change {}", c.n), c, allowed, doing)
+/// `run` is the run the change is of: what otto is doing with a landing is kept under it.
+fn refuse_unless(run: &str, c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
+    refuse_named(&format!("change {}", c.n), run, c, allowed, doing)
 }
 
 /// `refuse_unless`, calling the change what the caller knows it by.
-fn refuse_named(name: &str, c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
+fn refuse_named(name: &str, run: &str, c: &Change, allowed: &[ChangeState], doing: &str) -> Result<(), OttoError> {
     if allowed.contains(&c.state) {
         return Ok(());
     }
     let why = match c.state {
+        // The step landed it and the install isn't over: the lander has nothing in hand (`due`).
+        ChangeState::Landing if crate::landing::installing(run, c.n) => "it landed, and otto is installing it".to_string(),
         ChangeState::Landing => "the lander is landing it right now".to_string(),
         ChangeState::Landed => format!("it landed{}", c.landed.as_ref().map(|l| format!(" at {}", short_sha(&l.sha))).unwrap_or_default()),
         ChangeState::Dropped => "it was dropped".to_string(),
@@ -1410,7 +1413,7 @@ struct Approval {
 /// Every rule for approving this change: a refusal here is why it can't be approved. Writes nothing.
 fn check_approval(c: &Change, looked: &Looked, how: Option<How>, config: &crate::config::Config) -> Result<Approval, OttoError> {
     let r = &looked.r;
-    refuse_named(&r.display(), c, &[ChangeState::Review], "approved")?;
+    refuse_named(&r.display(), &r.run, c, &[ChangeState::Review], "approved")?;
     let latest = c.latest().k;
     match looked.version {
         None => {
@@ -1580,7 +1583,7 @@ fn stopped_partway(refs: &[Looked], e: OttoError) -> OttoError {
 pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
     let text = check_say(Some(text), "what to change")?.ok_or_else(|| OttoError::usage("say what to change"))?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "sent back")?;
+        refuse_unless(&r.run, c, &[ChangeState::Review, ChangeState::Approved, ChangeState::PrOpen, ChangeState::ReadyToMerge], "sent back")?;
         // With its pull request open the approval stands: the next version goes to the pull request.
         if c.pr.is_none() {
             crate::approvals::remove(&r.run, c.n)?;
@@ -1601,7 +1604,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
 pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoError> {
     let text = check_say(text, "why")?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::NeedsYou, ChangeState::PrOpen, ChangeState::ReadyToMerge], "dropped")?;
+        refuse_unless(&r.run, c, &[ChangeState::Review, ChangeState::Revising, ChangeState::Approved, ChangeState::NeedsYou, ChangeState::PrOpen, ChangeState::ReadyToMerge], "dropped")?;
         crate::approvals::remove(&r.run, c.n)?;
         c.decision = None;
         c.enter(ChangeState::Dropped);
@@ -2051,7 +2054,7 @@ pub fn claim(lander: &str, r: &ChangeRef) -> Result<Due, OttoError> {
         return Err(OttoError::conflict(format!("change {} {NEEDS_GH}. It is not yours to land: leave it, and go on to the next", r.display())));
     }
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Approved, ChangeState::Landing], "landed")?;
+        refuse_unless(&r.run, c, &[ChangeState::Approved, ChangeState::Landing], "landed")?;
         if on_record(state, c).is_none() {
             return Err(no_approval(r));
         }
@@ -2142,7 +2145,7 @@ pub fn landed(lander: &str, r: &ChangeRef, sha: &str, note: Option<&str>) -> Res
     let lander = require_lander(lander)?;
     let note = check_say(note, "--note")?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Landing], "marked landed")?;
+        refuse_unless(&r.run, c, &[ChangeState::Landing], "marked landed")?;
         if !on_record(state, c).is_some_and(|a| a.record.mode == LandMode::Pr) {
             return Err(OttoError::conflict(format!(
                 "change {} isn't marked landed by the lander: otto lands it and records that itself. Ask for it with                  `otto state change request-land {} {} --head <the commit that lands>`, stop work on it, and `otto state change due`                  says how it went at the next wake",
@@ -2199,7 +2202,7 @@ fn mark_landed(path: &Path, state: &mut RunState, c: &mut Change, lander: &str, 
 /// is marked landed without asking this checkout's refs, which a wake can write.
 pub(crate) fn landed_by_step(lander: &str, r: &ChangeRef, sha: &str, local_base: bool, note: Option<&str>) -> Result<Change, OttoError> {
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Landing], "marked landed")?;
+        refuse_unless(&r.run, c, &[ChangeState::Landing], "marked landed")?;
         mark_landed(path, state, c, lander, sha, local_base, note.map(str::to_string))?;
         Ok(c.clone())
     })
@@ -2238,7 +2241,7 @@ pub fn bounce(lander: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoE
     let lander = require_lander(lander)?;
     let reason = check_say(Some(reason), "--reason")?.ok_or_else(|| OttoError::usage("say why, with --reason"))?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Approved, ChangeState::Landing], "sent back")?;
+        refuse_unless(&r.run, c, &[ChangeState::Approved, ChangeState::Landing], "sent back")?;
         c.decision = None;
         c.enter(ChangeState::Revising);
         c.moment("lander", format!("couldn't land it: {reason}"));
@@ -2259,7 +2262,7 @@ pub fn bounce(lander: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoE
 pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoError> {
     let lander = require_lander(lander)?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Landing], "rebased")?;
+        refuse_unless(&r.run, c, &[ChangeState::Landing], "rebased")?;
         let repo = PathBuf::from(&c.repo);
         let sha = rev(&repo, head)?;
         let snap = snapshot(&repo, &base_ref(&repo, &c.base), &sha)?;
@@ -2359,7 +2362,7 @@ fn pr_number(url: &str) -> Option<u32> {
 pub fn pr_pushed(lander: &str, r: &ChangeRef, head: &str, url: Option<&str>, auto_merge: bool) -> Result<Change, OttoError> {
     let lander = require_lander(lander)?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::Landing], "pushed to a pull request")?;
+        refuse_unless(&r.run, c, &[ChangeState::Landing], "pushed to a pull request")?;
         if c.decision.as_ref().is_none_or(|d| d.mode != LandMode::Pr) {
             return Err(OttoError::conflict(format!("change {} was approved to land on {}, not as a pull request", r.display(), c.base)));
         }
@@ -2515,7 +2518,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
     let why = check_say(Some(f.why), "--why")?.ok_or_else(|| OttoError::usage("--why: why this is within what the person allowed"))?;
     let tests = f.tests.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "fixed")?;
+        refuse_unless(&r.run, c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "fixed")?;
         let Some(d) = c.decision.as_ref().filter(|_| c.pr.is_some()) else {
             return Err(OttoError::conflict(format!("change {} has no pull request: its author changes it", r.display())));
         };
@@ -2602,7 +2605,7 @@ pub fn relay(by: &str, r: &ChangeRef, who: &str, text: &str) -> Result<Change, O
     let who = who.trim();
     let text = check_say(Some(text), "--text")?.ok_or_else(|| OttoError::usage("--text: what they asked"))?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising, ChangeState::Landing], "sent back")?;
+        refuse_unless(&r.run, c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising, ChangeState::Landing], "sent back")?;
         if c.pr.is_none() {
             return Err(OttoError::conflict(format!("change {} has no pull request: send it back with `bounce`", r.display())));
         }
@@ -2631,7 +2634,7 @@ fn first_line(text: &str) -> String {
 pub fn merged(by: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
     let (by, role) = require_lander_or_babysitter(by)?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "marked merged")?;
+        refuse_unless(&r.run, c, &[ChangeState::PrOpen, ChangeState::ReadyToMerge, ChangeState::Revising], "marked merged")?;
         let repo = Path::new(&c.repo);
         let sha = rev(repo, sha)?;
         let base = base_ref(repo, &c.base);
@@ -2698,7 +2701,7 @@ pub fn posted(lander: &str, r: &ChangeRef, comment: &str) -> Result<Change, Otto
 /// The person says to merge its pull request, now that it is approved and passing.
 pub fn merge(r: &ChangeRef) -> Result<Decided, OttoError> {
     with_change(r, |path, _state, c| {
-        refuse_unless(c, &[ChangeState::ReadyToMerge, ChangeState::PrOpen], "merged")?;
+        refuse_unless(&r.run, c, &[ChangeState::ReadyToMerge, ChangeState::PrOpen], "merged")?;
         let d = c.decision.as_mut().ok_or_else(|| OttoError::conflict(format!("change {} has no approval on record", r.display())))?;
         let at = Timestamp::now();
         if let Some(head) = c.pr.as_ref().map(|pr| pr.head.clone()) {
@@ -2733,7 +2736,7 @@ pub fn post(r: &ChangeRef, comment: Option<&str>) -> Result<Decided, OttoError> 
 pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
     let text = check_say(Some(text), "the answer")?.ok_or_else(|| OttoError::usage("say the answer"))?;
     with_change(r, |path, state, c| {
-        refuse_unless(c, &[ChangeState::NeedsYou], "answered")?;
+        refuse_unless(&r.run, c, &[ChangeState::NeedsYou], "answered")?;
         let ask = c.ask.as_mut().expect("needs-you has its question");
         let answer = match ask.options.iter().find(|o| o.eq_ignore_ascii_case(text.trim())) {
             Some(o) => o.clone(),
@@ -2890,6 +2893,8 @@ pub struct Line {
     pub tests: Option<String>,
     pub last: Option<Moment>,
     pub landed_sha: Option<String>,
+    /// The step landed it and otto is still installing it: `landing`, with nothing in the lander's hands.
+    pub installing: bool,
     /// Its run is over, so nobody can revise it.
     pub author_gone: bool,
     /// Its pull request, when it has one.
@@ -3022,6 +3027,7 @@ fn line(run: &RunState, short: &str, c: &Change, config: &crate::config::Config)
         tests: v.tests.clone(),
         last: c.timeline.last().cloned(),
         landed_sha: c.landed.as_ref().map(|l| l.sha.clone()),
+        installing: c.state == ChangeState::Landing && crate::landing::installing(&run.id, c.n),
         author_gone: run.status.is_terminal(),
         pr: c.pr.clone(),
         asking: (c.state == ChangeState::NeedsYou).then(|| c.ask.as_ref().map(|a| crate::gate::title(&a.question, 120))).flatten(),

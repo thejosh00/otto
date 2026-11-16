@@ -862,7 +862,7 @@ fn change_state_words(l: &crate::changes::Line) -> String {
         // Its run says approved, and there is no approval of yours on record (`changes::line`): nothing lands it.
         Approved | Landing if l.whose == crate::changes::Move::You => "its run says approved, with no approval of yours on record: yours to approve again".into(),
         Approved => "approved; waiting for the lander".into(),
-        Landing if crate::landing::installing(&l.run, l.n) => "landed; otto is installing it".into(),
+        Landing if l.installing => "landed; otto is installing it".into(),
         Landing => "the lander is landing it".into(),
         Landed => match (&l.landed_sha, l.whose) {
             (Some(sha), crate::changes::Move::Lander) => format!("landed at {}; cleaning up", short(sha)),

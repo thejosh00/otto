@@ -704,6 +704,19 @@ mod tests {
         assert!(chrome.contains("document.title = waiting ?"), "the tab's count is that sum");
     }
 
+    /// A change the landing step has landed stays `landing` while otto installs it; the page said
+    /// the lander was landing it all that while. The list tells it which (`changes::Line::installing`).
+    #[test]
+    fn a_change_otto_is_installing_is_not_shown_as_the_lander_landing_it() {
+        let js = include_str!("../../web/app.js");
+        let at = js.find("function changeStateText").unwrap();
+        let words = &js[at..at + js[at..].find("\n}\n").unwrap()];
+        assert!(words.contains(r#"l.installing ? "Landed — otto is installing it" : "The lander is landing it""#), "{words}");
+        let at = js.find("function changeChip").unwrap();
+        let chip = &js[at..at + js[at..].find("\n}\n").unwrap()];
+        assert!(chip.contains(r#"l.installing ? "Installing" : l.state === "landing" ? "Landing""#), "{chip}");
+    }
+
     /// The reason the guard exists: another site in the same browser must not be able to stop,
     /// wake or start anything.
     #[test]

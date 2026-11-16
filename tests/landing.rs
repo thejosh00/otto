@@ -1075,7 +1075,7 @@ fn the_lander_saying_it_landed_is_refused_and_told_to_ask() {
 // ---- Installing after a landing on the otto repository (src/landing/install.rs) ----
 
 /// A stand-in for install.sh: it says what it was given, and on request does what `otto agent
-/// start` does to the job that started it (kills its process group), fails, or dies.
+/// start` does to the job that started it (kills its process group), waits to be let go, fails, or dies.
 const STAND_IN: &str = r#"#!/bin/sh
 root="$OTTO_HOME/.."
 {
@@ -1095,6 +1095,8 @@ if [ -f "$root/want-die" ]; then
 	touch "$root/install-done"
 	kill -9 $PPID $$
 fi
+i=0
+while [ -f "$root/hold" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i + 1)); done
 [ -f "$root/want-fail" ] && { echo "the build broke"; touch "$root/install-done"; exit 3; }
 touch "$root/install-done"
 "#;
@@ -1213,7 +1215,9 @@ fn a_landing_on_the_otto_repository_is_installed_and_survives_the_restart_of_the
     let json = s.ok(&["state", "change", "due", &s.lander, "--json"]);
     assert_eq!(json.trim(), "[]", "the check script's list stays empty");
     let list = s.ok(&["changes"]);
-    assert!(list.contains("landed; otto is installing it"), "{list}");
+    assert!(list.contains("landed; otto is installing it") && !list.contains("the lander is landing it"), "{list}");
+    let shown = s.ok(&["changes", "show", &r]);
+    assert!(shown.contains("landed; otto is installing it") && !shown.contains("the lander is landing it"), "{shown}");
     s.wait_for("install-done");
     let out = s.ok(&["poke"]);
     assert!(out.contains("installed"), "{out}");
@@ -1234,6 +1238,200 @@ fn a_landing_on_the_otto_repository_is_installed_and_survives_the_restart_of_the
     assert!(!Path::new(cwd).exists(), "the clone is gone afterwards");
     s.ok(&["poke"]);
     assert_eq!(s.lander_events("land-install").len(), 1, "finished once");
+}
+
+impl Scratch {
+    /// A change landed on the otto repository by the lander's wake, its stand-in install held open:
+    /// the window in which otto is installing it. `let_the_install_finish` ends it.
+    fn installing() -> (Scratch, String, String) {
+        let s = Scratch::otto_repo(true, true);
+        let (r, sha) = s.approved("a");
+        s.request(&r, &sha);
+        s.flag("hold");
+        s.wake();
+        assert_eq!(s.remote("main"), sha, "it is on main");
+        let result = s.result(1);
+        assert_eq!((result["verdict"].as_str(), result["install"]["state"].as_str()), (Some("landed"), Some("pending")), "{result}");
+        assert_eq!(s.state_of(1), "landing", "the change is still landing while otto installs it");
+        (s, r, sha)
+    }
+
+    fn let_the_install_finish(&self) {
+        std::fs::remove_file(self.root.join("hold")).unwrap();
+        self.wait_for("install-done");
+    }
+
+    /// Wakes of the lander for a change having landed: those armed (pending until a pass starts
+    /// them), and those started.
+    fn landed_wakes(&self) -> (usize, usize) {
+        let of = |event: &str| self.lander_events(event).iter().filter(|e| e["cause"] == "change-landed").count();
+        (of("timer-armed"), of("wake-started"))
+    }
+
+    /// Wait for the wake a pass started for the landing to end: a pass starts it and doesn't wait.
+    fn the_landed_wake_is_over(&self) {
+        for _ in 0..300 {
+            let journal = self.lander_events_all();
+            let started = journal.iter().position(|e| e["event"] == "wake-started" && e["cause"] == "change-landed");
+            if started.is_some_and(|at| journal[at..].iter().any(|e| e["event"] == "wake-complete")) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("the lander's wake for the landing never started, or never ended: {:?}", self.lander_events_all());
+    }
+
+    fn lander_events_all(&self) -> Vec<Value> {
+        let journal = std::fs::read_to_string(self.root.join("home/runs").join(&self.lander).join("journal.jsonl")).unwrap();
+        journal.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect()
+    }
+
+    /// What otto says on refusing this, having refused it.
+    fn refused(&self, args: &[&str]) -> String {
+        let out = self.otto(args);
+        assert!(!out.status.success(), "otto {args:?} is refused: {}", String::from_utf8_lossy(&out.stdout));
+        String::from_utf8_lossy(&out.stderr).to_string()
+    }
+}
+
+/// Item 56 (a): while otto installs a landing, every view of the change a person has says so, and
+/// none says the lander is landing it — the list, the change itself, what the web page is given, and
+/// what otto says on refusing to do something to it.
+#[test]
+fn while_otto_installs_a_landing_the_changes_say_installing_and_nowhere_that_the_lander_is_landing_it() {
+    let (s, r, _sha) = Scratch::installing();
+    let not_the_lander = |what: &str, text: &str| {
+        let lower = text.to_lowercase();
+        assert!(!lower.contains("the lander is landing it"), "{what} says the lander is landing it: {text}");
+        assert!(!lower.contains("being landed"), "{what} says it is being landed: {text}");
+    };
+
+    let list = s.ok(&["changes"]);
+    assert!(list.contains("landed; otto is installing it"), "{list}");
+    not_the_lander("otto changes", &list);
+
+    let shown = s.ok(&["changes", "show", &r]);
+    assert!(shown.contains("landed; otto is installing it"), "{shown}");
+    not_the_lander("otto changes show", &shown);
+
+    // Refused, by whoever asks: its author withdrawing it, the person approving or dropping it.
+    for args in [
+        vec!["state", "change", "withdraw", s.author.as_str(), "1", "--reason", "overtaken"],
+        vec!["changes", "approve", r.as_str(), "--no-wake"],
+        vec!["changes", "drop", r.as_str()],
+    ] {
+        let err = s.refused(&args);
+        assert!(err.contains("it landed, and otto is installing it"), "otto {args:?}: {err}");
+        assert!(!err.contains("the lander is landing it"), "otto {args:?}: {err}");
+    }
+    assert_eq!(s.state_of(1), "landing", "and none of them moved it");
+
+    // What the web page draws its words from (web/app.js, `changeStateText`).
+    let json: Value = serde_json::from_str(&s.ok(&["changes", "--json"])).unwrap();
+    let line = json["changes"].as_array().unwrap().iter().find(|l| l["n"] == 1).unwrap().clone();
+    assert_eq!((line["state"].as_str(), line["installing"].as_bool()), (Some("landing"), Some(true)), "{line}");
+    let detail: Value = serde_json::from_str(&s.ok(&["changes", "show", &r, "--json"])).unwrap();
+    assert_eq!(detail["line"]["installing"], true, "{}", detail["line"]);
+
+    // Once the install is over, none of them says installing any more.
+    s.let_the_install_finish();
+    s.ok(&["poke"]);
+    let list = s.ok(&["changes"]);
+    assert!(list.contains("landed at") && !list.contains("installing"), "{list}");
+    let json: Value = serde_json::from_str(&s.ok(&["changes", "--json"])).unwrap();
+    assert_eq!(json["changes"][0]["installing"], false, "{json}");
+    let err = s.refused(&["state", "change", "withdraw", &s.author, "1", "--reason", "overtaken"]);
+    assert!(err.contains("it landed at") && !err.contains("installing"), "{err}");
+}
+
+/// Item 56 (b): while otto installs a landing, `due` names the change as installing, to be waited
+/// for, with nothing to land, finish landing or clean up; and no wake of the lander for the landing
+/// is armed or started — not by the landing, and not by a pass made before the install is over.
+#[test]
+fn while_otto_installs_a_landing_due_says_to_wait_and_the_lander_is_not_woken_for_it() {
+    let (s, r, _sha) = Scratch::installing();
+    let short = r.split('/').next_back().unwrap();
+    let pending = |s: &Scratch, when: &str| {
+        let due = s.ok(&["state", "change", "due", &s.lander]);
+        let named: Vec<&str> = due.lines().filter(|l| l.contains(&format!("/{short} "))).collect();
+        assert_eq!(named.len(), 1, "{when}: named once: {due}");
+        assert!(named[0].contains(" installing ") && named[0].contains("it landed, and otto is installing it"), "{when}: {due}");
+        assert!(named[0].contains("Nothing for you to do about it yet"), "{when}: it says to wait: {due}");
+        // That line and this one are all of it: no entry to land, finish landing or clean up.
+        let rest: Vec<&str> = due.lines().filter(|l| *l != named[0]).collect();
+        assert_eq!(rest, ["nothing to land, and nothing to clean up"], "{when}: {due}");
+        let json = s.ok(&["state", "change", "due", &s.lander, "--json"]);
+        assert_eq!(json.trim(), "[]", "{when}: the check script's list stays empty");
+        assert_eq!(s.landed_wakes(), (0, 0), "{when}: no wake of the lander for the landing is armed or started");
+        assert_eq!(s.result(1)["install"]["state"], "pending", "{when}");
+        assert_eq!(s.state_of(1), "landing", "{when}");
+    };
+    pending(&s, "after the landing");
+    // A pass while the install is still running settles nothing, and wakes nobody for it.
+    s.ok(&["poke"]);
+    pending(&s, "after a pass mid-install");
+    assert!(s.lander_events("land-install").is_empty(), "the install isn't over");
+    s.let_the_install_finish();
+}
+
+/// Item 56 (c): once the install has finished and a pass has seen it, the change is landed, its
+/// author's note says how the install went, `due` lists its clean-up, and the lander is woken for it
+/// once — however many passes follow.
+#[test]
+fn once_the_install_is_over_the_change_is_landed_and_the_lander_is_woken_once_to_clean_up() {
+    let (s, r, sha) = Scratch::installing();
+    assert_eq!(s.landed_wakes(), (0, 0), "not before");
+    s.let_the_install_finish();
+    let out = s.ok(&["poke"]);
+    assert!(out.contains("installed"), "{out}");
+    assert_eq!(s.state_of(1), "landed");
+    assert_eq!(s.result(1)["install"]["state"], "installed");
+    let note = s.landed_note(1);
+    assert!(note.contains("otto installed this commit"), "the author's note says how the install went: {note}");
+    let due = s.ok(&["state", "change", "due", &s.lander]);
+    let short = r.split('/').next_back().unwrap();
+    let named: Vec<&str> = due.lines().filter(|l| l.contains(&format!("/{short} "))).collect();
+    assert_eq!(named.len(), 1, "{due}");
+    assert!(named[0].contains(" clean up ") && !due.contains("installing"), "{due}");
+    let json: Value = serde_json::from_str(&s.ok(&["state", "change", "due", &s.lander, "--json"])).unwrap();
+    assert_eq!((json[0]["todo"].as_str(), json.as_array().unwrap().len()), (Some("clean up"), 1), "{json}");
+    assert_eq!(s.landed_wakes().0, 1, "the lander is woken for it");
+    // The next pass starts that wake; passes after it start no other, and arm none.
+    s.ok(&["poke"]);
+    s.the_landed_wake_is_over();
+    s.ok(&["poke"]);
+    assert_eq!(s.landed_wakes(), (1, 1), "woken once: {:?}", s.lander_events("timer-armed"));
+    assert_eq!(s.lander_events("land-install").len(), 1, "and the install finished once");
+    assert_eq!(s.remote("main"), sha);
+}
+
+/// A landing on a repository that isn't otto's is as it was: landed by the step with nothing to
+/// install, the lander woken once to clean up, and no view of it saying installing.
+#[test]
+fn a_landing_on_another_repository_installs_nothing_and_wakes_the_lander_to_clean_up() {
+    let s = Scratch::new();
+    let (r, sha) = s.approved("a");
+    s.request(&r, &sha);
+    s.wake();
+    assert_eq!(s.remote("main"), sha);
+    assert_eq!(s.state_of(1), "landed", "landed at once: nothing to wait for");
+    let result = s.result(1);
+    assert!(result["verdict"] == "landed" && result["install"].is_null(), "{result}");
+    assert!(!s.landed_note(1).contains("install"), "{}", s.landed_note(1));
+    let list = s.ok(&["changes"]);
+    assert!(list.contains("landed at") && !list.contains("installing"), "{list}");
+    let json: Value = serde_json::from_str(&s.ok(&["changes", "--json"])).unwrap();
+    assert_eq!(json["changes"][0]["installing"], false, "{json}");
+    let due = s.ok(&["state", "change", "due", &s.lander]);
+    assert!(due.contains(" clean up ") && !due.contains("installing"), "{due}");
+    assert_eq!(s.landed_wakes().0, 1, "the lander is woken to clean up");
+    s.ok(&["poke"]);
+    s.the_landed_wake_is_over();
+    s.ok(&["poke"]);
+    assert_eq!(s.landed_wakes(), (1, 1), "once");
+    assert!(s.lander_events("land-install").is_empty(), "nothing was installed");
+    let err = s.refused(&["state", "change", "withdraw", &s.author, "1", "--reason", "overtaken"]);
+    assert!(err.contains("it landed at") && !err.contains("installing"), "{err}");
 }
 
 /// From poke: the same, when the pass that lands it is the reviver's and the install restarts it.
