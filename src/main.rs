@@ -121,6 +121,9 @@ fn run(command: Command) -> Result<(), OttoError> {
                 let raw: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
                 sandbox::wrap(raw.get(2..).unwrap_or_default())
             }
+            SandboxCommand::Observe(args) => sandbox::switch::on(sandbox::Mode::Report, args),
+            SandboxCommand::Enforce(args) => sandbox::switch::on(sandbox::Mode::Enforce, args),
+            SandboxCommand::Off(args) => sandbox::switch::off(args),
         },
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {

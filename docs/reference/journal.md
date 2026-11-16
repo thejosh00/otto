@@ -36,6 +36,9 @@ the budget events, the wake failures, and `usage-limited`.
 | `wake-spent` | `turns`, `spentWakes`, `spentTokens`, `inputTokens`, `outputTokens`, `cacheRead`, `cacheCreation`, `toolErrors` | What the wake used, read from its session transcript. `spentWakes` and `spentTokens` are the run's totals so far |
 | `usage-unavailable` | `note` | The transcript couldn't be read (common under a sandbox); the wake still counts |
 | `sandbox-refused` | `why` | [The sandbox wrapper](../guides/sandboxing.md#otto-s-own-sandbox) wouldn't start anything, or `otto wake` or `otto chat` wouldn't because the run [disagrees with its record](../guides/sandboxing.md#a-run-that-disagrees-with-its-record), and why |
+| `sandbox-observed` | `mode`, `launcher`, `previousLauncher` | A person ran [`otto sandbox observe`](../guides/sandboxing.md#moving-a-run-in-and-out): the run's record was written (or kept) with `mode` `report`, and its wakes go through `launcher` where they went through `previousLauncher`. From the next wake |
+| `sandbox-enforced` | same | A person ran `otto sandbox enforce`: the same, with `mode` `enforce` |
+| `sandbox-off` | `launcher`, `previousLauncher` | A person ran `otto sandbox off`: the record is gone and the run is back under `launcher`, having been under `previousLauncher` |
 | `sign-in-waiting` | `until`, `expiresAt` | A sandboxed wake wasn't started yet: Claude's sign-in runs out at `expiresAt`, before the wake would end, and claude renews it only in its last minutes. The run sleeps and the wake starts at `until`. See [when the sign-in is about to run out](../guides/sandboxing.md#when-the-sign-in-is-about-to-run-out) |
 | `sign-in-renewed` | `wasExpiringAt` | Before a sandboxed wake, otto had claude renew a sign-in that was about to run out (or had), and it now lasts |
 | `wake-reported-error` | `exitCode`, `timedOut`, `turns` | The wake's process exited non-zero or timed out |

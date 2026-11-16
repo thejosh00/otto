@@ -341,6 +341,20 @@ pub fn save_lander(id: Option<&str>) -> Result<Option<String>, OttoError> {
     Ok(id)
 }
 
+/// Add a launcher to `config.json`'s list, keeping everything else in the file as it was. One of that name
+/// already there is left as it is: this never redefines what a person wrote.
+pub fn add_launcher(def: &LauncherDef) -> Result<(), OttoError> {
+    edit(|object| {
+        let list = object.entry("launchers").or_insert_with(|| serde_json::json!([]));
+        let list = list.as_array_mut().ok_or_else(|| OttoError::usage("`launchers` in config.json is not a list"))?;
+        if !list.iter().any(|l| l["name"].as_str().is_some_and(|n| n.eq_ignore_ascii_case(&def.name))) {
+            list.push(serde_json::to_value(def)?);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+
 /// Make or redefine a process, by name. Redefining `standard` replaces the built-in one.
 pub fn save_process(process: Process) -> Result<Process, OttoError> {
     let process = Process {

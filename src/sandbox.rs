@@ -19,7 +19,11 @@
 use crate::config::LauncherDef;
 use crate::error::OttoError;
 use crate::state::RunState;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+/// `otto sandbox observe`, `enforce` and `off`: the person's commands that write a record and switch a launcher.
+#[path = "sandbox_switch.rs"]
+pub mod switch;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -169,7 +173,7 @@ const OUTSIDE_SERVICES: &[&str] = &[
 ];
 
 /// Enforcing, or (1.7's observing) allowing the same things and logging each.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
@@ -179,13 +183,14 @@ pub enum Mode {
 
 /// `$OTTO_HOME/sandbox/runs/<id>.json`. Unknown fields are refused, so a mistyped key can't quietly
 /// leave something closed or open.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct Record {
     /// The launcher this run must be under (`disagreement`).
     pub launcher: String,
     /// Where it starts. Being listed here opens nothing: this is the one directory a wake is in without
     /// being able to read it, since `~/workspace` as a working directory would otherwise open every project.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
     /// What it may read beyond what's readable anyway.
     #[serde(default)]

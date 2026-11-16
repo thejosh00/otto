@@ -142,6 +142,12 @@ pub enum ConfigCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxCommand {
+    /// Put a run under observation: write its sandbox record with nothing blocked and every would-be denial logged, and switch its launcher to the sandboxed one, together. Yours to run, never a wake's
+    Observe(crate::sandbox::switch::OnArgs),
+    /// Enforce a run's sandbox record: what it doesn't list is blocked. Keeps everything an existing record lists. Yours to run, never a wake's
+    Enforce(crate::sandbox::switch::OnArgs),
+    /// Take a run out of the sandbox: remove its record and put back the launcher it had. Yours to run, never a wake's
+    Off(crate::sandbox::switch::OffArgs),
     /// What $OTTO_HOME/sandbox/wrapper runs: the run's record becomes a profile, claude's token goes on descriptor 3, and the command after `--` starts inside. Anything wrong, and nothing starts
     Wrap {
         /// `--allow <dir>…`, ignored because the record decides, then `--` and the command
