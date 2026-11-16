@@ -1,0 +1,7 @@
+Timestamp               Ty Process[PID:TID]
+2026-11-15 22:50:24.517 E  kernel[0:16ba93b] (Sandbox) Sandbox: ls(19504) deny(1) file-read-metadata /Users/joshuahill/.ssh
+otto-run-3
+2026-11-15 22:50:24.517 E  kernel[0:16ba939] (Sandbox) 1 duplicate report for Sandbox: ls(19504) deny(1) file-read-metadata /Users/joshuahill/.ssh
+otto-run-3
+2026-11-15 22:50:24.517 E  kernel[0:16ba939] (Sandbox) Sandbox: bash(19501) deny(1) file-write-create /Users/joshuahill/.work-trees/otto-scratch-report.i0okIM/outside/made-enforced
+otto-run-3

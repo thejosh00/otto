@@ -101,7 +101,8 @@ fn messages(log: &str) -> Vec<(String, String)> {
         }
         if starts_with_time(line) {
             let at: String = line.chars().take(23).collect();
-            let message = line.find("Sandbox: ").map(|i| &line[i..]).unwrap_or("");
+            // After the sender, so that `1 duplicate report for Sandbox: …` keeps its count.
+            let message = line.find("(Sandbox) ").map(|i| &line[i + 10..]).or_else(|| line.find("Sandbox: ").map(|i| &line[i..])).unwrap_or("");
             out.push((at, message.to_string()));
         } else if let Some(last) = out.last_mut() {
             last.1.push('\n');
@@ -146,8 +147,16 @@ pub fn hits(log: &str, run_id: &str) -> (Vec<Hit>, usize) {
         if !lines.any(|line| line.trim() == message) {
             continue;
         }
+        // `1 duplicate report for Sandbox: …` is the kernel saying the record before it happened that many times more.
+        let (times, first) = match first.split_once(" duplicate report") {
+            Some((n, rest)) if n.trim().parse::<usize>().is_ok() => (n.trim().parse().unwrap_or(1), rest.find("Sandbox: ").map(|i| &rest[i..]).unwrap_or(rest)),
+            _ => (1, first),
+        };
         match record(first) {
-            Some((process, verdict, operation, target)) => found.push(Hit { at, process, verdict, operation, target }),
+            Some((process, verdict, operation, target)) => {
+                let hit = Hit { at, process, verdict, operation, target };
+                found.extend(std::iter::repeat_n(hit, times.clamp(1, 100_000)));
+            }
             None => unread += 1,
         }
     }
@@ -335,7 +344,7 @@ pub fn run(args: ReportArgs) -> Result<(), OttoError> {
         },
     };
     match super::read_record(&id) {
-        Ok(record) => notes.push(format!("the record's mode is {} now", if record.mode == super::Mode::Report { "report: nothing is blocked, and what it doesn't allow is logged" } else { "enforce: what it doesn't allow is blocked" })),
+        Ok(record) => notes.push(format!("the record's mode is now {}", if record.mode == super::Mode::Report { "report: nothing is blocked, and what it doesn't allow is logged" } else { "enforce: what it doesn't allow is blocked" })),
         Err(_) if !super::has_record(&id) => notes.push(format!("{label} has no sandbox record, so it isn't sandboxed now and its wakes log nothing. `otto sandbox observe {short}` puts it under observation; --since <when> looks further back")),
         Err(e) => notes.push(format!("its sandbox record can't be used ({e})")),
     }
@@ -397,6 +406,19 @@ mod tests {
             assert!(theirs.findings.iter().any(|f| f.operation == "mach-lookup" && f.target == "com.apple.pasteboard.1" && f.processes == ["pbpaste"]));
             assert!(theirs.findings.iter().any(|f| f.operation == "file-write-create" && f.target == "/private/tmp/sbrep/closed/a"));
             assert!(report(log, "900").findings.is_empty() && report(log, "7").findings.is_empty());
+        }
+    }
+
+    #[test]
+    fn real_denials_are_told_from_what_was_only_logged_and_a_duplicate_report_counts() {
+        for log in [include_str!("../tests/fixtures/sandbox-report/enforced-compact.txt"), include_str!("../tests/fixtures/sandbox-report/enforced-ndjson.txt")] {
+            assert!(log.contains("1 duplicate report for Sandbox: ls("));
+            let report = report(log, "3");
+            assert_eq!(report.unread, 0);
+            assert_eq!(report.findings.len(), 2, "{report:?}");
+            assert!(report.findings.iter().all(|f| f.verdict == Verdict::Denied));
+            assert_eq!((report.findings[0].operation.as_str(), report.findings[0].target.as_str(), report.findings[0].count), ("file-read-metadata", "/Users/joshuahill/.ssh", 2));
+            assert!(report.findings[1].target.ends_with("/outside/made-enforced") && report.findings[1].count == 1);
         }
     }
 
