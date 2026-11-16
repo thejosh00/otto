@@ -461,7 +461,8 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
 If `doneCondition` is `null` and `policy.perpetual` isn't `true`, the run does not yet know
 what finishing means — and that is the first thing to settle, before doing any work. Propose
 one and gate it. A run without one either stops early convinced it is finished, or never stops
-at all.
+at all. Once the person has answered, write down what they agreed, naming that gate:
+`otto state set-done-condition <id> --gate <gate id> --done-condition "<what they agreed>"`.
 
 Once set, it is not yours to revise. A run that keeps moving its own finish line never crosses
 it. If it turns out to be wrong, say so at a gate and let a person change it.

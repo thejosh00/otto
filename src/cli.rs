@@ -4,7 +4,7 @@ use crate::state::authorize::{AuthorizeArgs, CheckAuthorizedArgs};
 use crate::state::commands::{
     AssignArgs,
     ArmTimerArgs, CloseGateArgs, FeedbackArgs, SetCheckArgs, GetArgs, HandoffArgs, InitArgs, ListArgs, LogArgs, MessageArgs,
-    OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
+    OpenGateArgs, OutputStateArgs, PublishArgs, RecordFactArgs, SetDoneConditionArgs, SetPhaseArgs, SetStatusArgs, StagesArgs, TailArgs,
     TickArgs, VerifyArgs,
 };
 use crate::state::locks::{LockArgs, LocksArgs, UnlockArgs};
@@ -190,6 +190,8 @@ pub enum StateCommand {
     Verify(VerifyArgs),
     /// Write re-derived facts
     RecordFact(RecordFactArgs),
+    /// Write the done condition a person agreed at a gate
+    SetDoneCondition(SetDoneConditionArgs),
     /// Write the gate file and stop the run on it
     OpenGate(OpenGateArgs),
     /// Record the answer verbatim and clear the gate
@@ -246,7 +248,7 @@ impl StateCommand {
         match self {
             Get(_) | List(_) | Due | CheckAuthorized(_) | Locks(_) | Tail(_) => false,
             Change { command } => command.writes(),
-            Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | OpenGate(_) | CloseGate(_)
+            Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | SetDoneCondition(_) | OpenGate(_) | CloseGate(_)
             | Message(_) | Publish(_) | Stages(_) | OutputState(_) | ArmTimer(_) | SetCheck(_) | Tick(_)
             | Feedback(_) | Assign(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,
         }

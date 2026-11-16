@@ -213,6 +213,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         DoneVerified { reason: s(), claimed_by: 1 },
         DoneReopened { reason: s(), reopens: 1 },
         FactsRecorded { facts: serde_json::Map::new() },
+        DoneConditionSet { done_condition: s(), previous: some(), gate: s() },
         GateOpened { gate: s(), slug: s(), phase: s(), expires_at: Some(at), about: some() },
         GateClosed { gate: s(), slug: s(), asked_at: at, answered_at: at, answer: s() },
         GateExpired { gate: s(), slug: s(), asked_at: at, answered_at: at, answer: s() },
@@ -292,7 +293,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
     for event in &events {
         match event {
             RunCreated { .. } | PhaseChanged { .. } | StatusChanged { .. } | DoneClaimed { .. }
-            | DoneVerified { .. } | DoneReopened { .. } | FactsRecorded { .. }
+            | DoneVerified { .. } | DoneReopened { .. } | FactsRecorded { .. } | DoneConditionSet { .. }
             | GateOpened { .. } | GateClosed { .. } | GateExpired { .. } | TimerArmed { .. }
             | Tick { .. } | NoopTick { .. } | WakeStarted { .. } | WakeSpent { .. }
             | UsageUnavailable { .. } | SandboxRefused { .. } | SandboxObserved { .. } | SandboxEnforced { .. } | SandboxOff { .. } | SignInWaiting { .. } | SignInRenewed { .. } | WakeReportedError { .. } | BudgetWarning { .. }

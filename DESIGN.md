@@ -724,7 +724,8 @@ indefinitely" makes that worse — so this is a first-class field, not an infere
 
 - `--until "<condition>"` states it outright.
 - Otherwise the **first wake proposes a done-condition and gates it.** One cheap question, before
-  any work.
+  any work. The wake writes the answer with `otto state set-done-condition --gate <id>`, which
+  refuses a gate nobody answered.
 - `--perpetual` says there is no done condition, only retirement (§11.5). Explicit, so it is a
   choice rather than an omission.
 

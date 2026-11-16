@@ -907,6 +907,40 @@ pub fn record_fact(args: RecordFactArgs) -> Result<(), OttoError> {
 }
 
 #[derive(clap::Args, Debug)]
+pub struct SetDoneConditionArgs {
+    /// The run: its number or name (a unique prefix of the name will do)
+    pub id: String,
+    /// What makes the run finished, as the person agreed it
+    #[arg(long = "done-condition", value_name = "TEXT")]
+    pub done_condition: String,
+    /// The answered gate where the person agreed it, by id (`001`)
+    #[arg(long)]
+    pub gate: String,
+}
+
+/// Write `doneCondition`. A run's finish line is the person's to set (DESIGN.md §10.2), so this
+/// names the answered gate that set it, and an expired gate — nobody answered — doesn't count.
+pub fn set_done_condition(args: SetDoneConditionArgs) -> Result<(), OttoError> {
+    let condition = args.done_condition.trim().to_string();
+    if condition.is_empty() {
+        return Err(OttoError::usage("--done-condition must say what makes the run finished"));
+    }
+    transaction(&args.id, |path, state| {
+        let (answered, detail) = super::authorize::gate_is_answered(path, &args.gate)?;
+        let body = crate::state::links::read_to_string(path.join("gates").join(&detail)).unwrap_or_default();
+        if !answered || body.contains("recorded as unanswered by otto") {
+            let why = if answered { format!("gate {} expired unanswered", args.gate) } else { detail };
+            return Err(OttoError::conflict(format!(
+                "cannot set the done condition from gate {}: {why}. Only a person's answer sets it",
+                args.gate
+            )));
+        }
+        let previous = state.done_condition.replace(condition.clone());
+        crate::event::record(path, &Event::DoneConditionSet { done_condition: condition, previous, gate: args.gate.clone() })
+    })
+}
+
+#[derive(clap::Args, Debug)]
 pub struct OpenGateArgs {
     /// The run: its number or name (a unique prefix of the name will do)
     pub id: String,
@@ -2466,6 +2500,33 @@ mod tests {
         super::super::ops::open_gate("run-wait2", "ci-slow", "CI is slow. Keep waiting?", None).unwrap();
         super::super::ops::close_gate("run-wait2", Some("Keep waiting."), Status::Running).unwrap();
         assert!(read_run("run-wait2").unwrap().wait.is_none());
+    }
+
+    /// A wake that gated the done condition has to be able to write the answer down, or the run
+    /// is checked against its goal forever. Only an answered gate sets it.
+    #[test]
+    fn a_done_condition_is_set_from_an_answered_gate_and_only_from_one() {
+        let _home = TempHome::new();
+        test_init("run-dc", "tidy the comments").unwrap();
+        let set = |gate: &str| {
+            set_done_condition(SetDoneConditionArgs {
+                id: "run-dc".into(),
+                done_condition: "every file in src/ has a top comment".into(),
+                gate: gate.into(),
+            })
+        };
+        super::super::ops::open_gate("run-dc", "done-condition", "Finished means what?", None).unwrap();
+        assert!(set("001").is_err(), "an unanswered gate sets nothing");
+        super::super::ops::close_gate("run-dc", Some("Every file in src/ has a top comment."), Status::Running).unwrap();
+        set("001").unwrap();
+        assert_eq!(read_run("run-dc").unwrap().done_condition.as_deref(), Some("every file in src/ has a top comment"));
+        let journal = std::fs::read_to_string(crate::paths::run_dir("run-dc").unwrap().join("journal.jsonl")).unwrap();
+        assert!(journal.contains(r#""event":"done-condition-set","doneCondition":"every file in src/ has a top comment","gate":"001""#));
+
+        super::super::ops::open_gate("run-dc", "late", "Still there?", Some(Timestamp::in_seconds(-1))).unwrap();
+        super::super::ops::close_gate("run-dc", None, Status::Running).unwrap();
+        assert!(set("002").is_err(), "nobody answered an expired gate");
+        assert!(set("009").is_err(), "no such gate");
     }
 
     #[test]

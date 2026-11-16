@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 /// A test in `doc_examples` keeps this in step with `Event`, so a variant added without its name
 /// here fails rather than putting otto's bookkeeping in the feed.
 pub const OTTO_EVENTS: &[&str] = &[
-    "run-created", "phase-changed", "status-changed", "facts-recorded", "gate-opened", "gate-closed",
+    "run-created", "phase-changed", "status-changed", "facts-recorded", "done-condition-set", "gate-opened", "gate-closed",
     "gate-expired", "timer-armed", "tick", "noop-tick", "wake-started", "wake-spent", "usage-unavailable",
     "sandbox-refused", "sandbox-observed", "sandbox-enforced", "sandbox-off", "sign-in-waiting", "sign-in-renewed",
     "wake-reported-error", "budget-warning", "wake-complete", "wake-incomplete", "usage-limited",
@@ -167,6 +167,14 @@ pub enum Event {
     },
     FactsRecorded {
         facts: Map<String, Value>,
+    },
+    /// A person agreed what makes the run finished, at `gate`.
+    DoneConditionSet {
+        #[serde(rename = "doneCondition")]
+        done_condition: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        previous: Option<String>,
+        gate: String,
     },
     GateOpened {
         gate: String,

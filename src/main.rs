@@ -158,6 +158,7 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::SetStatus(a) => commands::set_status(a),
         StateCommand::Verify(a) => commands::verify(a),
         StateCommand::RecordFact(a) => commands::record_fact(a),
+        StateCommand::SetDoneCondition(a) => commands::set_done_condition(a),
         StateCommand::OpenGate(a) => commands::open_gate(a),
         StateCommand::CloseGate(a) => commands::close_gate(a),
         StateCommand::Message(a) => commands::message(a),

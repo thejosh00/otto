@@ -25,6 +25,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `done-verified` | `reason`, `claimedBy` | The check found the claim holds: `reason` is what it checked, `claimedBy` the wake that claimed. A `status-changed` to `done` follows |
 | `done-reopened` | `reason`, `reopens` | The check found the claim doesn't hold, and the run went back to work: `reason` is what was missing, `reopens` how many times in a row |
 | `facts-recorded` | `facts` | A wake recorded facts it re-derived |
+| `done-condition-set` | `doneCondition`, `previous`, `gate` | A wake wrote the done condition a person agreed at `gate`; `previous`, when there was one before |
 | `renamed` | `from`, `to` | A person renamed the run (`otto rename`) |
 | `renumbered` | `from` | `otto renumber` gave a run from before numbering its number; `from` is its old id |
 

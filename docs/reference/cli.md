@@ -1554,35 +1554,36 @@ The only writer of a run's durable state
 Usage: otto state <COMMAND>
 
 Commands:
-  init              Create a run directory
-  get               Print run.json, or one dotted field
-  list              One line per run
-  set-phase         Enter a phase
-  set-status        Change status
-  verify            Answer a done claim: confirm the run is done, or send it back to work
-  record-fact       Write re-derived facts
-  open-gate         Write the gate file and stop the run on it
-  close-gate        Record the answer verbatim and clear the gate
-  message           Send the person a message — a report, a draft to send on, an update — to their inbox
-  publish           Keep something the run made where the person can find it: a new key is a new output, the same key again its next version
-  stages            Declare the stages the run's work moves through, in order
-  output-state      Mark an output waiting, done, or not needed any more
-  change            Code handed back: a wake submits it, and the lander lands it
-  arm-timer         Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
-  set-check         Give the run a standing check script, or remove the one a wake gave it
-  tick              Account for one timer tick
-  feedback          Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
-  assign            File work for the run building otto. Only the run a person named may: `otto feedback driver`
-  due               Runs whose nextWakeAt has passed
-  authorize         Record that a specific commit may go outward
-  check-authorized  Refuse an outward action that nobody approved
-  lock              Claim a repo for this run
-  unlock            Release this run's repo lock(s)
-  locks             Who holds which repo
-  handoff           Rewrite handoff.md — the only thing the next wake gets for free (capped)
-  log               Append one journal line
-  tail              Last N journal lines
-  help              Print this message or the help of the given subcommand(s)
+  init                Create a run directory
+  get                 Print run.json, or one dotted field
+  list                One line per run
+  set-phase           Enter a phase
+  set-status          Change status
+  verify              Answer a done claim: confirm the run is done, or send it back to work
+  record-fact         Write re-derived facts
+  set-done-condition  Write the done condition a person agreed at a gate
+  open-gate           Write the gate file and stop the run on it
+  close-gate          Record the answer verbatim and clear the gate
+  message             Send the person a message — a report, a draft to send on, an update — to their inbox
+  publish             Keep something the run made where the person can find it: a new key is a new output, the same key again its next version
+  stages              Declare the stages the run's work moves through, in order
+  output-state        Mark an output waiting, done, or not needed any more
+  change              Code handed back: a wake submits it, and the lander lands it
+  arm-timer           Record nextWakeAt. This is the whole timer: poke reads it, nothing else is needed
+  set-check           Give the run a standing check script, or remove the one a wake gave it
+  tick                Account for one timer tick
+  feedback            Tell otto's maker what got in your way: about otto itself, never the work. Always exits 0
+  assign              File work for the run building otto. Only the run a person named may: `otto feedback driver`
+  due                 Runs whose nextWakeAt has passed
+  authorize           Record that a specific commit may go outward
+  check-authorized    Refuse an outward action that nobody approved
+  lock                Claim a repo for this run
+  unlock              Release this run's repo lock(s)
+  locks               Who holds which repo
+  handoff             Rewrite handoff.md — the only thing the next wake gets for free (capped)
+  log                 Append one journal line
+  tail                Last N journal lines
+  help                Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help
@@ -1834,6 +1835,28 @@ Arguments:
           Facts to write into `facts` (`branch=feat/x`). Values parse as JSON when they can
 
 Options:
+  -h, --help
+          Print help
+```
+
+### `otto state set-done-condition`
+
+```text
+Write the done condition a person agreed at a gate
+
+Usage: otto state set-done-condition --done-condition <TEXT> --gate <GATE> <ID>
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+Options:
+      --done-condition <TEXT>
+          What makes the run finished, as the person agreed it
+
+      --gate <GATE>
+          The answered gate where the person agreed it, by id (`001`)
+
   -h, --help
           Print help
 ```
