@@ -436,7 +436,9 @@ otto state change submit <id> --repo <repo> --branch <branch> --title "<what it 
   ask at a gate whether to commit — the change is that question, asked better.
 - **What happens to it reaches you as a note** that starts `About change <n>@v<k>`:
   - *the person asked for changes*, or *the lander couldn't land it*: work in the same worktree, commit,
-    and submit again with the same branch — it comes back to them as the next version.
+    and submit again with the same branch — it comes back to them as the next version. If you look and
+    the code needs no change after all, submit the same commit with `--stands "<why>"`: it goes back
+    to their review as it is, with your reason on it.
   - *on its pull request, a reviewer (or CI) said…*: a change to make is the same — commit, submit
     again, and the lander pushes it to the pull request. A question to answer, or an ask the code
     already meets (look before you assume it doesn't), is a reply you draft for the person to post:

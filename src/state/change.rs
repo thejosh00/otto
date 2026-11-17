@@ -209,6 +209,10 @@ pub struct SubmitArgs {
     /// the change. A new commit needs this or --evidence, not both; the same commit again needs neither
     #[arg(long = "no-evidence", value_name = "WHY")]
     pub no_evidence: Option<String>,
+    /// Why the same commit stands as it is, when it was sent back and nothing needed changing: "the
+    /// validation passed as it is". It goes back to the person's review, saying so. Only the same commit
+    #[arg(long, value_name = "WHY")]
+    pub stands: Option<String>,
     /// The branch it lands on. Omitted, the remote's default branch
     #[arg(long)]
     pub base: Option<String>,
@@ -484,16 +488,14 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             tests: a.tests.as_deref(),
             evidence,
             no_evidence: a.no_evidence.as_deref(),
+            stands: a.stands.as_deref(),
         },
     )?;
     let r = format!("{}/{}", crate::paths::short_id(&id), out.n);
     if out.unchanged {
         if out.back_in_review {
-            println!(
-                "change {r} v{}: the same commit, back in the person's review — their answer needed no change to it. What they \
-                 decide reaches you as a note",
-                out.version
-            );
+            let why = if a.stands.is_some() { "as it stands, saying why" } else { "their answer needed no change to it" };
+            println!("change {r} v{}: the same commit, back in the person's review — {why}. What they decide reaches you as a note", out.version);
         }
         if out.file_ignored {
             println!(
@@ -524,6 +526,12 @@ fn submit(a: SubmitArgs) -> Result<(), OttoError> {
             println!("change {r} v{}: the same commit, now with {} file{} of evidence", out.version, out.evidence, if out.evidence == 1 { "" } else { "s" });
         } else if !out.back_in_review && !out.file_ignored && !out.summary_added && !out.summary_ignored && !out.pr_added && !out.pr_ignored {
             println!("change {r} v{} unchanged — the same commit as its latest version, so nothing new for the person", out.version);
+            if out.with_author {
+                println!(
+                    "  It is still with you, sent back. If it needs no change after all, hand it back with --stands \"<why>\" and \
+                     the person reads why"
+                );
+            }
         }
         if a.no_evidence.is_some() {
             println!("change {r} v{}: what it says about its evidence kept as it was. A new reason comes with a new commit", out.version);

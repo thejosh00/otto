@@ -2157,6 +2157,9 @@ Options:
       --no-evidence <WHY>
           Why there is nothing to show, when there isn't: "plan only, no code". The person reads it on the change. A new commit needs this or --evidence, not both; the same commit again needs neither
 
+      --stands <WHY>
+          Why the same commit stands as it is, when it was sent back and nothing needed changing: "the validation passed as it is". It goes back to the person's review, saying so. Only the same commit
+
       --base <BASE>
           The branch it lands on. Omitted, the remote's default branch
 

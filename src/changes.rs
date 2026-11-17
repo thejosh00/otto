@@ -861,6 +861,8 @@ pub struct Submit<'a> {
     pub evidence: Vec<Found>,
     /// Why there is nothing to show, when there isn't.
     pub no_evidence: Option<&'a str>,
+    /// Why the same commit stands as it is, after it was sent back: it goes back to the person's review.
+    pub stands: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -898,8 +900,10 @@ pub struct Submitted {
     /// The same commit again, with a different pull request description: kept as it was.
     pub pr_ignored: bool,
     /// The same commit again after the person answered what its author asked while it was in
-    /// review: nothing needed changing, so it is back with them to approve.
+    /// review, or with `--stands`: nothing needed changing, so it is back with them to approve.
     pub back_in_review: bool,
+    /// The same commit again, and the change is still with its author, sent back.
+    pub with_author: bool,
 }
 
 fn check_title(title: &str) -> Result<String, OttoError> {
@@ -956,6 +960,10 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
     }
     if s.no_evidence.is_some() && !s.evidence.is_empty() {
         return Err(OttoError::usage("--evidence or --no-evidence, not both: either there is something to show, or a reason there isn't"));
+    }
+    let stands = check_say(s.stands, "--stands")?;
+    if s.stands.is_some() && stands.is_none() {
+        return Err(OttoError::usage("--stands needs its reason: why the same commit stands as it is, in words the person reads on the change"));
     }
     let repo = main_repo(Path::new(s.repo))?;
     let branch = s.branch.trim().trim_start_matches("refs/heads/").to_string();
@@ -1039,6 +1047,16 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 )));
             }
             if latest.sha == sha && latest.base_sha == snap.base_sha {
+                if stands.is_some() {
+                    refuse_unless(run_id, c, &[ChangeState::Revising], "handed back as it stands")?;
+                    if c.pr.is_some() {
+                        return Err(OttoError::conflict(format!(
+                            "change {} has a pull request open: what it says goes to its reviewers, not back to the person's review. \
+                             A reviewer's ask the code already meets is a reply — `otto state change reply`",
+                            c.n
+                        )));
+                    }
+                }
                 // The same commit is not a new version — but evidence its author forgot can join it,
                 // while it has none. Evidence the person may already have looked at stays as it was.
                 let fill = !s.evidence.is_empty() && latest.evidence.is_empty();
@@ -1091,15 +1109,19 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
                 // Answered, and nothing to change: back where the person can approve it. Only from an
                 // answer to a question asked in review; a change the person or the lander sent back
                 // is not brought back by the same commit.
-                let back = c.stands_after_answer();
+                let back = c.stands_after_answer() || stands.is_some();
                 if back {
                     c.enter(ChangeState::Review);
-                    let what = format!("v{}: stands as it is after your answer — yours to review", c.latest().k);
+                    let what = match &stands {
+                        Some(why) => format!("v{}: stands as it is — {why}", c.latest().k),
+                        None => format!("v{}: stands as it is after your answer — yours to review", c.latest().k),
+                    };
                     c.moment("author", &what);
                     moved(path, c, "author", &what)?;
                 }
                 let mut out = submitted(c, true, None);
                 out.back_in_review = back;
+                out.with_author = c.state == ChangeState::Revising;
                 out.evidence_ignored = ignored;
                 out.file_ignored = file_ignored;
                 out.summary_ignored = summary_ignored;
@@ -1113,6 +1135,12 @@ pub fn submit(run_id: &str, s: &Submit) -> Result<Submitted, OttoError> {
             }
         }
         // Anything from here on is a new version for the person to read. Nothing is written yet.
+        if stands.is_some() {
+            return Err(OttoError::usage(
+                "--stands is for the same commit, handed back as it is. A new commit is a new version: say what changed in its \
+                 summary, and submit it without --stands",
+            ));
+        }
         if s.evidence.is_empty() && no_evidence.is_none() {
             return Err(OttoError::usage(
                 "a new commit needs what shows it works, or why nothing does. Submit again with one of:\n  \
@@ -1262,6 +1290,7 @@ fn submitted(c: &Change, unchanged: bool, was: Option<ChangeState>) -> Submitted
         pr_added: false,
         pr_ignored: false,
         back_in_review: false,
+        with_author: false,
     }
 }
 
@@ -4873,6 +4902,31 @@ pub(crate) mod tests {
         assert_eq!((c.state, c.whose_move()), (ChangeState::Merged, Move::Lander));
         assert!(c.timeline.last().unwrap().what.ends_with("what its author asked about it no longer needs an answer"), "{:?}", c.timeline.last());
         assert!(answer(&r("c-mq", 1), "keep").unwrap_err().message.contains("merged"));
+    }
+
+    /// Report 7 of otto-feedback: asked for changes the code turned out not to need, its author had
+    /// no way to hand the same commit back. `--stands` does, saying why, and only for that.
+    #[test]
+    fn the_same_commit_stands_back_in_review_when_its_author_says_why() {
+        let _h = TempHome::new();
+        test_init("c-st", "a goal").unwrap();
+        let repo = repo();
+        let stands = |why| Submit { stands: Some(why), ..submit_fix(&repo, "Shout") };
+        submit("c-st", &submit_fix(&repo, "Shout")).unwrap();
+        assert!(submit("c-st", &stands("nothing to change")).unwrap_err().message.contains("waiting for review"), "only once sent back");
+
+        revise(&r("c-st", 1), "validate it more").unwrap();
+        assert!(submit("c-st", &stands("  ")).unwrap_err().message.contains("why"), "a reason, not a blank");
+        let again = submit("c-st", &stands("the validation passed as it is; the fix belonged in 17/1")).unwrap();
+        assert!(again.unchanged && again.version == 1 && again.back_in_review);
+        let c = change("c-st", 1);
+        assert_eq!((c.state, c.whose_move()), (ChangeState::Review, Move::You));
+        assert_eq!(c.timeline.last().unwrap().what, "v1: stands as it is — the validation passed as it is; the fix belonged in 17/1");
+
+        std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
+        sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
+        assert!(submit("c-st", &stands("why")).unwrap_err().message.contains("same commit"), "a new commit is a new version, not one that stands");
+        assert_eq!(change("c-st", 1).versions.len(), 1, "and nothing was written");
     }
 
     #[test]
