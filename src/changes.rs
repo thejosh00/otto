@@ -2396,6 +2396,16 @@ pub fn pr_pushed(lander: &str, r: &ChangeRef, head: &str, url: Option<&str>, aut
             return Err(OttoError::conflict(format!("change {} was approved to land on {}, not as a pull request", r.display(), c.base)));
         }
         let head = rev(Path::new(&c.repo), head)?;
+        // A push a pre-push hook refused is easy to miss in piped output; the remote is what reviewers see.
+        let branch = format!("refs/heads/{}", c.branch);
+        let on_remote = git(Path::new(&c.repo), &["ls-remote", "origin", &branch])
+            .map_err(|e| OttoError::conflict(format!("couldn't ask origin where {} is ({e}); try again once it answers", c.branch)))?;
+        let again = "look at what the push said, push again, then run this again";
+        match on_remote.split_whitespace().next() {
+            Some(sha) if sha == head => {}
+            Some(sha) => return Err(OttoError::conflict(format!("origin's {} is at {}, not {}: the push didn't reach it — {again}", c.branch, short_sha(sha), short_sha(&head)))),
+            None => return Err(OttoError::conflict(format!("origin has no branch {}: the push didn't reach it — {again}", c.branch))),
+        }
         let k = c.latest().k;
         let what = match (&mut c.pr, url) {
             (Some(pr), _) => {
@@ -3367,6 +3377,11 @@ pub(crate) mod tests {
         Repo { _tmp: tmp, main, origin, wt }
     }
 
+    /// What the lander does before `pr_pushed`: the commit, on the remote's copy of its branch.
+    pub(crate) fn push_to_pr(r: &Repo, sha: &str) {
+        sh(&r.main, &["push", "--quiet", "--force", "origin", &format!("{sha}:refs/heads/fix")]);
+    }
+
     pub(crate) fn submit_fix<'a>(r: &'a Repo, title: &'a str) -> Submit<'a> {
         Submit { repo: r.main.to_str().unwrap(), branch: "fix", title, summary: "Shouts the second line.", tests: Some("1 passed"), no_evidence: Some("a test of the plumbing"), ..Default::default() }
     }
@@ -3752,6 +3767,7 @@ pub(crate) mod tests {
         submit("c-bw", &Submit { no_evidence: Some("plan only, no code"), ..submit_fix(&repo, "t") }).unwrap();
         approve(&[seen(r("c-bw", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         let v1 = claim("c-bwl", &r("c-bw", 1)).unwrap().sha.unwrap();
+        push_to_pr(&repo, &v1);
         pr_pushed("c-bwl", &r("c-bw", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
         let own = repo.main.parent().unwrap().join("babysitter");
         sh(&repo.main, &["worktree", "add", "--quiet", "--detach", own.to_str().unwrap(), &v1]);
@@ -4089,6 +4105,28 @@ pub(crate) mod tests {
         let of = |run| all.iter().find(|d| d.run == run).unwrap();
         assert!(of("c-kp").land.as_deref().is_some_and(|l| l.starts_with("A pull request")) && !of("c-kp").overridden);
         assert!(of("c-kq").land.as_deref().is_some_and(|l| l.starts_with("A pull request")) && of("c-kq").overridden);
+    }
+
+    #[test]
+    fn a_push_that_never_reached_the_remote_is_not_recorded_as_pushed() {
+        let _h = TempHome::new();
+        test_init("c-rh", "a goal").unwrap();
+        test_init("c-rhl", "land changes").unwrap();
+        set_lander("c-rhl");
+        let repo = repo();
+        submit("c-rh", &submit_fix(&repo, "Shout")).unwrap();
+        approve(&[seen(r("c-rh", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
+        let v1 = claim("c-rhl", &r("c-rh", 1)).unwrap().sha.unwrap();
+        let url = Some("https://github.com/o/app/pull/7");
+        let err = pr_pushed("c-rhl", &r("c-rh", 1), &v1, url, false).unwrap_err();
+        assert!(err.message.contains("origin has no branch fix"), "{}", err.message);
+        let start = sh(&repo.main, &["rev-parse", "main"]);
+        push_to_pr(&repo, &start);
+        let err = pr_pushed("c-rhl", &r("c-rh", 1), &v1, url, false).unwrap_err();
+        assert!(err.message.contains(&format!("origin's fix is at {}", short_sha(&start))), "{}", err.message);
+        assert_eq!(change("c-rh", 1).state, ChangeState::Landing, "nothing recorded");
+        push_to_pr(&repo, &v1);
+        assert_eq!(pr_pushed("c-rhl", &r("c-rh", 1), &v1, url, false).unwrap().state, ChangeState::PrOpen);
     }
 
     #[test]
@@ -4457,6 +4495,7 @@ pub(crate) mod tests {
         let d = claim("c-prl", &r("c-pr", 1)).unwrap();
         let v1 = d.sha.unwrap();
         check("c-prl", &r("c-pr", 1), &v1).unwrap();
+        push_to_pr(&repo, &v1);
         assert!(pr_pushed("c-prl", &r("c-pr", 1), &v1, None, false).unwrap_err().message.contains("--url"));
         let c = pr_pushed("c-prl", &r("c-pr", 1), &v1, Some("https://github.com/o/app/pull/41"), false).unwrap();
         assert_eq!((c.state, c.whose_move(), c.pr.as_ref().unwrap().number), (ChangeState::PrOpen, Move::Ci, Some(41)));
@@ -4488,6 +4527,7 @@ pub(crate) mod tests {
         let v2 = sh(&repo.wt, &["rev-parse", "HEAD"]);
         check("c-prl", &r("c-pr", 1), &v2).unwrap();
         assert!(check("c-prl", &r("c-pr", 1), &v1).is_err(), "the old version is not what goes to it now");
+        push_to_pr(&repo, &v2);
         pr_pushed("c-prl", &r("c-pr", 1), &v2, None, false).unwrap();
 
         // A reply its author drafts waits on the person, then on the lander.
@@ -4524,6 +4564,7 @@ pub(crate) mod tests {
         submit(run, &submit_fix(repo, "Shout")).unwrap();
         approve(&[seen(r(run, 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         let v1 = claim(lander, &r(run, 1)).unwrap().sha.unwrap();
+        push_to_pr(&repo, &v1);
         pr_pushed(lander, &r(run, 1), &v1, Some("https://github.com/o/app/pull/9"), false).unwrap();
         std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
@@ -4630,6 +4671,7 @@ pub(crate) mod tests {
         assert_eq!(due().unwrap()[0].todo, "update its pull request");
         claim("c-stl", &r("c-st", 1)).unwrap();
         let head = sh(&repo.wt, &["rev-parse", "HEAD"]);
+        push_to_pr(&repo, &head);
         pr_pushed("c-stl", &r("c-st", 1), &head, None, false).unwrap();
         assert_eq!(change("c-st", 1).state, ChangeState::PrOpen);
     }
@@ -4664,6 +4706,7 @@ pub(crate) mod tests {
         approve(&[seen(r("c-fx", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         assert_eq!(change("c-fx", 1).decision.unwrap().allow_changes, None, "standard allows nothing");
         let v1 = claim("c-fxl", &r("c-fx", 1)).unwrap().sha.unwrap();
+        push_to_pr(&repo, &v1);
         pr_pushed("c-fxl", &r("c-fx", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
 
         // The babysitter's fix, in a worktree of its own on top of what the pull request has.
@@ -4683,6 +4726,7 @@ pub(crate) mod tests {
         assert!(due().unwrap()[0].pr_body.ends_with("v1.summary.md"), "what a fix says doesn't replace what the change is");
         assert!(note_texts("c-fx").last().unwrap().contains(&format!("merge --ff-only {fixed}")), "its author is told how to keep it");
         claim("c-fxl", &r("c-fx", 1)).unwrap();
+        push_to_pr(&repo, &fixed);
         pr_pushed("c-fxl", &r("c-fx", 1), &fixed, None, false).unwrap();
 
         // Its author's next version keeps the fix, or is refused.
@@ -4695,6 +4739,7 @@ pub(crate) mod tests {
         assert_eq!(submit("c-fx", &submit_fix(&repo, "Shout")).unwrap().version, 3);
         let v3 = sh(&repo.wt, &["rev-parse", "HEAD"]);
         claim("c-fxl", &r("c-fx", 1)).unwrap();
+        push_to_pr(&repo, &v3);
         pr_pushed("c-fxl", &r("c-fx", 1), &v3, None, false).unwrap();
 
         // Its author finished, and nothing is allowed: the babysitter asks the person, and hears back.
@@ -4731,6 +4776,7 @@ pub(crate) mod tests {
         submit("c-an", &submit_fix(&repo, "Shout")).unwrap();
         approve(&[seen(r("c-an", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         let v1 = claim("c-anl", &r("c-an", 1)).unwrap().sha.unwrap();
+        push_to_pr(&repo, &v1);
         pr_pushed("c-anl", &r("c-an", 1), &v1, Some("https://github.com/o/app/pull/7"), false).unwrap();
         crate::state::transaction("c-an", |_p, s| {
             s.status = crate::state::Status::Stopped;
@@ -4895,6 +4941,7 @@ pub(crate) mod tests {
         submit("c-mq", &submit_fix(&repo, "Shout")).unwrap();
         approve(&[seen(r("c-mq", 1))], Some(How { mode: LandMode::Pr, merge_when_ready: false }), None).unwrap();
         let v1 = claim("c-mql", &r("c-mq", 1)).unwrap().sha.unwrap();
+        push_to_pr(&repo, &v1);
         pr_pushed("c-mql", &r("c-mq", 1), &v1, Some("https://github.com/o/app/pull/11"), false).unwrap();
         ask_as(None, &r("c-mq", 1), "Sam wants the flag renamed.\n\n## Options\n- **Rename**\n- **Keep**\n").unwrap();
         sh(&repo.wt, &["push", "--quiet", "origin", &format!("{v1}:main")]);

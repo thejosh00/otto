@@ -221,7 +221,9 @@ otto state change pr-pushed <id> <change> --head <sha>
 ```
 
 The description follows the change, so anything edited into it on GitHub goes. If `gh pr edit` fails,
-the code still went: carry on with `pr-pushed`. The next push tries again.
+the code still went: carry on with `pr-pushed`. The next push tries again. `pr-pushed` asks origin where
+the branch is, and refuses a head it doesn't have there: the push didn't go, whatever its output
+seemed to say (a pre-push hook refusing is easy to miss). Read what the push said, and push again.
 
 A new version built on the last one only adds to it, so it goes as a plain push: git refuses that
 too if the branch moved, and a permission check that denies forcing a push allows it. Only one that

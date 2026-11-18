@@ -106,7 +106,7 @@ pub struct PrPushedArgs {
     pub lander: String,
     /// The change: <run>/<number>
     pub change: String,
-    /// The commit its pull request's branch has now
+    /// The commit its pull request's branch has now, on origin: what `git ls-remote` shows
     #[arg(long, required = true)]
     pub head: String,
     /// The pull request's address, when you just opened it

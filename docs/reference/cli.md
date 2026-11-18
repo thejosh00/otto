@@ -2481,7 +2481,7 @@ Arguments:
 
 Options:
       --head <HEAD>
-          The commit its pull request's branch has now
+          The commit its pull request's branch has now, on origin: what `git ls-remote` shows
 
       --url <URL>
           The pull request's address, when you just opened it
