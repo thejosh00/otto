@@ -17,8 +17,12 @@
 # `otto service stop` stays stopped.
 #
 # otto compiles its harness in, so an install changes what every agent's next wake is told. The
-# binary it replaces is kept beside the new one, unless the new one is identical, and
-# `./install.sh --rollback` puts it back.
+# binary it replaces is kept beside the new one, unless the new one is identical, along with the
+# otto home's config.json as it stood then (otto.previous.config.json), and `./install.sh --rollback`
+# puts both back. The older binary refuses a config with keys it doesn't know, so the config goes back
+# too — except that launchers added since (a run moved into a sandbox-* launcher, one you defined)
+# are carried over, so no run loses the launcher it names. The config it replaces is kept as
+# config.json.before-rollback in the otto home.
 set -euo pipefail
 
 with_service=0
@@ -42,6 +46,11 @@ done
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 bin_dir="${OTTO_BIN_DIR:-$HOME/.local/bin}"
+# As otto resolves it (src/paths.rs): $OTTO_HOME if set and not empty, a leading ~ expanded.
+otto_home="${OTTO_HOME:-$HOME/.otto}"
+case "$otto_home" in "~") otto_home="$HOME" ;; "~/"*) otto_home="$HOME/${otto_home#\~/}" ;; esac
+config="$otto_home/config.json"
+config_snapshot="$bin_dir/otto.previous.config.json"
 
 cd "$repo_dir"
 
@@ -53,6 +62,41 @@ if [ "$rollback" = 1 ]; then
 	install -m 755 "$bin_dir/otto.previous" "$bin_dir/otto"
 	rm "$bin_dir/otto.previous"
 	echo "==> rolled back $bin_dir/otto to the one before the last install"
+	if [ ! -f "$config_snapshot" ]; then
+		echo "==> no config snapshot; config.json left as it is"
+	elif ! command -v jq >/dev/null 2>&1; then
+		echo "error: jq not found, so $config was left untouched; the config it had at the last install is $config_snapshot" >&2
+		rollback_failed=1
+	elif [ ! -f "$config" ]; then
+		mkdir -p "$otto_home"
+		cp "$config_snapshot" "$config.rollback.$$" && mv "$config.rollback.$$" "$config"
+		rm "$config_snapshot"
+		echo "==> restored $config to the one from the last install"
+	else
+		tmp="$config.rollback.$$"
+		# The snapshot, plus every launcher the current config has that the snapshot lacks, verbatim.
+		# Launchers the snapshot has keep its definition; every other key takes the snapshot's value.
+		added='(($snap[0].launchers // []) | map(.name)) as $old
+			| [($now[0].launchers // [])[] | select(.name as $n | ($old | index($n)) == null)]'
+		if jq -n --slurpfile now "$config" --slurpfile snap "$config_snapshot" "
+			($added) as \$added
+			| \$snap[0] + (if (\$added | length) > 0 then {launchers: ((\$snap[0].launchers // []) + \$added)} else {} end)
+		" >"$tmp" 2>"$tmp.err" \
+			&& carried="$(jq -nr --slurpfile now "$config" --slurpfile snap "$config_snapshot" "($added)[].name")"; then
+			cp "$config" "$config.before-rollback"
+			mv "$tmp" "$config"
+			rm -f "$tmp.err" "$config_snapshot"
+			echo "==> restored $config to the one from the last install"
+			while IFS= read -r name; do
+				[ -n "$name" ] && echo "    kept launcher $name: it was added since, so the snapshot didn't have it"
+			done <<<"$carried"
+			echo "    the config it replaced is saved as $config.before-rollback"
+		else
+			echo "error: could not merge $config_snapshot with $config ($(cat "$tmp.err" 2>/dev/null)); $config was left untouched" >&2
+			rm -f "$tmp" "$tmp.err"
+			rollback_failed=1
+		fi
+	fi
 else
 	echo "==> building otto (cargo build --release)"
 	cargo build --release
@@ -67,6 +111,12 @@ else
 	# The same build again replaces nothing, so what a rollback puts back stays the one before it.
 	if [ -x "$bin_dir/otto" ] && ! cmp -s target/release/otto "$bin_dir/otto"; then
 		cp "$bin_dir/otto" "$bin_dir/otto.previous"
+		# The config that binary ran with: an older binary refuses keys a newer one added.
+		if [ -f "$config" ]; then
+			cp "$config" "$config_snapshot"
+		else
+			rm -f "$config_snapshot"
+		fi
 	fi
 	install -m 755 target/release/otto "$bin_dir/otto"
 	echo "==> installed $bin_dir/otto"
@@ -96,4 +146,8 @@ elif [ -f "$HOME/Library/LaunchAgents/com.joshuahill.otto-serve.plist" ]; then
 	fi
 fi
 
+if [ "${rollback_failed:-0}" = 1 ]; then
+	echo "==> the binary was rolled back, but config.json was not" >&2
+	exit 1
+fi
 echo "==> done"
