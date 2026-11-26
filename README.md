@@ -214,8 +214,9 @@ It is editing the procedure its own next wake follows, so:
   clash. Live tests run in an `OTTO_HOME` of their own, so they can't touch your agents or this
   queue. They spend real tokens, and `--budget-tokens` stops the run on a question once it has
   spent what you'd allow, over its whole life.
-- **An install can be undone.** Each one reaches every agent, so `./install.sh` first checks the new
-  build can read your runs, and keeps the binary it replaces, unless the new one is identical:
+- **An install can be undone.** Each one reaches every agent, so `./install.sh` first rehearses the new
+  build on a copy of your otto home and stops if it can't read a run or would lose or rewrite
+  anything ([rehearsing a release](docs/guides/running-as-a-service.md)), and keeps the binary it replaces, unless the new one is identical:
   `./install.sh --rollback` puts it back, harness and all. Keep that in mind if otto-build is the
   agent that's stuck.
 - **Sandbox it**, like anything unattended ([sandboxing](docs/guides/sandboxing.md)).

@@ -25,6 +25,23 @@ may be added but not removed or changed. What moves on its own on a live home (`
 appended, counters going up, new notes or messages) is listed apart and doesn't fail. If you
 answered a gate or read a message between the two records, that shows as a failure, so say why.
 
+**Rehearsing a release.** `./install.sh` does this for you before an install over an existing
+one (and so after every landing): `scripts/rehearse.sh` copies the otto home to a temp directory,
+runs `otto ls`, `otto state list --json`, `otto changes --all --json` and `otto poke --dry-run
+--verbose` there with the installed binary and then the new build, records the copy with
+`migration-check.sh` between the two and after, and compares. The install **stops**, before anything
+is replaced, if the new build's `otto ls` fails, another of those commands fails with the new build
+but not the installed one, a run the installed build lists is missing from the new build's list, or
+migration-check finds something lost or rewritten. The old `otto` and `config.json` are left as
+they were. Differences in output are **only shown**, as are commands that fail with both builds.
+Everything, diffs included, goes to `~/.otto/logs/rehearsal.log` (the previous one is kept as
+`rehearsal.log.1`), and that log is all it writes to the real home. For a release that changes a
+recorded fact on purpose, read the log, then run `./install.sh --skip-rehearsal`; it still checks
+that the new build's `otto ls` works. To rehearse by hand, run `scripts/rehearse.sh --new
+target/release/otto`. It compares against the `otto` on your PATH unless you give `--installed BIN`.
+`--home DIR` and `--log FILE` are optional. Add `--snapshot <phase>` to first keep a tarball of the home as
+`~/.otto-snapshots/<date>-<phase>.tar.gz` before a cut-over (it won't overwrite one).
+
 ### Rolling back an install
 
 When an install replaces the binary with a different build, it keeps the old one as
