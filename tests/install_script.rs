@@ -273,3 +273,32 @@ fn a_rollback_without_a_config_snapshot_leaves_the_config_alone() {
     assert_eq!(sandbox.read_json(&sandbox.config()), config);
     assert!(!sandbox.root.join("otto-home/config.json.before-rollback").exists());
 }
+
+/// A config the merge can't read leaves config.json as it is, after the binary is back, and the
+/// script says so by failing.
+#[test]
+fn a_rollback_whose_config_merge_fails_restores_the_binary_and_leaves_the_config() {
+    let sandbox = Sandbox::new(Service::NeverInstalled);
+    let bin = sandbox.root.join("bin");
+    fs::write(bin.join("otto.previous.config.json"), "{not json").unwrap();
+    let config = serde_json::json!({"workdir": "/work/now"});
+    sandbox.write_config(&config);
+    let previous = sandbox.installed("otto.previous");
+    let output = Command::new("/bin/bash")
+        .arg(sandbox.root.join("repo/install.sh"))
+        .arg("--rollback")
+        .env_clear()
+        .env("HOME", sandbox.root.join("home"))
+        .env("PATH", format!("{}:/usr/bin:/bin", sandbox.root.join("stubs").display()))
+        .env("OTTO_BIN_DIR", &bin)
+        .env("OTTO_HOME", sandbox.root.join("otto-home"))
+        .env("STUB_LOG", sandbox.root.join("calls.log"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("left untouched"), "{stderr}");
+    assert_eq!(sandbox.installed("otto"), previous);
+    assert_eq!(sandbox.read_json(&sandbox.config()), config);
+    assert!(bin.join("otto.previous.config.json").exists());
+}

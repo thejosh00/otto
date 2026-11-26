@@ -25,6 +25,25 @@ may be added but not removed or changed. What moves on its own on a live home (`
 appended, counters going up, new notes or messages) is listed apart and doesn't fail. If you
 answered a gate or read a message between the two records, that shows as a failure, so say why.
 
+### Rolling back an install
+
+When an install replaces the binary with a different build, it keeps the old one as
+`otto.previous` beside it and the otto home's `config.json` as it stood then as
+`otto.previous.config.json`. Installing the same build again replaces neither. `./install.sh --rollback`
+puts both back: an older binary refuses a `config.json` with keys it doesn't know, so the binary alone
+might not start.
+
+The config it restores is that snapshot, with one exception: **a launcher the current config has
+and the snapshot doesn't is carried over unchanged** — a run moved into a `sandbox-*` launcher since,
+or one you added, still finds the launcher it names. It prints one line for each. A launcher both
+have takes the snapshot's definition, and every other key takes the snapshot's value. The config it
+replaced is saved as `config.json.before-rollback` in the otto home, and the snapshot is deleted, as
+`otto.previous` is.
+
+The merge needs `jq`. Without it, or if the merge fails, the binary is still rolled back but
+`config.json` is left as it is and the script exits non-zero. With no snapshot (an install from
+before snapshots existed) it rolls back the binary only and says so.
+
 ## The reviver
 
 ```bash
