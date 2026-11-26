@@ -99,6 +99,12 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// Live tests from outside the sandbox: what poke starts for `otto state live-tests`
+    #[command(hide = true)]
+    LiveTests {
+        #[command(subcommand)]
+        command: LiveTestsCommand,
+    },
     /// The only writer of a run's durable state.
     State {
         #[command(subcommand)]
@@ -156,6 +162,12 @@ pub enum SandboxCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
         _args: Vec<String>,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LiveTestsCommand {
+    /// Run request <n> of run <id>: the token read once, outside, and test/live.sh under the run's profile
+    Run { id: String, n: u32 },
 }
 
 #[derive(Subcommand, Debug)]
@@ -238,6 +250,8 @@ pub enum StateCommand {
     Log(LogArgs),
     /// Last N journal lines
     Tail(TailArgs),
+    /// Ask for a commit's live tests, run from outside the sandbox under this run's profile; poke starts them
+    LiveTests(crate::live_tests::RequestArgs),
 }
 
 impl StateCommand {
@@ -250,7 +264,7 @@ impl StateCommand {
             Change { command } => command.writes(),
             Init(_) | SetPhase(_) | SetStatus(_) | Verify(_) | RecordFact(_) | SetDoneCondition(_) | OpenGate(_) | CloseGate(_)
             | Message(_) | Publish(_) | Stages(_) | OutputState(_) | ArmTimer(_) | SetCheck(_) | Tick(_)
-            | Feedback(_) | Assign(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) => true,
+            | Feedback(_) | Assign(_) | Authorize(_) | Lock(_) | Unlock(_) | Handoff(_) | Log(_) | LiveTests(_) => true,
         }
     }
 }

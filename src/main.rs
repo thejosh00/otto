@@ -22,6 +22,7 @@ mod inbox;
 mod install;
 mod landing;
 mod launchd;
+mod live_tests;
 mod liveness;
 mod messages;
 mod logs;
@@ -126,6 +127,9 @@ fn run(command: Command) -> Result<(), OttoError> {
             SandboxCommand::Off(args) => sandbox::switch::off(args),
             SandboxCommand::Report(args) => sandbox::report::run(args),
         },
+        Command::LiveTests { command } => match command {
+            cli::LiveTestsCommand::Run { id, n } => live_tests::run(&id, n),
+        },
         Command::Serve(args) => server::serve(args),
         Command::Agent { command } => match command {
             AgentCommand::Start => launchd::start(),
@@ -180,5 +184,6 @@ fn dispatch_state(command: StateCommand) -> Result<(), OttoError> {
         StateCommand::Handoff(a) => commands::handoff(a),
         StateCommand::Log(a) => commands::log(a),
         StateCommand::Tail(a) => commands::tail(a),
+        StateCommand::LiveTests(a) => live_tests::request(a),
     }
 }

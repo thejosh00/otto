@@ -652,6 +652,17 @@ fn read_token(deadline: Option<time::OffsetDateTime>) -> Result<String, String> 
     lasting_token(&out.stdout, crate::clock::now(), deadline)
 }
 
+/// The token for something otto starts from outside any sandbox (`live_tests`), lasting to `deadline`.
+/// `OTTO_TEST_KEYCHAIN_JSON_FILE` is test-only: a file standing in for claude's Keychain item, so the
+/// automated tests never touch the real Keychain. It goes through the same `lasting_token` check.
+pub(crate) fn token_lasting_to(deadline: time::OffsetDateTime) -> Result<String, String> {
+    if let Some(file) = std::env::var_os("OTTO_TEST_KEYCHAIN_JSON_FILE") {
+        let json = std::fs::read(&file).map_err(|e| format!("couldn't read the stand-in Keychain item: {e}"))?;
+        return lasting_token(&json, crate::clock::now(), Some(deadline));
+    }
+    read_token(Some(deadline))
+}
+
 /// How long before it runs out claude will renew its own sign-in, less a minute: claude renews in the last
 /// five minutes, and only then.
 const RENEWABLE_MINUTES: i64 = 4;
@@ -856,7 +867,7 @@ fn refuse_sign_in(id: &str, why: &str) -> OttoError {
 }
 
 /// What the sandboxed command's environment loses.
-fn cleared(name: &str) -> bool {
+pub(crate) fn cleared(name: &str) -> bool {
     CLEARED.contains(&name) || CLEARED_SUFFIXES.iter().any(|s| name.ends_with(s)) || CLEARED_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
@@ -899,7 +910,7 @@ fn hand_in(token: &str) -> Result<(), String> {
 
 /// Whether a profile compiles and can be entered, before anything's handed in. What `sandbox-exec` says
 /// is kept for the refusal: 71 is a different profile tried inside a sandbox.
-fn try_profile(path: &Path) -> Result<(), String> {
+pub(crate) fn try_profile(path: &Path) -> Result<(), String> {
     let out = std::process::Command::new("/usr/bin/sandbox-exec")
         .arg("-f")
         .arg(path)
@@ -917,7 +928,7 @@ fn try_profile(path: &Path) -> Result<(), String> {
 
 /// One per session, as a wake and a chat of the same run can start together and each has its own. `sandbox-exec`
 /// reads it once, as it starts, so the run's older ones are cleared away.
-fn write_profile(run_id: &str, session: &str, text: &str) -> Result<PathBuf, String> {
+pub(crate) fn write_profile(run_id: &str, session: &str, text: &str) -> Result<PathBuf, String> {
     let dir = dir().join("profiles");
     let failed = |e: std::io::Error| format!("couldn't write a profile in {}: {e}", dir.display());
     std::fs::create_dir_all(&dir).map_err(failed)?;

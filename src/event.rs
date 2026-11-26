@@ -267,6 +267,17 @@ pub enum Event {
     SandboxRefused {
         why: String,
     },
+    /// A wake asked for a commit's live tests, to be run from outside the sandbox (`otto state live-tests`).
+    LiveTestsRequested {
+        n: u32,
+        commit: String,
+        tests: Vec<String>,
+    },
+    /// Those live tests ended: `ok`, `failed` or `couldnt-run`. What they said is in `live-tests/<n>/result.json`.
+    LiveTestsFinished {
+        n: u32,
+        state: String,
+    },
     /// A person put the run under observation (`otto sandbox observe`): its record says `report`, and its wakes
     /// go through `launcher` where they went through `previousLauncher`.
     SandboxObserved {

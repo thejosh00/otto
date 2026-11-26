@@ -761,6 +761,12 @@ pub fn poke_pass(args: &PokeArgs) -> PokeReport {
             report.lines.push(format!("otto poke: {line}"));
         }
     }
+    // Live tests a wake asked for: started detached, settled if they died. Never waited on.
+    if !args.dry_run {
+        for line in crate::live_tests::pickup(&runs_dir) {
+            report.lines.push(format!("otto poke: {line}"));
+        }
+    }
     let runs = crate::state::read_all_runs().unwrap_or_default();
     let mut exec = RealExec;
     let decisions = pass_once(
