@@ -354,6 +354,30 @@ a newline into a question or a log.
 runs one real wake and one real chat under it, on a throwaway `OTTO_HOME` with your real home and sign-in, and prints
 exit codes and byte counts only.
 
+### Live tests from inside a sandboxed run
+
+A sandboxed wake can't read claude's sign-in, so it can't run otto's live tests itself. It asks instead:
+
+```sh
+otto state live-tests <run> --commit <sha> [--test live_gate]...
+```
+
+One request at a time per run; a second is refused while the first waits or runs. The request is
+`live-tests/<n>/request.json` in the run's directory. On its next pass, poke starts the runner outside any sandbox, in a
+session of its own, and goes on: it never waits on it. The runner reads the token once (it must last an hour), clones
+the commit clean into `live-tests/<n>/checkout`, and runs its `test/live.sh` under the run's own profile, with the
+variables the wrapper clears cleared and only `CLAUDE_CODE_OAUTH_TOKEN` added. No record, or a token that won't last,
+and the result says it couldn't run, and why.
+
+`live-tests/<n>/result.json` says the commit, `ok`, `failed` or `couldnt-run`, and each test's `ok` or `FAIL`; live.sh's
+logs are beside it in `logs/`. The token is removed from every file there (an encoded copy can't be caught). The tests
+that need a profile of their own (`live_sandbox_refused`, `live_check_sandboxed`, `live_sandbox`) aren't run, and are
+listed as not run here: they have to start outside any sandbox, on a commit the person approved. A runner that died
+without writing a result is marked `failed`, "died without saying", on poke's next pass.
+
+The tests' own claude processes have the token in their environment, so the code under test can read it: that's the
+wake's own code, which could read it anyway by writing a test that does. It reaches nothing else the run's record doesn't.
+
 ### What it doesn't close
 
 Not a promise past the list above:
