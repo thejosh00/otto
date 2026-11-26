@@ -101,8 +101,8 @@ record_run() {
 		line("identity"; "id"; .id),
 		line("identity"; "name"; .name // ""),
 		line("identity"; "formerId"; .formerId),
-		(if .name then line("identity"; "alias:" + .name; "name") else empty end),
-		(if .formerId then line("identity"; "alias:" + .formerId; "formerId") else empty end),
+		(if .name then line("identity"; "alias:" + .name; "-") else empty end),
+		(if .formerId then line("identity"; "alias:" + .formerId; "-") else empty end),
 		line("schedule"; "nextWakeAt"; .nextWakeAt),
 		(if has("armedWakeAt") then line("schedule"; "armedWakeAt"; .armedWakeAt) else empty end),
 		line("schedule"; "periodMinutes"; .policy.periodMinutes),
@@ -117,7 +117,7 @@ record_run() {
 		else empty end)
 	' "$json"
 	is_number "$run" && fact "$run" identity number "$run"
-	fact "$run" identity "alias:$(short_id "$run" "$all")" short
+	fact "$run" identity "alias:$(short_id "$run" "$all")" -
 	fact "$run" goal hash "$(jq -c .goal "$json" | hash_stdin)"
 	fact "$run" doneCondition hash "$(jq -c .doneCondition "$json" | hash_stdin)"
 
@@ -254,11 +254,11 @@ compare() {
 			print "A person acting between two records (answering a gate, reading a message, a wake taking a"
 			print "one-off note) shows as a failure: say so beside it if that is what happened."
 			print ""
-			print "Must not change (" nf "):"
+			print "Must not change (" nf + 0 "):"
 			if (nf == 0) print "  none"
 			for (i = 1; i <= nf; i++) print "  " fails[i]
 			print ""
-			print "Expected to move on a live home (" nm "):"
+			print "Expected to move on a live home (" nm + 0 "):"
 			if (nm == 0) print "  none"
 			for (i = 1; i <= nm; i++) print "  " moves_[i]
 			exit nf > 0 ? 1 : 0
