@@ -118,14 +118,23 @@ impl Scratch {
 }
 
 /// Lines as `/usr/bin/log show --style compact` prints them: the message on the line after its record.
-fn log_lines(id: &str) -> String {
-    let other = format!("{id}7");
+fn log_lines(id: &str, otto_home: &Path) -> String {
+    // The otto home's hash, as `sandbox::tag` makes it: FNV-1a 64 over the real path.
+    let real = otto_home.canonicalize().unwrap();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in real.to_str().unwrap().bytes() {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let other = format!("{id}7@{hash:016x}");
+    let tagged = format!("{id}@{hash:016x}");
+    let (older, id) = (id, tagged.as_str());
     let mut log = String::from("Timestamp               Ty Process[PID:TID]\n");
     for (second, process, verdict, rest, run) in [
         (1, "ls", "allow", "file-read-data /Users/someone/.ssh", id),
         (2, "ls", "allow", "file-read-data /Users/someone/.ssh", id),
         (3, "bash", "deny(1)", "file-write-create /private/tmp/elsewhere/made", id),
         (4, "cat", "allow", "file-read-data /Users/someone/.aws/credentials", other.as_str()),
+        (5, "cat", "allow", "file-read-data /Users/someone/older-untagged", older),
     ] {
         log += &format!("2026-11-15 10:00:{second:02}.000 Df kernel[0:1] (Sandbox) Sandbox: {process}(1) {verdict} {rest}\notto-run-{run}\n");
     }
@@ -157,7 +166,7 @@ fn the_report_names_what_was_logged_for_the_run_and_changes_nothing() {
     let id = s.run("watched", "claude");
     s.ok(&["sandbox", "observe", &id]);
     let log = s.root.join("log.txt");
-    std::fs::write(&log, log_lines(&id)).unwrap();
+    std::fs::write(&log, log_lines(&id, &s.otto_home())).unwrap();
     let (record, run_json, journal) = (std::fs::read(s.record(&id)).unwrap(), std::fs::read(s.run_json(&id)).unwrap(), s.journal(&id));
     let before = snapshot(&s.otto_home());
 
@@ -179,6 +188,8 @@ fn the_report_names_what_was_logged_for_the_run_and_changes_nothing() {
     assert_eq!(value["findings"][0]["verdict"], "would-deny");
     assert_eq!(value["findings"][1]["verdict"], "denied");
     assert!(value["caveat"].as_str().unwrap().contains("proves nothing"));
+    assert_eq!(value["olderUntagged"], 1, "{value}");
+    assert!(text.contains("1 older line for a run numbered") && !text.contains("older-untagged"), "{text}");
 
     assert_eq!(std::fs::read(s.record(&id)).unwrap(), record, "the record is as it was");
     assert_eq!(std::fs::read(s.run_json(&id)).unwrap(), run_json, "run.json is as it was");
@@ -213,6 +224,20 @@ fn a_run_that_does_not_exist_and_a_time_that_is_not_one_are_refused() {
     assert!(said(&until).contains("--until takes"), "{}", said(&until));
 }
 
+#[test]
+fn a_window_that_would_end_before_it_starts_is_refused() {
+    let s = Scratch::new();
+    let id = s.run("window", "claude");
+    s.ok(&["sandbox", "observe", &id]);
+    let out = s.otto().args(["sandbox", "report", &id, "--until", "1h"]).output().unwrap();
+    assert!(!out.status.success());
+    let text = said(&out);
+    assert!(text.contains("the window would end before it starts") && text.contains("--since <when> --until <when>"), "{text}");
+    assert!(!text.contains("Sandbox report for"), "{text}");
+    let both = s.otto().args(["sandbox", "report", &id, "--since", "1h", "--until", "2h"]).output().unwrap();
+    assert!(!both.status.success() && said(&both).contains("the window would end before it starts"), "{}", said(&both));
+}
+
 /// An enforced run told to use `observe --read` would be put back under observation: the advice names both.
 #[test]
 fn the_advice_on_opening_a_path_names_enforce_as_well_as_observe() {
@@ -220,7 +245,7 @@ fn the_advice_on_opening_a_path_names_enforce_as_well_as_observe() {
     let id = s.run("enforced", "claude");
     s.ok(&["sandbox", "enforce", &id]);
     let log = s.root.join("log.txt");
-    std::fs::write(&log, log_lines(&id)).unwrap();
+    std::fs::write(&log, log_lines(&id, &s.otto_home())).unwrap();
     let text = s.ok(&["sandbox", "report", &id, "--log-file", log.to_str().unwrap()]);
     assert!(text.contains("otto sandbox enforce"), "{text}");
     assert!(text.contains("whichever the run is under now"), "{text}");

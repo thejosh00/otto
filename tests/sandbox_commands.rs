@@ -292,3 +292,28 @@ fn none_of_them_runs_from_a_wake_or_a_chat() {
     assert_eq!(before, after, "record, run.json and config.json are byte for byte what they were");
     assert!(!s.record(&other).exists(), "and no record was made for the other run");
 }
+
+/// Inside a sandbox the records' directory is closed to writing. The same from outside, by its permissions.
+#[test]
+fn observe_and_enforce_that_cannot_write_the_record_say_so_and_change_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = Scratch::new();
+    let id = s.run("closed", "claude");
+    s.ok(&["sandbox", "observe", &id]);
+    let dir = s.record(&id).parent().unwrap().to_path_buf();
+    let (record, run_json, config, journal) = (std::fs::read(s.record(&id)).unwrap(), std::fs::read(s.run_json(&id)).unwrap(), std::fs::read(s.config()).unwrap(), s.journal(&id));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let outs: Vec<Output> = ["enforce", "observe"].iter().map(|what| s.otto().args(["sandbox", what, &id]).output().unwrap()).collect();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for (what, out) in ["enforce", "observe"].iter().zip(&outs) {
+        let text = said(out);
+        assert!(!out.status.success(), "{text}");
+        assert!(text.contains("couldn't be written") && text.contains(s.record(&id).to_str().unwrap()), "{text}");
+        assert!(text.contains("Nothing was changed") && text.contains(&format!("run `otto sandbox {what} ")) && text.contains("outside a sandbox"), "{text}");
+    }
+    assert_eq!(std::fs::read(s.record(&id)).unwrap(), record, "the record is as it was");
+    assert_eq!(std::fs::read(s.run_json(&id)).unwrap(), run_json, "run.json is as it was");
+    assert_eq!(std::fs::read(s.config()).unwrap(), config, "config.json is as it was");
+    assert_eq!(s.journal(&id), journal, "nothing was journalled");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary file left");
+}

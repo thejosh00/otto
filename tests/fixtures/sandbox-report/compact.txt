@@ -1,15 +1,15 @@
 Timestamp               Ty Process[PID:TID]
 2026-11-15 22:45:20.631 Df kernel[0:16b8239] (Sandbox) Sandbox: ls(17353) allow file-read-metadata /Users/joshuahill/.ssh
-otto-run-9007
+otto-run-9007@88ecc91934cc8d8e
 2026-11-15 22:45:20.631 Df kernel[0:16b8239] (Sandbox) Sandbox: ls(17353) allow file-read-data /Users/joshuahill/.ssh
-otto-run-9007
+otto-run-9007@88ecc91934cc8d8e
 2026-11-15 22:45:20.634 Df kernel[0:16b823b] (Sandbox) Sandbox: ls(17354) allow file-read-metadata /Users/joshuahill/.ssh
-otto-run-9007
+otto-run-9007@88ecc91934cc8d8e
 2026-11-15 22:45:20.634 Df kernel[0:16b823b] (Sandbox) Sandbox: ls(17354) allow file-read-data /Users/joshuahill/.ssh
-otto-run-9007
+otto-run-9007@88ecc91934cc8d8e
 2026-11-15 22:45:20.634 Df kernel[0:16b8237] (Sandbox) Sandbox: bash(17352) allow file-write-create /private/tmp/sbrep/out/a
-otto-run-9007
+otto-run-9007@88ecc91934cc8d8e
 2026-11-15 22:45:20.635 E  kernel[0:16b8237] (Sandbox) Sandbox: bash(17352) deny(1) file-write-create /private/tmp/sbrep/closed/a
-otto-run-90077
+otto-run-90077@88ecc91934cc8d8e
 2026-11-15 22:45:20.643 E  kernel[0:16b821f] (Sandbox) Sandbox: pbpaste(17355) deny(1) mach-lookup com.apple.pasteboard.1
-otto-run-90077
+otto-run-90077@88ecc91934cc8d8e

@@ -220,13 +220,24 @@ pub fn on(mode: Mode, args: OnArgs) -> Result<(), OttoError> {
 
     // The launcher first: defined and unused, it changes nothing. Then the record, then run.json; if run.json
     // can't be written the record goes back, so the two are never left disagreeing by this.
+    // Inside a sandbox neither can be written (the profile closes both), and the bare error names a temporary
+    // file: say what it was, that nothing changed, and where to run this.
+    let outside = format!("Inside a sandbox otto's sandbox records and config.json are closed to writing: run `otto sandbox {what} {}` outside a sandbox, in a terminal of your own", crate::paths::short_id(&id));
     if missing {
-        crate::config::add_launcher(&sandboxed)?;
+        crate::config::add_launcher(&sandboxed).map_err(|e| {
+            OttoError::conflict(format!("the launcher {} couldn't be added to {} ({}). Nothing was changed. {outside}", sandboxed.name, crate::config::config_path().display(), e.message))
+        })?;
     }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let text = serde_json::to_string_pretty(&record)? + "\n";
+    let written = match path.parent() {
+        Some(parent) => std::fs::create_dir_all(parent).map_err(|e| e.to_string()),
+        None => Ok(()),
     }
-    crate::state::write_atomic(&path, &(serde_json::to_string_pretty(&record)? + "\n"))?;
+    .and_then(|()| crate::state::write_atomic(&path, &text).map_err(|e| e.message));
+    if let Err(e) = written {
+        let added = if missing { format!("The launcher {} was added to {} and nothing uses it; the run's record and run.json are as they were", sandboxed.name, crate::config::config_path().display()) } else { "Nothing was changed".to_string() };
+        return Err(OttoError::conflict(format!("the sandbox record {} couldn't be written ({e}). {added}. {outside}", path.display())));
+    }
     let event = |previous_launcher: String| {
         let (mode, launcher) = (mode_word(mode).to_string(), sandboxed.name.clone());
         match mode.as_str() {

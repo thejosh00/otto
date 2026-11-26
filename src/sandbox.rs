@@ -408,6 +408,26 @@ fn repos_below(dir: &Path, depth: usize) -> Vec<PathBuf> {
 
 /// The whole profile for one run. The same inputs give the same text, and a path never becomes anything
 /// but a quoted string.
+/// The message every rule of a run's profile carries, and the one `otto sandbox report` looks for:
+/// `otto-run-<run id>@<16 hex>`, the hex being FNV-1a (64-bit) over the otto home's path, made real
+/// (`canonicalize`; as given, less trailing slashes, when that fails). Two otto homes number their runs alike,
+/// so the id alone doesn't say whose a line is. `@` is not a character a run id has, so no run id reads as
+/// another's tag. Only the hash reaches the log, never the path. Written out here, and not std's hasher,
+/// because it has to be the same in every build.
+pub fn tag(run_id: &str, otto_home: &Path) -> String {
+    let real = otto_home.canonicalize().unwrap_or_else(|_| {
+        let text = otto_home.to_string_lossy();
+        let trimmed = text.trim_end_matches('/');
+        PathBuf::from(if trimmed.is_empty() { "/" } else { trimmed })
+    });
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in real.as_os_str().as_encoded_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("otto-run-{run_id}@{hash:016x}")
+}
+
 pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<String, String> {
     if !run_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("the run id {run_id:?} isn't one a profile can carry"));
@@ -423,7 +443,7 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     let in_home = |sub: &str| home_real.join(sub);
     let run_dir = otto_real.join("runs").join(run_id);
 
-    let mut p = Profile { text: String::new(), mode: record.mode, message: format!("otto-run-{run_id}") };
+    let mut p = Profile { text: String::new(), mode: record.mode, message: tag(run_id, otto) };
     let _ = writeln!(p.text, ";; Generated for run {run_id} by `otto sandbox wrap`, each time it starts. Not read back.");
     let _ = writeln!(p.text, "(version 1)\n(allow default)");
 
@@ -1413,6 +1433,27 @@ mod tests {
     }
 
     #[test]
+    fn the_tag_names_the_otto_home_by_a_hash_and_is_the_same_however_the_home_is_reached() {
+        // FNV-1a 64 of "/u/.otto", worked out by hand once: the same in every build.
+        assert_eq!(tag("r1", Path::new("/u/.otto")), "otto-run-r1@ca5be8c6f2fac092");
+        assert_eq!(tag("r1", Path::new("/u/.otto///")), tag("r1", Path::new("/u/.otto")), "a trailing slash, where the path can't be made real");
+        assert_ne!(tag("r1", Path::new("/u/.otto")), tag("r1", Path::new("/v/.otto")));
+        assert_ne!(tag("7", Path::new("/u/.otto")), tag("77", Path::new("/u/.otto")));
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let plain = tag("5", &home);
+        assert_eq!(tag("5", &link), plain, "through a symlink");
+        assert_eq!(tag("5", Path::new(&format!("{}/", home.display()))), plain, "with a trailing slash");
+        assert_eq!(tag("5", Path::new(&format!("{}//", link.display()))), plain);
+        let hex = plain.strip_prefix("otto-run-5@").unwrap();
+        assert!(hex.len() == 16 && hex.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)), "{plain}");
+        assert!(!plain.contains(&*dir.path().to_string_lossy()), "no path in the tag");
+    }
+
+    #[test]
     fn only_the_wakes_own_terminal_is_open() {
         let mine = Machine { terminal: Some("/dev/ttys007".into()), ..machine() };
         let text = profile("r1", &record(), &mine).unwrap();
@@ -1572,7 +1613,7 @@ mod tests {
         for later in ["/\\.git/(hooks", "(literal \"/u/.otto/config.json\")", "(subpath \"/u/.ssh\")", "(subpath \"/u/.otto/sandbox\")", "(subpath \"/u/.otto/approvals\")", "(subpath \"/u/.otto/landings\")", "(global-name \"com.apple.secd\")"] {
             assert!(text.find(later).expect(later) > grant, "{later} must come after the grants");
         }
-        let closed = text.find("(deny file-read* file-write* (with message \"otto-run-r1\")\n  (subpath \"/w/space\")").expect("the projects are closed");
+        let closed = text.find("(deny file-read* file-write* (with message \"otto-run-r1@ca5be8c6f2fac092\")\n  (subpath \"/w/space\")").expect("the projects are closed");
         assert!(closed < grant, "the projects close before the record opens one of them");
     }
 
@@ -1611,7 +1652,7 @@ mod tests {
         let reporting = generated(&r);
         assert!(!reporting.contains("(deny "), "{reporting}");
         assert_eq!(enforcing.matches("(deny ").count(), reporting.matches("(with report)").count());
-        assert_eq!(enforcing.matches("(deny ").count(), enforcing.matches("(with message \"otto-run-r1\")").count());
+        assert_eq!(enforcing.matches("(deny ").count(), enforcing.matches("(with message \"otto-run-r1@ca5be8c6f2fac092\")").count());
     }
 
     #[test]
@@ -1707,7 +1748,7 @@ mod tests {
         let text = generated(&r);
         let grant = text.find("(subpath \"/u/.cache\")").expect("the record's grant");
         let temp = text.find("(subpath \"/private/tmp\")").expect("temporary files are open");
-        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")").expect("tmux's directory is closed");
+        let closed = text.find("(deny file-write* (with message \"otto-run-r1@ca5be8c6f2fac092\")\n  (regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")").expect("tmux's directory is closed");
         assert!(closed > grant && closed > temp, "closed after what opens it");
         let omz = text.find("(subpath \"/u/.cache/oh-my-zsh\")").expect("oh-my-zsh's cache is closed");
         assert!(omz > closed && omz > grant);
@@ -1723,7 +1764,7 @@ mod tests {
         r.write.push("/u".into());
         let text = generated(&r);
         let grant = text.find("(subpath \"/u/.claude\")").expect("the record's grant");
-        let closed = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (subpath \"/u/.claude\")\n  (literal \"/u/.claude.json\")").expect("~/.claude is closed");
+        let closed = text.find("(deny file-write* (with message \"otto-run-r1@ca5be8c6f2fac092\")\n  (subpath \"/u/.claude\")\n  (literal \"/u/.claude.json\")").expect("~/.claude is closed");
         assert!(closed > grant, "closed after what opens it");
         assert!(!text[closed..].contains("(allow file-write*\n  (subpath \"/u/.claude/"), "nothing in it opens again after: {text}");
         assert!(!text.contains("/session-env") && !text.contains("/shell-snapshots"), "no exception for any of claude's own: {text}");
@@ -1731,12 +1772,12 @@ mod tests {
         let own = text.find("(allow file-write*\n  (subpath \"/u/.otto/sandbox/claude/r1\")").expect("its own folder is open");
         assert!(own > text.find("(subpath \"/u/.otto/sandbox\")").unwrap(), "after otto's own closes, or it stays closed");
         assert!(!text.contains("/u/.otto/sandbox/claude\")"), "not every run's");
-        let links = text.find("(deny file-write* (with message \"otto-run-r1\")\n  (require-all (subpath \"/u/.otto/sandbox/claude/r1\") (regex #\"/sandbox/claude/r1/(").expect("its links are closed");
+        let links = text.find("(deny file-write* (with message \"otto-run-r1@ca5be8c6f2fac092\")\n  (require-all (subpath \"/u/.otto/sandbox/claude/r1\") (regex #\"/sandbox/claude/r1/(").expect("its links are closed");
         assert!(links > own, "closed after the folder opens");
         for name in ["[sS][eE][tT][tT][iI][nN][gG][sS]\\.[jJ][sS][oO][nN]", "[cC][lL][aA][uU][dD][eE]\\.[mM][dD]", "[sS][kK][iI][lL][lL][sS]", "[hH][oO][oO][kK][sS]", "[pP][lL][uU][gG][iI][nN][sS]", "[aA][gG][eE][nN][tT][sS]", "[cC][oO][mM][mM][aA][nN][dD][sS]"] {
             assert!(text[links..].lines().nth(1).unwrap().contains(name), "{name}: {text}");
         }
-        assert!(text.contains("(deny file-write-unlink (with message \"otto-run-r1\")\n  (literal \"/u/.otto/sandbox/claude/r1\")"), "the folder can't be moved: {text}");
+        assert!(text.contains("(deny file-write-unlink (with message \"otto-run-r1@ca5be8c6f2fac092\")\n  (literal \"/u/.otto/sandbox/claude/r1\")"), "the folder can't be moved: {text}");
     }
 
     #[test]
