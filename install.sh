@@ -2,7 +2,8 @@
 # Installer for otto: builds the Rust binary, places it on PATH, installs otto's Claude
 # Code skills, and registers the launchd reviver agent.
 #
-#   ./install.sh
+#   ./install.sh [--service] [--skip-rehearsal] [--skills-repo DIR]
+#   ./install.sh --rollback
 #
 # Each step is also available on its own once otto is installed:
 #
@@ -23,10 +24,19 @@
 # too — except that launchers added since (a run moved into a sandbox-* launcher, one you defined)
 # are carried over, so no run loses the launcher it names. The config it replaces is kept as
 # config.json.before-rollback in the otto home.
+#
+# Before an install over an existing one, scripts/rehearse.sh runs the new build and the installed
+# one on a copy of the otto home (ls, state list, changes, poke --dry-run) and runs
+# scripts/migration-check.sh on it. If the new build can't read a run, fails where the installed one
+# didn't, or changes something that must survive, the install stops before anything is replaced; the
+# log is <otto home>/logs/rehearsal.log. Differences in output are only shown there.
+# --skip-rehearsal is for a release that changes a recorded fact on purpose, once you have read that
+# log; it still checks the new build's `otto ls`. Landings never pass it.
 set -euo pipefail
 
 with_service=0
 rollback=0
+skip_rehearsal=0
 # --skills-repo DIR: link the skills to that checkout, not this one. For an install from a
 # temporary clone (otto's own, after a landing), whose directory is gone afterwards.
 skills_repo=""
@@ -34,12 +44,13 @@ while [ $# -gt 0 ]; do
 	case "$1" in
 	--service) with_service=1 ;;
 	--rollback) rollback=1 ;;
+	--skip-rehearsal) skip_rehearsal=1 ;;
 	--skills-repo)
-		[ $# -ge 2 ] || { echo "usage: $0 [--service] [--rollback] [--skills-repo DIR]" >&2; exit 2; }
+		[ $# -ge 2 ] || { echo "usage: $0 [--service] [--rollback] [--skip-rehearsal] [--skills-repo DIR]" >&2; exit 2; }
 		skills_repo="$2"
 		shift
 		;;
-	*) echo "usage: $0 [--service] [--rollback] [--skills-repo DIR]" >&2; exit 2 ;;
+	*) echo "usage: $0 [--service] [--rollback] [--skip-rehearsal] [--skills-repo DIR]" >&2; exit 2 ;;
 	esac
 	shift
 done
@@ -103,8 +114,19 @@ else
 
 	# A build that can't read this machine's runs must not replace one that can: the reviver and
 	# every agent run the installed binary, and none of them could say what went wrong.
-	echo "==> checking the new build reads your runs"
-	target/release/otto ls >/dev/null
+	if [ -x "$bin_dir/otto" ] && [ -d "$otto_home" ] && [ "$skip_rehearsal" = 0 ]; then
+		echo "==> rehearsing the new build on a copy of $otto_home (scripts/rehearse.sh)"
+		if ! scripts/rehearse.sh --new target/release/otto --installed "$bin_dir/otto" --home "$otto_home"; then
+			echo "==> install stopped: the rehearsal refused this build (see above)." >&2
+			echo "    $bin_dir/otto (the old otto) and $config are untouched." >&2
+			echo "    The full log is $otto_home/logs/rehearsal.log." >&2
+			echo "    If the change it names is intended, read the log, then run ./install.sh --skip-rehearsal." >&2
+			exit 1
+		fi
+	else
+		echo "==> checking the new build reads your runs"
+		target/release/otto ls >/dev/null
+	fi
 
 	mkdir -p "$bin_dir"
 	# cp, not mv: its modified time is when it stopped being current, which scripts/check.sh reads.
