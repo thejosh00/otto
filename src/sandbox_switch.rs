@@ -222,7 +222,7 @@ pub fn on(mode: Mode, args: OnArgs) -> Result<(), OttoError> {
     // can't be written the record goes back, so the two are never left disagreeing by this.
     // Inside a sandbox neither can be written (the profile closes both), and the bare error names a temporary
     // file: say what it was, that nothing changed, and where to run this.
-    let outside = format!("Inside a sandbox otto's sandbox records and config.json are closed to writing: run `otto sandbox {what} {}` outside a sandbox, in a terminal of your own", crate::paths::short_id(&id));
+    let outside = format!("Inside a sandbox otto's sandbox records and config.json are closed to writing, and this is what that looks like: run `otto sandbox {what} {}` outside a sandbox, in a terminal of your own", crate::paths::short_id(&id));
     if missing {
         crate::config::add_launcher(&sandboxed).map_err(|e| {
             OttoError::conflict(format!("the launcher {} couldn't be added to {} ({}). Nothing was changed. {outside}", sandboxed.name, crate::config::config_path().display(), e.message))

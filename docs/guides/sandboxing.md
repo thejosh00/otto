@@ -157,10 +157,23 @@ To open a path, add it to "read" or "write" in the run's record by hand, or with
 - **One line for a noisy path.** The same operation on the same path is one line with a count; five or more
   paths under one directory, for one operation, are one line that says it is grouped. At most 30 lines are shown,
   and it says how many were left out; `--json` has the same findings for a script.
-- **Other runs' lines are left out**: a line is the run's only if the message after it is exactly
-  `otto-run-<its id>`.
+- **Other runs' lines are left out, and other otto homes'**: a line is the run's only if the message after it
+  is exactly `otto-run-<its id>@<hash>`, where the hash is 16 hex digits made from the otto home's real path
+  (so a home reached through a symlink, or `OTTO_HOME` with a trailing slash, is the same home). Two otto homes
+  number their runs alike; run 5 of one shows nothing of run 5 of another. Only the hash is written to the log,
+  never the path.
+- **Older lines are counted, not listed.** Lines written before the message named the otto home (or by an older
+  otto) say only `otto-run-<id>`, and could be any home's run of that number. The report leaves them out of
+  what it lists and says how many there were ("3 older lines for a run numbered 5 carry no otto home…");
+  `--json` has the count as `olderUntagged`. When there are none it says nothing about them.
+- **A window that would end before it starts is refused**, before the log is read: `--until 1h` alone, on a run
+  put under observation ten minutes ago, ends before its start. The message names both times; give both, as
+  `--since <when> --until <when>`.
 - It reads the log with `/usr/bin/log`, so it works for you in a terminal. Anyone can run it, as it only reads,
   but inside a sandbox the log may not be readable.
+
+Run inside a sandbox, `observe` and `enforce` can't write the record: they say which file couldn't be written,
+that nothing was changed, and to run the command outside a sandbox.
 
 **The first three are yours alone.** From a wake or a chat (`OTTO_RUN_ID` or `OTTO_CHAT` set) `observe`, `enforce` and `off` refuse and change
 nothing. A wake can clear a variable, so that isn't what holds: the profile closes `$OTTO_HOME/sandbox/` and
