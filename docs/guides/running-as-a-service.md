@@ -13,6 +13,18 @@ web service is running, `./install.sh` and `./install.sh --rollback` restart it,
 binary they leave in place. One you stopped stays stopped. To see what is installed, `otto --version`
 names the commit it was built from.
 
+**Checking a release kept your runs.** `scripts/migration-check.sh record ~/.otto before.txt` writes
+what must survive a release (plans/v3.md, "What must survive"), one fact per line: each run's
+names and aliases, goal and done condition by hash, schedule and pause, gates, notes, unread
+messages, drafts, output versions, changes and their patches, `artifacts/`, handoff, journal
+lines, check script and counters, the worktrees of each repo a run uses, `feedback.jsonl` and
+`config.json`. It only reads the home. Record again after installing (or rolling back), then
+`scripts/migration-check.sh compare before.txt after.txt` names every difference by run and
+category and exits 1 if anything was lost or rewritten. A journal may only grow, and a launcher
+may be added but not removed or changed. What moves on its own on a live home (`nextWakeAt`, lines
+appended, counters going up, new notes or messages) is listed apart and doesn't fail. If you
+answered a gate or read a message between the two records, that shows as a failure, so say why.
+
 ## The reviver
 
 ```bash
