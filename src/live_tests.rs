@@ -80,6 +80,8 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let text = serde_json::to_string_pretty(value).map_err(|e| e.to_string())?;
     let temp = path.with_extension("json.tmp");
+    // The run's directory is writable inside the sandbox: never write through anything planted there.
+    let _ = std::fs::remove_file(&temp);
     std::fs::write(&temp, text + "\n").map_err(|e| format!("couldn't write {}: {e}", temp.display()))?;
     std::fs::rename(&temp, path).map_err(|e| format!("couldn't write {}: {e}", path.display()))
 }
@@ -421,8 +423,20 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
         let profile = crate::sandbox::write_profile(&id, &format!("live-{n}"), &text)?;
         crate::sandbox::try_profile(&profile)?;
         let output_path = dir.join("output.log");
-        let out = std::fs::File::create(&output_path).map_err(|e| format!("couldn't write {}: {e}", output_path.display()))?;
+        let _ = std::fs::remove_file(&output_path);
+        let out = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&output_path)
+            .map_err(|e| format!("couldn't write {}: {e}", output_path.display()))?;
         let err = out.try_clone().map_err(|e| e.to_string())?;
+        // Read back through this handle, not the path: what's at the path is the sandboxed tree's to replace.
+        let mut reader = out.try_clone().map_err(|e| e.to_string())?;
+        // Its own temporary directory, so the log directory live.sh names can be held to it.
+        let tmp = dir.join("tmp");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("couldn't make {}: {e}", tmp.display()))?;
         let mut cmd = Command::new("/usr/bin/sandbox-exec");
         cmd.arg("-f")
             .arg(&profile)
@@ -435,12 +449,20 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
                 cmd.env_remove(&name);
             }
         }
-        cmd.env("CLAUDE_CODE_OAUTH_TOKEN", &token)
+        cmd.env("TMPDIR", &tmp)
+            .env("CLAUDE_CODE_OAUTH_TOKEN", &token)
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
         let status = cmd.status().map_err(|e| format!("couldn't start sandbox-exec: {e}"))?;
-        let said = std::fs::read_to_string(&output_path).unwrap_or_default();
+        let said = {
+            use std::io::{Read, Seek};
+            let mut bytes = Vec::new();
+            let _ = reader
+                .seek(std::io::SeekFrom::Start(0))
+                .and_then(|_| reader.read_to_end(&mut bytes));
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
         for line in said.lines() {
             let mut words = line.split_whitespace();
             if let (Some(mark @ ("ok" | "FAIL")), Some(name)) = (words.next(), words.next()) {
@@ -453,11 +475,21 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
             }
         }
         if let Some(logs) = said.lines().rev().find_map(|l| l.strip_prefix("logs: ")) {
+            // Only a directory in its own temporary directory, itself and not a link: the name is the
+            // sandboxed tree's to say, and the copy is made from outside.
             let logs = PathBuf::from(logs.trim());
-            if copy_dir(&logs, &dir.join("logs")).is_ok() {
-                let _ = std::fs::remove_dir_all(&logs);
+            let own = logs.parent() == Some(tmp.as_path()) && std::fs::symlink_metadata(&logs).is_ok_and(|m| m.is_dir());
+            let target = dir.join("logs");
+            match std::fs::symlink_metadata(&target) {
+                Ok(m) if m.is_dir() => drop(std::fs::remove_dir_all(&target)),
+                Ok(_) => drop(std::fs::remove_file(&target)),
+                Err(_) => {}
+            }
+            if own {
+                let _ = copy_dir(&logs, &target);
             }
         }
+        let _ = std::fs::remove_dir_all(&tmp);
         if tests.is_empty() {
             let last = said.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string();
             return Ok((
