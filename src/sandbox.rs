@@ -1211,12 +1211,7 @@ fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String>
     let text = profile(&id, &record, &machine)?;
     let path = write_profile(&id, session, &text)?;
     try_profile(&path)?;
-    // From outside: inside, only what's below this is writable.
-    let caches = caches_of(&crate::paths::otto_home(), &id);
-    for (_, sub) in CACHE_ENV {
-        std::fs::create_dir_all(caches.join(sub)).map_err(|e| format!("couldn't make the run's caches in {}: {e}", caches.display()))?;
-    }
-    let claude = lay_out_claude(&id, &record, &machine.home)?;
+    let (caches, claude) = run_folders(&id, &record, &machine.home)?;
     // A wake's deadline is in its `run.json` before it's started; a chat has none.
     let deadline = std::env::var("OTTO_RUN_ID")
         .is_ok_and(|run| !run.is_empty())
@@ -1225,6 +1220,25 @@ fn prepare(id: &str, session: &str, args: &[String]) -> Result<Prepared, String>
     let token = read_token(deadline)?;
     hand_in(&token)?;
     Ok(Prepared { profile: path, command, caches, claude })
+}
+
+/// The run's own caches (`CACHE_ENV`) and Claude folder (`lay_out_claude`), made if missing, from outside:
+/// inside, only what's below these is writable. The wrapper's, and the live-tests runner's (`live_tests`).
+pub(crate) fn run_folders(id: &str, record: &Record, home: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let caches = caches_of(&crate::paths::otto_home(), id);
+    for (_, sub) in CACHE_ENV {
+        std::fs::create_dir_all(caches.join(sub)).map_err(|e| format!("couldn't make the run's caches in {}: {e}", caches.display()))?;
+    }
+    let claude = lay_out_claude(id, record, home)?;
+    Ok((caches, claude))
+}
+
+/// What the wrapper sets for what it starts beyond clearing: the run's Claude folder and its caches.
+pub(crate) fn run_env(command: &mut std::process::Command, caches: &Path, claude: &Path) {
+    command.env("CLAUDE_CONFIG_DIR", claude);
+    for (name, sub) in CACHE_ENV {
+        command.env(name, caches.join(sub));
+    }
 }
 
 /// What `.claude.json` starts as in a run's own Claude folder: enough that claude asks nothing as it starts, and
@@ -1418,10 +1432,7 @@ impl Prepared {
             }
         }
         command.env("CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR", TOKEN_FD.to_string());
-        command.env("CLAUDE_CONFIG_DIR", &self.claude);
-        for (name, sub) in CACHE_ENV {
-            command.env(name, self.caches.join(sub));
-        }
+        run_env(&mut command, &self.caches, &self.claude);
         command
     }
 }

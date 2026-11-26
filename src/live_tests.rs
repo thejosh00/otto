@@ -422,6 +422,7 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
         let text = crate::sandbox::profile(&id, &record, &machine)?;
         let profile = crate::sandbox::write_profile(&id, &format!("live-{n}"), &text)?;
         crate::sandbox::try_profile(&profile)?;
+        let (caches, claude) = crate::sandbox::run_folders(&id, &record, &machine.home)?;
         let output_path = dir.join("output.log");
         let _ = std::fs::remove_file(&output_path);
         let out = std::fs::OpenOptions::new()
@@ -449,6 +450,7 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
                 cmd.env_remove(&name);
             }
         }
+        crate::sandbox::run_env(&mut cmd, &caches, &claude);
         cmd.env("TMPDIR", &tmp)
             .env("CLAUDE_CODE_OAUTH_TOKEN", &token)
             .stdin(Stdio::null())
