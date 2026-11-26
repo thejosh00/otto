@@ -224,6 +224,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         WakeSpent { turns: 0, spent_wakes: 0, spent_tokens: 0, input_tokens: 0, output_tokens: 0, cache_read: 0, cache_creation: 0, tool_errors: 0 },
         UsageUnavailable { note: s() },
         SandboxRefused { why: "no sandbox record for run 12".into() },
+        LiveTestsRequested { n: 1, commit: s(), tests: vec!["live_gate".into()] },
+        LiveTestsFinished { n: 1, state: "ok".into() },
         SandboxObserved { mode: s(), launcher: s(), previous_launcher: s() },
         SandboxEnforced { mode: s(), launcher: s(), previous_launcher: s() },
         SandboxOff { launcher: s(), previous_launcher: s() },
@@ -304,7 +306,8 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
             | PeriodSet { .. } | PolicySet { .. } | Renamed { .. } | Renumbered { .. } | CheckCleared { .. }
             | Notified { .. } | MessageSent { .. } | MessageDone { .. } | Paused { .. } | Unpaused { .. }
             | StartFailed { .. } | HandoffRefused { .. } | OutputPublished { .. } | OutputState { .. }
-            | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } | ChangeSubmitted { .. } | ChangeMoved { .. } => {}
+            | StagesSet { .. } | ChatStarted { .. } | ChatEnded { .. } | ChangeSubmitted { .. } | ChangeMoved { .. }
+            | LiveTestsRequested { .. } | LiveTestsFinished { .. } => {}
         }
     }
     events

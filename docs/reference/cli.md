@@ -1583,6 +1583,7 @@ Commands:
   handoff             Rewrite handoff.md — the only thing the next wake gets for free (capped)
   log                 Append one journal line
   tail                Last N journal lines
+  live-tests          Ask for a commit's live tests, run from outside the sandbox under this run's profile; poke starts them
   help                Print this message or the help of the given subcommand(s)
 
 Options:
@@ -2945,6 +2946,31 @@ Options:
           How many of the last journal lines to print
           
           [default: 20]
+
+  -h, --help
+          Print help
+```
+
+### `otto state live-tests`
+
+```text
+Ask for a commit's live tests, run from outside the sandbox under this run's profile; poke starts them
+
+Usage: otto state live-tests [OPTIONS] --commit <COMMIT> <ID>
+
+Arguments:
+  <ID>
+          The run asking
+
+Options:
+      --commit <COMMIT>
+          The commit whose live tests to run, resolved in the repo
+
+      --test <TESTS>
+          One test file's name (`live_gate`); repeat for more. None: live.sh's routine set
+
+      --repo <REPO>
+          The repo the commit is in. Default: the current directory's
 
   -h, --help
           Print help
