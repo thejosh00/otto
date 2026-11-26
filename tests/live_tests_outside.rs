@@ -22,6 +22,10 @@ for t in "$@"; do
         echo "claude config: $CLAUDE_CONFIG_DIR" >>"$logs/$t.log"
         echo "cargo home: $CARGO_HOME" >>"$logs/$t.log"
         if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then mark=ok; else mark=FAIL failed=1; fi ;;
+    live_straggler)
+        sleep 30 &
+        echo $! >"$logs/straggler.pid"
+        mark=ok ;;
     live_reach)
         if [ -n "${GH_TOKEN:-}" ] || cat "$HOME/.ssh/id_test" 2>/dev/null; then mark=FAIL failed=1; else mark=ok; fi ;;
     *) echo "fails on purpose" >"$logs/$t.log"; mark=FAIL failed=1 ;;
@@ -217,6 +221,8 @@ fn a_run_under_the_record_says_each_test_and_scrubs_the_token() {
         "--test",
         "live_reach",
         "--test",
+        "live_straggler",
+        "--test",
         "live_sandbox_refused",
     ]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -257,6 +263,9 @@ fn a_run_under_the_record_says_each_test_and_scrubs_the_token() {
     assert!(good.contains(&format!("claude config: {}", claude.display())), "{good}");
     assert!(good.contains(&format!("cargo home: {}", cargo.display())), "{good}");
     assert!(claude.is_dir() && cargo.is_dir(), "the run's own folders are made");
+    let pid = std::fs::read_to_string(dir.join("logs/straggler.pid")).unwrap();
+    let alive = Command::new("/bin/kill").args(["-0", pid.trim()]).stderr(std::process::Stdio::null()).status().unwrap().success();
+    assert!(!alive, "what live.sh left running ({}) is still running", pid.trim());
 }
 
 #[test]

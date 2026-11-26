@@ -456,7 +456,21 @@ pub fn run(id: &str, n: u32) -> Result<(), OttoError> {
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err);
-        let status = cmd.status().map_err(|e| format!("couldn't start sandbox-exec: {e}"))?;
+        // A group of its own, so whatever it leaves running can be stopped before its logs are copied and scrubbed.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setpgid(0, 0);
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("couldn't start sandbox-exec: {e}"))?;
+        let status = child.wait().map_err(|e| format!("couldn't wait for sandbox-exec: {e}"))?;
+        if let Ok(group) = i32::try_from(child.id()) {
+            // SAFETY: a signal to the group this process just made; nothing of the runner's is in it.
+            unsafe {
+                libc::killpg(group, libc::SIGKILL);
+            }
+        }
         let said = {
             use std::io::{Read, Seek};
             let mut bytes = Vec::new();
