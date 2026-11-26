@@ -225,3 +225,19 @@ fn poke_settles_a_runner_that_died() {
     assert_eq!(result["state"], "failed");
     assert_eq!(result["why"], "died without saying");
 }
+
+#[test]
+fn a_run_under_an_observed_record_says_each_test_and_scrubs_the_token() {
+    let s = Scratch::new();
+    s.record("report");
+    assert!(s.otto(&["state", "live-tests", "author", "--commit", "HEAD", "--test", "live_good", "--test", "live_bad"]).status.success());
+    let out = s.otto(&["live-tests", "run", "author", "1"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result = s.result(1);
+    assert_eq!(result["state"], "failed", "{result}");
+    assert_eq!(result["tests"], serde_json::json!([{"name": "live_good", "result": "ok"}, {"name": "live_bad", "result": "FAIL"}]));
+    let dir = s.run_dir().join("live-tests/1");
+    assert!(dir.join("logs/live_bad.log").is_file());
+    let text = all_text(&dir);
+    assert!(text.contains("the token was: [token removed]") && !text.contains(TOKEN));
+}
