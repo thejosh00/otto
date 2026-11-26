@@ -378,6 +378,19 @@ without writing a result is marked `failed`, "died without saying", on poke's ne
 The tests' own claude processes have the token in their environment, so the code under test can read it: that's the
 wake's own code, which could read it anyway by writing a test that does. It reaches nothing else the run's record doesn't.
 
+What the runner stops when live.sh exits is its process group: anything that started a session of its own (a test's
+tmux server) is the test's to stop.
+
+**The standing note for otto-build (Wave C).** Adding it is the person's step, with `otto note`, once otto-build is
+sandboxed; nothing adds it for them. Its text:
+
+> Don't run `test/live.sh` yourself: inside the sandbox it has no sign-in. To run the live tests on a commit, ask with
+> `otto state live-tests $OTTO_RUN_ID --commit <sha>` (add `--test <name>` for each one, or none for the routine set),
+> then wait for the result: sleep and look again until `$RUN_DIR/live-tests/<n>/result.json` is there (poke starts
+> them on its next pass; the whole set takes several minutes). Attach `$RUN_DIR/live-tests/<n>/` (`result.json` and
+> `logs/`) to the change as its evidence of the live tests. A test listed "not run here" isn't a failure: it needs to
+> start outside any sandbox, so the person runs it, on a commit they approved; say in the change that it's theirs to run.
+
 ### What it doesn't close
 
 Not a promise past the list above:
