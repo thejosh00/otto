@@ -21,7 +21,7 @@ for t in "$@"; do
         echo "the token was: $CLAUDE_CODE_OAUTH_TOKEN" >"$logs/$t.log"
         if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then mark=ok; else mark=FAIL failed=1; fi ;;
     live_reach)
-        if [ -n "${GH_TOKEN:-}" ] || cat "$HOME/.ssh/id_test" >"$logs/$t.log" 2>&1; then mark=FAIL failed=1; else mark=ok; fi ;;
+        if [ -n "${GH_TOKEN:-}" ] || cat "$HOME/.ssh/id_test" 2>/dev/null; then mark=FAIL failed=1; else mark=ok; fi ;;
     *) echo "fails on purpose" >"$logs/$t.log"; mark=FAIL failed=1 ;;
     esac
     printf '%-4s %-13s %5ss  %s\n' "$mark" "$t" 1 ""
@@ -56,6 +56,7 @@ impl Scratch {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         std::fs::create_dir_all(root.join("home")).unwrap();
+        std::fs::create_dir_all(root.join("tmp")).unwrap();
         std::fs::create_dir_all(root.join("userhome/.ssh")).unwrap();
         std::fs::write(root.join("userhome/.ssh/id_test"), "PRIVATE KEY\n").unwrap();
         let repo = root.join("repo");
@@ -95,6 +96,8 @@ impl Scratch {
             .env("HOME", self.root.join("userhome"))
             .env("OTTO_TEST_KEYCHAIN_JSON_FILE", self.root.join("keychain.json"))
             .env("GH_TOKEN", "gh-should-not-reach")
+            // The scratch homes are below the real TMPDIR, which leaves it closed: one beside them instead.
+            .env("TMPDIR", self.root.join("tmp"))
             .env_remove("TMUX")
             .env_remove("OTTO_RUN_ID")
             .env_remove("OTTO_RUN_DIR")
@@ -197,7 +200,7 @@ fn a_run_under_the_record_says_each_test_and_scrubs_the_token() {
     assert_eq!(said("live_bad").as_deref(), Some("FAIL"), "{result}");
     assert_eq!(said("live_reach").as_deref(), Some("ok"), "ssh key or GH_TOKEN reachable: {result}");
     assert!(said("live_sandbox_refused").unwrap().starts_with("not run here"), "{result}");
-    assert!(dir.join("logs/live_good.log").is_file(), "logs copied");
+    assert!(dir.join("logs/live_good.log").is_file(), "logs copied: {}", std::fs::read_to_string(dir.join("output.log")).unwrap_or_default());
     assert!(!dir.join("checkout").exists(), "checkout removed");
     let text = all_text(&dir);
     assert!(text.contains("the token was: [token removed]"), "the stand-in token reached live.sh and was scrubbed");
