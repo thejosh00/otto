@@ -363,7 +363,7 @@ remote's refs, markers, the approval record, the journal), and one that didn't r
 outside to drop its launcher or add a repo must get the next wake refused (`sandbox-refused`), and the run must come
 back once put right. It prints a per-probe ok/FAIL list and what it couldn't test, and why. On a throwaway
 `OTTO_HOME`, a private tmux server, a scratch repository and remote; it never touches `~/.otto` or a real run.
-It spends real wakes (roughly 15 to 45 minutes), isn't in `test/live.sh`'s routine set, and can't run from inside a
+It spends real wakes (about 3 to 4 minutes), isn't in `test/live.sh`'s routine set, and can't run from inside a
 sandbox, so run it by hand, outside any sandbox, on a commit you've approved:
 
 ```sh

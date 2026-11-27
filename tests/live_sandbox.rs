@@ -14,7 +14,7 @@
 //!
 //! It must start outside any sandbox (a sandboxed process can't start a signed-in `claude` or a different profile),
 //! on a commit the person approved. It's not in `test/live.sh`'s routine set nor run by 1.9's runner
-//! (`live_tests::ELSEWHERE`). Roughly 15 to 45 minutes: the probing wake, a lander's wake or two, and two short
+//! (`live_tests::ELSEWHERE`). About 3 to 4 minutes (205s on a real run), though it waits far longer before giving up: the probing wake, a lander's wake or two, and two short
 //! wakes after the refusals. Evidence is kept in `target/live_sandbox/<stamp>/`.
 //!
 //!   cargo test --test live_sandbox -- --ignored --nocapture
