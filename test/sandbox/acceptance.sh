@@ -101,15 +101,15 @@ ok "first wake completed" "$(yes_if grep -q '"wake-complete"' "$J")"
 ok "first wake ran sandboxed (a profile was written, nothing refused)" "$(yes_if sh -c "ls '$OTTO_HOME'/sandbox/profiles/$ID.*.sb >/dev/null 2>&1 && [ $(journal sandbox-refused) = 0 ]")"
 
 # A probe's own lines: present, and every one failed (refused, 0 bytes, or a nonzero exit).
-inside() { # <probe> -> "yes" or "no", and a detail in $DETAIL
-	local lines; lines=$(grep "^$1 " "$OUT/escapes.txt" 2>/dev/null)
-	if [ -z "$lines" ]; then DETAIL="did not run"; echo no; return; fi
-	local bad; bad=$(echo "$lines" | grep -v -E ' refused$| 0 bytes$| exit [1-9][0-9]*$' | cut -d' ' -f2- | tr '\n' ';')
-	if [ -n "$bad" ]; then DETAIL="got through inside: $bad"; echo no; else DETAIL="$(echo "$lines" | wc -l | tr -d ' ') attempts refused"; echo yes; fi
+inside() { # <probe>: sets IN (yes/no) and DETAIL. Not in a subshell, so that both are seen.
+	local lines bad; lines=$(grep "^$1 " "$OUT/escapes.txt" 2>/dev/null)
+	if [ -z "$lines" ]; then IN=no; DETAIL="did not run"; return; fi
+	bad=$(echo "$lines" | grep -v -E ' refused$| 0 bytes$| exit [1-9][0-9]*$' | cut -d' ' -f2- | tr '\n' ';')
+	if [ -n "$bad" ]; then IN=no; DETAIL="got through inside: $bad"; else IN=yes; DETAIL="$(echo "$lines" | wc -l | tr -d ' ') attempts, all refused"; fi
 }
 both() { # <probe> <outside yes/no> <outside detail>
-	local in; in=$(inside "$1"); local d=$DETAIL
-	ok "$1" "$([ "$in" = yes ] && [ "$2" = yes ] && echo yes || echo no)" "inside: $d; outside: $3"
+	inside "$1"
+	ok "$1" "$([ "$IN" = yes ] && [ "$2" = yes ] && echo yes || echo no)" "inside: $DETAIL; outside: $3"
 }
 echo "== the escapes, measured from outside"
 A_REFS=$("$REAL_GIT" -C "$ORIGIN" for-each-ref | shasum | cut -d' ' -f1)

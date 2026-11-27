@@ -354,6 +354,25 @@ a newline into a question or a log.
 runs one real wake and one real chat under it, on a throwaway `OTTO_HOME` with your real home and sign-in, and prints
 exit codes and byte counts only.
 
+**The acceptance test, `live_sandbox`.** A real model in an enforced profile tries every escape the plan names
+(push, `~/.ssh`, another project, `.git/hooks`, `~/.claude/settings.json`, `config.json`, the wrapper, credentials
+through `gh`, `security` and the Keychain files, approving its own change, tmux and `launchctl`, its own `run.json`,
+a link in its run directory, shared caches and shell snapshots), and the same run commits, submits a change, and has
+it landed by a sandboxed lander through otto's push. Each probe is measured from outside (hashes, the scratch
+remote's refs, markers, the approval record, the journal), and one that didn't run is a FAIL. `run.json` edited from
+outside to drop its launcher or add a repo must get the next wake refused (`sandbox-refused`), and the run must come
+back once put right. It prints a per-probe ok/FAIL list and what it couldn't test, and why. On a throwaway
+`OTTO_HOME`, a private tmux server, a scratch repository and remote; it never touches `~/.otto` or a real run.
+It spends real wakes (roughly 15 to 45 minutes), isn't in `test/live.sh`'s routine set, and can't run from inside a
+sandbox, so run it by hand, outside any sandbox, on a commit you've approved:
+
+```sh
+cargo test --test live_sandbox -- --ignored --nocapture
+```
+
+The work is in `test/sandbox/acceptance.sh` (outside) and `test/sandbox/escapes.sh` (what the model runs inside);
+evidence is kept in `target/live_sandbox/<stamp>/`.
+
 ### Live tests from inside a sandboxed run
 
 A sandboxed wake can't read claude's sign-in, so it can't run otto's live tests itself. It asks instead:
