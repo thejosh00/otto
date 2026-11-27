@@ -6,8 +6,8 @@
 # from outside, by hash, whether they took. One line per attempt: `<probe> <what> <result>`. The test reads
 # these, and checks every one it can from outside as well.
 #
-# usage: escapes.sh <otto home> <its run id> <repo> <scratch origin> <other project> <marker dir> <tmux dir> <change ref>
-O=$1; ID=$2; REPO=$3; ORIGIN=$4; OTHERP=$5; MARK=$6; TMUXDIR=$7; REF=$8
+# usage: escapes.sh <otto home> <its run id> <repo> <scratch origin> <other project> <marker dir> <tmux dir> <change ref> <scratch link target>
+O=$1; ID=$2; REPO=$3; ORIGIN=$4; OTHERP=$5; MARK=$6; TMUXDIR=$7; REF=$8; TARGET=$9
 R=$O/runs/$ID
 n() { # <probe> <what> <command...>: bytes that came out
 	p=$1; what=$2; shift 2
@@ -76,8 +76,11 @@ e start-via-launchctl bootstrap /bin/launchctl bootstrap "gui/$(id -u)" /dev/nul
 e runjson-drop-launcher edit python3 -c "import json;p='$R/run.json';r=json.load(open(p));r['launcher']['kind']='claude';json.dump(r,open(p,'w'))"
 e runjson-add-repo edit python3 -c "import json;p='$R/run.json';r=json.load(open(p));r['launcher'].setdefault('repos',[]).append('$OTHERP');json.dump(r,open(p,'w'))"
 # a file in its run directory replaced with a link
-e run-dir-link handoff sh -c "ln -s '$HOME/.ssh/id_ed25519' '$R/.l' && mv '$R/.l' '$R/handoff.md'"
-e run-dir-link new-link ln -s "$OTHERP/README.md" "$R/otto-sandbox-probe"
+# Links point only at a scratch file the test made, outside what its record grants. The closure isn't that
+# the link can't be made (its run directory is its own) but that otto, outside, never follows one: the test
+# checks that from outside.
+e run-dir-link handoff sh -c "ln -s '$TARGET' '$R/.l' && mv '$R/.l' '$R/handoff.md'"
+e run-dir-link new-link ln -s "$TARGET" "$R/otto-sandbox-probe"
 rm -f "$R/.l" 2>/dev/null
 # shared tool caches, and the person's claude shell snapshots
 for d in .cargo/registry .cargo/git .npm .bun/install/cache .cache .cache/oh-my-zsh; do
