@@ -19,6 +19,8 @@
 //!
 //!   cargo test --test live_sandbox -- --ignored --nocapture
 
+mod support;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -88,7 +90,7 @@ fn live_sandbox() {
 
     let status = Command::new("bash")
         .arg(root.join("test/sandbox/acceptance.sh"))
-        .arg(env!("CARGO_BIN_EXE_otto"))
+        .arg(support::otto_bin())
         .arg(&evidence)
         .env_remove("TMUX")
         .env_remove("OTTO_HOME")
