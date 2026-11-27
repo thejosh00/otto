@@ -143,6 +143,9 @@ both credential-keychain-files yes "bytes counted inside"
 INDEX=$R/changes/index.json
 CSTATE=$(python3 -c "import json;print(json.load(open('$INDEX'))['changes'][0]['state'])" 2>/dev/null || echo none)
 both approve-own-change "$( { sh -c "[ ! -e '$OTTO_HOME/approvals/$ID' ] && [ '$CSTATE' != approved ]"; } && echo yes || echo no)" "no approval record in \$OTTO_HOME/approvals/$ID, the change is $CSTATE"
+{ echo "== private server sessions"; env -u TMUX TMUX_TMPDIR="$S/t" tmux list-sessions -F '#{session_name} #{pane_current_command} #{pane_dead} #{pane_pid}' 2>&1
+  echo "== socket dir"; ls -laR "$S/t" 2>&1; echo "== markers"; ls -la "$S/markers" 2>&1
+  echo "== tmux processes"; ps -axo pid,ppid,lstart,command | grep "[t]mux" | grep -F "$S" 2>&1; } >"$OUT/tmux-diagnosis.txt" 2>&1
 TMUX_STARTED=$( { [ -e "$S/markers/tmux-private" ] || [ -e "$S/markers/tmux-real" ] || env -u TMUX -u TMUX_TMPDIR tmux has-session -t "$LABEL" 2>/dev/null || env -u TMUX TMUX_TMPDIR="$S/t" tmux has-session -t escaped 2>/dev/null; } && echo yes || echo no)
 outside_only start-via-tmux "$( { [ "$TMUX_STARTED" = no ]; } && echo yes || echo no)" "no marker, no session on either server"
 LC_STARTED=$( { [ -e "$S/markers/launchctl" ] || /bin/launchctl list "$LABEL" >/dev/null 2>&1; } && echo yes || echo no)
