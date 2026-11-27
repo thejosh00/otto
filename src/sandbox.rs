@@ -219,6 +219,8 @@ pub struct Machine {
     pub web_ports: Vec<u16>,
     /// The wake's own terminal (`own_terminal`): the one terminal device it may open by name. None with no terminal.
     pub terminal: Option<PathBuf>,
+    /// The tmux server hosting the wake, wherever it is (`tmux_hosts`). It started outside, so what it runs is too.
+    pub tmux_hosts: Vec<PathBuf>,
 }
 
 impl Machine {
@@ -238,8 +240,32 @@ impl Machine {
             temp,
             web_ports: crate::launchd::web_ports(),
             terminal: own_terminal(),
+            // SAFETY: getuid can't fail and touches no memory of ours.
+            tmux_hosts: tmux_hosts(std::env::var_os("TMUX"), std::env::var_os("TMUX_TMPDIR"), unsafe { libc::getuid() }),
         }
     }
+}
+
+/// Where the tmux server hosting the wrapper listens, learned before `TMUX` is cleared: the socket `TMUX`
+/// names, or its whole `tmux-<uid>` directory when it's in one, and the `tmux-<uid>` directory under the
+/// `TMUX_TMPDIR` the wrapper was given. The default place is closed by its own rule. A server a wake starts
+/// itself under some other `TMUX_TMPDIR` is not in this list, and stays confined with the wake.
+fn tmux_hosts(tmux: Option<std::ffi::OsString>, tmux_tmpdir: Option<std::ffi::OsString>, uid: u32) -> Vec<PathBuf> {
+    let real = |p: PathBuf| p.canonicalize().unwrap_or(p);
+    let mut hosts = Vec::new();
+    // `TMUX` is `<socket>,<pid>,<session>`; a socket path with a comma in it can't be told apart, so it's cut at the last two.
+    if let Some(socket) = tmux.as_ref().and_then(|t| t.to_str()).and_then(|t| t.rsplitn(3, ',').last()).filter(|s| s.starts_with('/')) {
+        let socket = real(PathBuf::from(socket));
+        let in_own_dir = socket.parent().and_then(|d| d.file_name()).is_some_and(|n| n == format!("tmux-{uid}").as_str());
+        hosts.push(if in_own_dir { socket.parent().unwrap().to_path_buf() } else { socket });
+    }
+    if let Some(dir) = tmux_tmpdir.map(PathBuf::from).filter(|d| d.is_absolute()) {
+        hosts.push(real(dir).join(format!("tmux-{uid}")));
+    }
+    hosts.retain(|h| !h.to_string_lossy().contains(['\n', '\r', '\0']));
+    hosts.sort();
+    hosts.dedup();
+    hosts
 }
 
 /// The terminal the wrapper was started on, learned from outside: its stdin's, stdout's or stderr's. Under tmux
@@ -555,6 +581,8 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     p.note("The real tmux server's directory: a file there is one the person's tmux finds. And caches a shell sources.");
     let mut shared = vec!["(regex #\"^/private/tmp/tmux-[0-9]+(/|$)\")".to_string()];
     shared.extend(SOURCED_CACHES.iter().map(|d| subpath(&in_home(d))));
+    p.note("And the tmux server hosting this wake, wherever it listens: what it runs, it runs outside.");
+    shared.extend(machine.tmux_hosts.iter().map(|d| subpath(d)));
     p.close("file-write*", &shared);
 
     p.note("The person's own Claude folder, whatever the record says: shell snapshots and session-env that their claude sources, memory and settings that steer it.");
@@ -568,13 +596,15 @@ pub fn profile(run_id: &str, record: &Record, machine: &Machine) -> Result<Strin
     p.close("mach-lookup", &OUTSIDE_SERVICES.iter().map(|s| format!("(global-name \"{s}\")")).collect::<Vec<_>>());
     p.close("process-exec*", &OUTSIDE_COMMANDS.iter().map(|c| format!("(literal \"{c}\")")).collect::<Vec<_>>());
     let mut sockets = vec![
-        // The ssh agent, and the real tmux server. A private one under TMUX_TMPDIR starts inside, so it stays confined.
+        // The ssh agent, and the real tmux server. A private one the wake starts under a TMUX_TMPDIR of its own starts inside, so it stays confined.
         "(regex #\"^/private/(tmp|var/run)/com\\.apple\\.launchd\\.[^/]+/Listeners$\")".to_string(),
         "(regex #\"^/private/tmp/tmux-[0-9]+/\")".to_string(),
         subpath(&in_home(".ssh")),
         subpath(&in_home(".docker")),
         "(literal \"/private/var/run/docker.sock\")".to_string(),
     ];
+    // The server hosting the wake, when it isn't in the default place: started outside, it runs anything outside.
+    sockets.extend(machine.tmux_hosts.iter().map(|d| subpath(d)));
     // otto's page approves changes for whoever asks, with no sign-in: for a wake that's approving itself.
     sockets.extend(machine.web_ports.iter().map(|port| format!("(remote tcp \"localhost:{port}\")")));
     p.close("network-outbound", &sockets);
@@ -1446,7 +1476,7 @@ mod tests {
     }
 
     fn machine() -> Machine {
-        Machine { home: "/u".into(), otto_home: "/u/.otto".into(), projects: vec!["/w/space".into()], temp: vec!["/private/tmp".into()], web_ports: vec![7878], terminal: None }
+        Machine { home: "/u".into(), otto_home: "/u/.otto".into(), projects: vec!["/w/space".into()], temp: vec!["/private/tmp".into()], web_ports: vec![7878], terminal: None, tmux_hosts: vec![] }
     }
 
     /// The `file-write*` rules that open something: every `(allow file-write*` block's lines.
@@ -1505,6 +1535,41 @@ mod tests {
             let text = profile("r1", &record(), &Machine { terminal: Some(bad.into()), ..machine() }).unwrap();
             assert!(!text.contains(&format!("(literal {})", quoted(Path::new(bad)))) || bad == "/dev/tty", "{bad}: {text}");
         }
+    }
+
+    #[test]
+    fn the_tmux_server_hosting_the_wake_is_closed_wherever_it_listens() {
+        let hosted = Machine { tmux_hosts: vec!["/private/var/folders/x/T/s/t/tmux-501".into()], ..machine() };
+        let text = profile("r1", &record(), &hosted).unwrap();
+        let rule = r#"(subpath "/private/var/folders/x/T/s/t/tmux-501")"#;
+        let block = |head: &str| text.split("\n(").filter(|b| b.starts_with(head)).filter(|b| b.contains(rule)).count();
+        assert_eq!(block("deny network-outbound"), 1, "connecting to it: {text}");
+        assert_eq!(block("deny file-write*"), 1, "writing in its directory: {text}");
+        // Closed after everything that opens: a temporary directory or a record listing the folder doesn't reopen it.
+        let last_open = text.rfind("(allow ").unwrap();
+        assert!(text.rfind(rule).unwrap() > last_open, "{text}");
+    }
+
+    #[test]
+    fn the_hosting_server_is_learned_from_tmux_and_tmux_tmpdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("t/tmux-501")).unwrap();
+        let socket = root.join("t/tmux-501/default");
+        let tmux = |s: &str| Some(std::ffi::OsString::from(s));
+        // The socket in TMUX, in its own tmux-<uid> directory: the whole directory, so another socket beside it is closed too.
+        assert_eq!(tmux_hosts(tmux(&format!("{},4242,0", socket.display())), None, 501), vec![root.join("t/tmux-501")]);
+        // Where TMUX_TMPDIR says a server would be, whether or not TMUX is set, reached through a symlink or not.
+        let link = root.join("link");
+        std::os::unix::fs::symlink(root.join("t"), &link).unwrap();
+        assert_eq!(tmux_hosts(None, Some(link.into_os_string()), 501), vec![root.join("t/tmux-501")]);
+        // A socket given with -S somewhere else: that socket, never the directory it's in.
+        assert_eq!(tmux_hosts(tmux(&format!("{}/sock,1,2", root.display())), None, 501), vec![root.join("sock")]);
+        // The same server named both ways is one rule.
+        assert_eq!(tmux_hosts(tmux(&format!("{},1,0", socket.display())), Some(root.join("t").into_os_string()), 501).len(), 1);
+        // Nothing to learn: no extra rule.
+        assert!(tmux_hosts(None, None, 501).is_empty());
+        assert!(tmux_hosts(tmux("relative,1,0"), tmux("relative"), 501).is_empty());
     }
 
     #[test]
