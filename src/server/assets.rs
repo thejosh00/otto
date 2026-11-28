@@ -23,6 +23,21 @@ pub async fn favicon() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "no-cache")], include_str!("../../web/favicon.svg"))
 }
 
+// The chat panel's terminal (plans/web-chat.md): xterm.js and its fit addon, as published, with
+// their licences beside them in web/vendor/XTERM-LICENSE.
+
+pub async fn xterm_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], include_str!("../../web/vendor/xterm.js"))
+}
+
+pub async fn xterm_css() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/css; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], include_str!("../../web/vendor/xterm.css"))
+}
+
+pub async fn xterm_fit_js() -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], include_str!("../../web/vendor/addon-fit.js"))
+}
+
 // The two faces the page is set in, carried along so it never reaches out to a font host.
 // Both under the SIL Open Font License; the texts sit beside them in web/fonts/.
 

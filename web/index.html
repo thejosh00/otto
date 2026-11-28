@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>otto</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/vendor/xterm.css">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -48,6 +49,10 @@
     <div class="top-right">
       <a class="to-approve" id="to-approve" href="#/changes" hidden></a>
       <a class="health" id="health" href="#/settings/system" title="Whether otto itself is working">…</a>
+      <button type="button" class="chat-btn" id="chat-btn" aria-label="Chat" aria-controls="chat" aria-expanded="false" title="Ask about what's on the page (Ctrl-`)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span class="dot" id="chat-dot" hidden></span>
+      </button>
       <a class="inbox-btn" id="inbox-btn" href="#/inbox" data-nav="inbox" aria-label="Inbox">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
         <span class="count" id="inbox-count" hidden></span>
@@ -56,7 +61,20 @@
   </header>
   <main id="view" aria-live="polite"></main>
   <footer class="foot"><span id="home"></span> · <a href="#/settings">settings</a></footer>
+  <aside class="chat" id="chat" aria-label="Chat" hidden>
+    <div class="chat-grip" id="chat-grip" title="Drag to resize"></div>
+    <div class="chat-head">
+      <div class="chat-title"><span class="label">Asking about</span> <strong id="chat-run"></strong><span class="chat-about" id="chat-about"></span></div>
+      <button type="button" class="ghost small" id="chat-end" hidden>End chat</button>
+      <button type="button" class="ghost small chat-close" id="chat-close" aria-label="Close the panel" title="Close — the chat keeps going">×</button>
+    </div>
+    <div class="chat-bar" id="chat-bar" hidden></div>
+    <div class="chat-term" id="chat-term"></div>
+    <div class="chat-empty" id="chat-empty" hidden></div>
+  </aside>
   <div id="toast" role="status" hidden></div>
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/addon-fit.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

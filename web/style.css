@@ -755,3 +755,39 @@ details.more fieldset { background: var(--bg); }
 .evidence-grid figcaption code { font-size: 12px; overflow-wrap: anywhere; }
 .evidence pre.code { max-height: 420px; overflow: auto; }
 .no-evidence { margin: 0; font-size: 13px; }
+
+/* ===========================================================================
+   The chat panel: `otto chat` in a terminal down the right (plans/web-chat.md)
+   =========================================================================== */
+:root { --chat-w: 520px; }
+.chat-btn { position: relative; display: inline-grid; place-items: center; width: 38px; height: 34px; min-height: 0; padding: 0; border-radius: var(--cut-sm); corner-shape: bevel; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-2); }
+.chat-btn:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-3); background: var(--surface); }
+.chat-btn.active { background: var(--surface-2); color: var(--ink); border-color: var(--accent); }
+.chat-btn .dot { position: absolute; top: -4px; right: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--info); border: 2px solid var(--bg); box-shadow: var(--glow-info); }
+
+.chat { position: fixed; top: 0; right: 0; bottom: 0; width: var(--chat-w); z-index: 6; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); }
+.chat[hidden] { display: none; }
+.chat-grip { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 1; touch-action: none; }
+.chat-grip:hover, body.chat-resizing .chat-grip { background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+body.chat-resizing { user-select: none; cursor: col-resize; }
+.chat-head { display: flex; align-items: center; gap: 6px; min-height: 59px; padding: 8px 10px 8px 16px; border-bottom: 1px solid var(--line); }
+.chat-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.chat-title .label { color: var(--ink-3); }
+.chat-title strong { font-family: var(--mono); font-weight: 600; }
+.chat-about { color: var(--ink-2); }
+.chat-close { font-size: 20px; line-height: 1; padding: 2px 10px; }
+.chat-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; font-size: 13px; color: var(--ink); background: var(--info-soft); border-bottom: 1px solid var(--line); }
+.chat-term { flex: 1; min-height: 0; padding: 8px 0 8px 10px; background: var(--term-bg); }
+.chat-term .xterm { height: 100%; }
+.chat-empty { flex: 1; padding: 20px 16px; color: var(--ink-2); font-size: 14px; }
+.chat-empty .row { margin-top: 8px; }
+.inline-command { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); padding: 3px 8px; border-radius: var(--cut-xs); corner-shape: bevel; }
+
+/* Wide enough: the page makes room. Narrower: the panel lies over it. */
+@media (min-width: 900px) {
+  body.chat-open { padding-right: var(--chat-w); }
+  body.chat-open .top { padding-left: max(16px, calc((100vw - var(--chat-w) - 1080px) / 2)); padding-right: max(16px, calc((100vw - var(--chat-w) - 1080px) / 2)); }
+}
+@media (max-width: 899px) {
+  .chat { width: min(var(--chat-w), 100vw); box-shadow: -16px 0 40px rgba(0, 0, 0, 0.55); }
+}

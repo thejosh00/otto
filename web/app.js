@@ -2125,16 +2125,19 @@ function runView(id, opened) {
     tell.replaceChildren(h("p.label", "Tell it something"), ...notes, over ? h("p.faint", "It has finished — nothing will read a new note.") : tellForm);
   }
 
-  // ----- asking it something: a chat happens in a terminal, so this is the command for one
+  // ----- asking it something: a chat, in the panel down the right or in a terminal of your own
   let shownChat = null;
   function renderChat(d) {
     if (d.short === shownChat) return;
     shownChat = d.short;
     const command = `otto chat ${d.short}`;
     chat.replaceChildren(h("p.label", "Ask it something"),
-      h("p.hint", "Why it did something, what it found, what's left — in a terminal, where it reads everything it has done and changes none of it. What you settle on reaches it the same way as what you type above."),
-      h("div.command", h("code", command),
-        h("button.small", { type: "button", onclick: () => copyText(command, "Copied — paste it in a terminal") }, "Copy")));
+      h("p.hint", "Why it did something, what it found, what's left. It reads everything it has done and changes none of it; what you settle on reaches it as a note, the same way as what you type above."),
+      h("div.row",
+        h("button.small.primary", { type: "button", onclick: () => chatPanel.openFor(d.state.id) }, "Open chat"),
+        h("span.faint", "or in a terminal:"),
+        h("code.inline-command", command),
+        h("button.small.ghost", { type: "button", onclick: () => copyText(command, "Copied — paste it in a terminal") }, "Copy")));
   }
 
   // ----- under the hood: everything the engine keeps, folded away
@@ -2931,6 +2934,292 @@ function settingsView(tab) {
     h("h1", "Settings"),
     h("nav.subnav", settingsTabs.map(([k, label]) => h("a", { href: `#/settings/${k}`, class: k === key ? "active" : "" }, label))));
 }
+
+// ---------------------------------------------------------------------------
+// the chat panel: `otto chat` about what's on the page, in a terminal down the right
+// ---------------------------------------------------------------------------
+//
+// A chat has to have a terminal (DESIGN.md §7), so the panel is one: xterm.js drawing what the
+// server's `otto chat` draws, over a websocket (`server::chats`). The server keeps one chat per run;
+// closing the panel or reloading detaches from it and opening it again replays it. What the page
+// is showing decides which run a new chat is about, and `--about` says which part of it.
+
+const chatPanel = (() => {
+  const panel = document.getElementById("chat");
+  const button = document.getElementById("chat-btn");
+  const termBox = document.getElementById("chat-term");
+  const empty = document.getElementById("chat-empty");
+  const bar = document.getElementById("chat-bar");
+  const endButton = document.getElementById("chat-end");
+  const runEl = document.getElementById("chat-run");
+  const aboutEl = document.getElementById("chat-about");
+  // The page beside it keeps room to be itself: its narrow layouts follow the window's width, not
+  // the room it is given, so squeezed any further it breaks rather than adapts.
+  const WIDTH = { min: 320, fallback: 520, page: 600 };
+
+  let term = null, fit = null;
+  let socket = null;
+  // The chat the panel shows: {run, label, about}, and whether it has ended.
+  let chat = null;
+  let ended = false;
+
+  /** What the page is showing, as a chat would be about it: {run, about} or null. */
+  function context() {
+    const hash = location.hash || "#/";
+    let m = hash.match(/^#\/run\/([^/]+)(?:\/work\/([^/]+)(?:\/v(\d+))?)?$/);
+    if (m) {
+      const run = decodeURIComponent(m[1]);
+      if (!m[2]) return { run, about: null };
+      const item = decodeURIComponent(m[2]);
+      return { run, about: m[3] ? `work item ${item}, version ${m[3]}` : `work item ${item}` };
+    }
+    m = hash.match(/^#\/inbox\/([^/]+)\/([qm])([^/]+)$/);
+    if (m) return { run: decodeURIComponent(m[1]), about: `${m[2] === "q" ? "question" : "message"} ${decodeURIComponent(m[3])} in the inbox` };
+    m = hash.match(/^#\/changes\/([^/]+)\/(\d+)$/);
+    if (m) return { run: decodeURIComponent(m[1]), about: `change ${decodeURIComponent(m[1])}/${m[2]}` };
+    return null;
+  }
+
+  function terminal() {
+    if (term) return term;
+    term = new Terminal({
+      fontFamily: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      scrollback: 5000,
+      theme: { background: "#050509", foreground: "#e6e7ea", cursor: "#f59e0b", cursorAccent: "#050509", selectionBackground: "#2e2210" },
+    });
+    fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(termBox);
+    const typed = new TextEncoder();
+    term.onData((d) => { if (socket && socket.readyState === WebSocket.OPEN) socket.send(typed.encode(d)); });
+    term.onBinary((d) => {
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(Uint8Array.from(d, (c) => c.charCodeAt(0)));
+    });
+    term.onResize(({ cols, rows }) => {
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ resize: { cols, rows } }));
+    });
+    new ResizeObserver(() => { if (!panel.hidden && !termBox.hidden) fit.fit(); }).observe(termBox);
+    return term;
+  }
+
+  function showTerminal(on) {
+    termBox.hidden = !on;
+    empty.hidden = on;
+  }
+
+  function header() {
+    panel.querySelector(".chat-title .label").textContent = chat ? "Asking about" : "Chat";
+    runEl.textContent = chat ? chat.label || idText(chat.run) : "";
+    aboutEl.textContent = chat && chat.about ? ` — ${chat.about}` : "";
+    endButton.hidden = !chat || ended || !socket;
+  }
+
+  /** Say something in place of the terminal: no chat, or one that couldn't be reached. */
+  function say(...children) {
+    showTerminal(false);
+    empty.replaceChildren(...children.filter((c) => c != null));
+  }
+
+  function detach() {
+    if (!socket) return;
+    const s = socket;
+    socket = null;
+    s.onclose = null;
+    s.close();
+  }
+
+  /** Attach to the run's chat, starting one if it has none. */
+  function attach(run, about) {
+    detach();
+    chat = { run, label: null, about };
+    ended = false;
+    store("otto.chat.run", run);
+    showTerminal(true);
+    const t = terminal();
+    t.reset();
+    fit.fit();
+    const q = new URLSearchParams({ cols: t.cols, rows: t.rows });
+    if (about) q.set("about", about);
+    const s = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/runs/${enc(run)}/chat?${q}`);
+    s.binaryType = "arraybuffer";
+    socket = s;
+    s.onmessage = (e) => {
+      if (socket !== s) return;
+      if (typeof e.data !== "string") { t.write(new Uint8Array(e.data)); return; }
+      const said = JSON.parse(e.data);
+      if (said.chat) {
+        chat = { run: said.chat.run, label: said.chat.label, about: said.chat.about };
+        store("otto.chat.run", chat.run);
+        header();
+        followPage();
+      } else if (said.reset) {
+        t.reset();
+      } else if (said.ended) {
+        ended = true;
+        socket = null;
+        store("otto.chat.run", "");
+        header();
+        t.write("\r\n\x1b[2m— the chat has ended —\x1b[0m\r\n");
+        showBar(h("span", "This chat has ended."),
+          h("button.small", { type: "button", onclick: () => { const c = context(); if (c) attach(c.run, c.about); else noContext(); } }, "New chat"));
+        refreshDot();
+      } else if (said.error) {
+        socket = null;
+        store("otto.chat.run", "");
+        say(h("p", "Couldn't start a chat:"), h("p.faint", said.error));
+      }
+    };
+    s.onclose = () => {
+      if (socket !== s) return;
+      socket = null;
+      header();
+      showBar(h("span", "Lost touch with otto. The chat may still be going."),
+        h("button.small", { type: "button", onclick: () => attach(chat.run, chat.about) }, "Reconnect"));
+    };
+    header();
+    hideBar();
+    refreshDot();
+    t.focus();
+  }
+
+  function showBar(...children) { bar.replaceChildren(...children); bar.hidden = false; }
+  function hideBar() { bar.hidden = true; bar.replaceChildren(); }
+
+  /** The panel with nothing on the page to ask about: the chats still open, if any. */
+  async function noContext() {
+    chat = null;
+    header();
+    hideBar();
+    let live = [];
+    try { live = await api("/chats"); } catch { /* none to offer */ }
+    say(
+      h("p", "Open an agent, a change or an inbox item, and ask about it here."),
+      live.length ? h("div", h("p.label", "Chats still open"), live.map((c) => h("div.row",
+        h("button.small", { type: "button", onclick: () => attach(c.run, c.about) }, c.label),
+        c.about ? h("span.faint", c.about) : null))) : null);
+  }
+
+  /** When the page moves to another run while a chat is open, offer one about it instead. */
+  function followPage() {
+    if (panel.hidden || !chat || ended || !socket) return;
+    const c = context();
+    if (!c || c.run === chat.run || c.run === String(chat.run).replace(/^#/, "")) { hideBar(); return; }
+    showBar(h("span", `You're looking at ${runLabel(c.run, runNameCache[c.run])}.`),
+      h("button.small", { type: "button", onclick: () => attach(c.run, c.about) }, "Ask about that instead"));
+  }
+
+  function setWidth(px) {
+    const side = window.innerWidth >= 900; // as in style.css: side by side, or over the page
+    const most = side ? window.innerWidth - WIDTH.page : window.innerWidth;
+    const width = Math.max(WIDTH.min, Math.min(Math.round(px), most));
+    document.documentElement.style.setProperty("--chat-w", `${width}px`);
+    return width;
+  }
+
+  function open() {
+    if (!panel.hidden) return;
+    panel.hidden = false;
+    document.body.classList.add("chat-open");
+    button.classList.add("active");
+    button.setAttribute("aria-expanded", "true");
+    store("otto.chat.open", "1");
+    const c = context();
+    const kept = store("otto.chat.run");
+    // Back to the chat it showed — replayed — or one about what the page shows.
+    if (chat && !ended) attach(chat.run, chat.about);
+    else if (kept) attach(kept, null);
+    else if (c) attach(c.run, c.about);
+    else noContext();
+  }
+
+  function close() {
+    if (panel.hidden) return;
+    detach();
+    panel.hidden = true;
+    document.body.classList.remove("chat-open");
+    button.classList.remove("active");
+    button.setAttribute("aria-expanded", "false");
+    store("otto.chat.open", "0");
+    header();
+  }
+
+  /** Open the panel on a chat about `run` — the agent page's button. */
+  function openFor(run) {
+    if (panel.hidden) {
+      panel.hidden = false;
+      document.body.classList.add("chat-open");
+      button.classList.add("active");
+      button.setAttribute("aria-expanded", "true");
+      store("otto.chat.open", "1");
+    }
+    if (chat && !ended && socket && chat.run === run) { term.focus(); return; }
+    const c = context();
+    attach(run, c && c.run === run ? c.about : null);
+  }
+
+  async function refreshDot() {
+    try {
+      const live = await api("/chats");
+      document.getElementById("chat-dot").hidden = !live.length;
+      button.title = live.length
+        ? `${live.length === 1 ? "A chat is" : `${live.length} chats are`} open — Ctrl-\``
+        : "Ask about what's on the page (Ctrl-`)";
+    } catch { /* the server is down */ }
+  }
+
+  button.addEventListener("click", () => (panel.hidden ? open() : close()));
+  document.getElementById("chat-close").addEventListener("click", close);
+  endButton.addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    if (chat) await api(`/runs/${enc(chat.run)}/chat/end`, {});
+  }));
+  // Ctrl-` anywhere, the terminal included: caught before xterm sees it.
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "`") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (panel.hidden) open(); else close();
+    }
+  }, true);
+
+  // Dragging the left edge sets the width, kept for next time.
+  const grip = document.getElementById("chat-grip");
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    document.body.classList.add("chat-resizing");
+    const move = (ev) => setWidth(window.innerWidth - ev.clientX);
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      document.body.classList.remove("chat-resizing");
+      const now = parseInt(getComputedStyle(document.documentElement).getPropertyValue("--chat-w"), 10);
+      if (now) store("otto.chat.width", String(now));
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+  });
+  const wanted = () => Number(store("otto.chat.width")) || WIDTH.fallback;
+  setWidth(wanted());
+  window.addEventListener("resize", () => setWidth(wanted()));
+
+  window.addEventListener("hashchange", followPage);
+  refreshDot();
+  setInterval(refreshDot, 10000);
+  // A reload with the panel open opens it again, on the chat it had if that is still going.
+  if (store("otto.chat.open") === "1") {
+    const kept = store("otto.chat.run");
+    if (kept) {
+      api("/chats").then((live) => {
+        if (!live.some((c) => c.run === kept)) store("otto.chat.run", "");
+        open();
+      }).catch(() => open());
+    } else open();
+  }
+
+  return { openFor };
+})();
 
 // ---------------------------------------------------------------------------
 // router
