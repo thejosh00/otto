@@ -7,6 +7,7 @@
 #   test/live.sh live_gate live_todo   # just these
 #   test/live.sh live_devflow          # dev-flow, landed and dropped, ~10 minutes
 #   test/live.sh live_changes_pr       # a change as a pull request, against a stand-in gh, ~30 minutes
+#   test/live.sh live_note_relayed     # a reviewer's comment relayed to its author, injection and all, ~10 minutes
 #
 # Not run from here, by hand: test/sandbox/real-wake.sh (a wake under the sandbox) and test/sandbox/real-land.sh
 # (a sandboxed lander asks, and otto lands the change without the lander's process pushing).
