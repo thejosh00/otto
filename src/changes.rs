@@ -3456,6 +3456,29 @@ pub(crate) mod tests {
         crate::config::save_lander(Some(id)).unwrap();
     }
 
+    /// The run's latest note, its text, and its `run.json` entry as written.
+    fn last_note(run: &str) -> (String, serde_json::Value) {
+        let state = crate::state::read_run(run).unwrap();
+        let note = state.notes.last().expect("a note was left").clone();
+        let text = crate::notes::read_text(&crate::paths::run_dir(run).unwrap(), &note);
+        (text, serde_json::to_value(&note).unwrap())
+    }
+
+    fn about_change(n: u32, version: u32, event: &str) -> serde_json::Value {
+        serde_json::json!({ "kind": "change", "ref": n.to_string(), "version": version, "event": event })
+    }
+
+    /// Plan v3, 2.2: who said it, by the source `relay` is handed.
+    #[test]
+    fn a_relay_is_from_ci_when_ci_said_it_and_from_a_reviewer_otherwise() {
+        assert_eq!(relay_source("CI"), (NoteFrom::Ci, "ci-said"));
+        assert_eq!(relay_source("ci (build, test)"), (NoteFrom::Ci, "ci-said"));
+        assert_eq!(relay_source("CI: lint failed"), (NoteFrom::Ci, "ci-said"));
+        assert_eq!(relay_source("a reviewer (sam)"), (NoteFrom::Reviewer, "reviewer-said"));
+        assert_eq!(relay_source("someone else"), (NoteFrom::Reviewer, "reviewer-said"));
+        assert_eq!(relay_source("circleci-bot"), (NoteFrom::Reviewer, "reviewer-said"), "only the word CI, not a prefix of a name");
+    }
+
     fn set_babysitter(id: &str) {
         crate::state::transaction(id, |_p, s| {
             s.role = Some("babysitter".into());
@@ -3999,6 +4022,10 @@ pub(crate) mod tests {
         // Asking for changes takes the approval back, and the record with it.
         revise(&r("c-rec", 1), "louder").unwrap();
         assert!(crate::approvals::read("c-rec", 1).is_none(), "revise removes the record");
+        // Plan v3, 2.2: the person's words, about version 1, asking for changes — the text as before.
+        let (text, json) = last_note("c-rec");
+        assert!(text.starts_with("About change 1@v1, \"t\":\n\nThe person asked for changes") && text.contains("louder"), "{text}");
+        assert_eq!((&json["from"], &json["about"]), (&serde_json::json!("person"), &about_change(1, 1, "asked-changes")));
 
         std::fs::write(repo.wt.join("a.txt"), "one\nTWO!\nthree\n").unwrap();
         sh(&repo.wt, &["commit", "--quiet", "-am", "louder"]);
@@ -4242,6 +4269,9 @@ pub(crate) mod tests {
         let note = state.notes.last().expect("the author is told");
         let text = crate::notes::read_text(&crate::paths::run_dir("c-land").unwrap(), note);
         assert!(text.starts_with("About change 1@v1") && text.contains("landed on main"), "{text}");
+        // Plan v3, 2.2: otto reporting what the lander did.
+        let json = serde_json::to_value(note).unwrap();
+        assert_eq!((&json["from"], &json["about"]), (&serde_json::json!("otto"), &about_change(1, 1, "landed")));
 
         // Cleaning up is checked, not taken on the lander's word.
         assert!(cleaned("c-l", &r("c-land", 1), None).unwrap_err().message.contains("still a worktree"));
@@ -4563,6 +4593,10 @@ pub(crate) mod tests {
         assert_eq!((c.state, c.whose_move()), (ChangeState::Revising, Move::Author));
         assert!(c.decision.is_some(), "the approval to open it as a pull request stands");
         assert!(note_texts("c-pr").last().unwrap().contains("call it louder"));
+        // Plan v3, 2.2: the reviewer's words, not the person's; the text as before.
+        let (text, json) = last_note("c-pr");
+        assert!(text.starts_with("About change 1@v1, \"Shout\":\n\nOn its pull request (") && text.contains("a reviewer (sam) said:\n\ncall it louder, please"), "{text}");
+        assert_eq!((&json["from"], &json["about"]), (&serde_json::json!("reviewer"), &about_change(1, 1, "reviewer-said")));
 
         // The next version goes back to the person (nothing is allowed without them), and once they
         // approve it, to the pull request.

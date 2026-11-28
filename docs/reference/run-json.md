@@ -56,10 +56,44 @@ written back unchanged, so rolling back doesn't erase it. Older binaries still d
 | `budget` | `{wakes, hours, tokens, spentWakes, spentTokens}` — 0 means unlimited. Tokens are counted as `otto usage` totals them: input, output, cache read and written. (`usd`/`spentUsd` are vestigial and always 0) |
 | `policy` | `periodMinutes`, `periodAt` (a local `HH:MM` the period's wakes are due, with a period of whole days), `periodDays` (the days of the week its wakes fall on, `["mon","tue"]`, with a period of `1d`), `maxWakeMinutes`, `maxIncompleteWakes`, `maxTicksWithoutProgress`, `gateStaleAfterHours`, `handoffMaxBytes`, `autoMergeWhenGreen`, `perpetual`, `verifyDone`, `maxDoneReopens`, plus any other `--policy` key. See [budgets and policy](../concepts.md#budgets-and-policy) |
 | `check` | The [check script](../guides/check-scripts.md), if any — see below |
-| `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake}` |
+| `notes` | Notes still to be delivered, and standing ones: `{id, file, standing, addedAt, givenToWake, from, about}` — see below |
 | `unheardAnswer` | A person's answer that no wake has been given and completed with yet: `{gate, slug, answer, answeredAt, givenToWake}`. Every wake is given it until one that carried it completes |
 | `wakeAgain` | Something was asked of the run while a wake held it (`ifItsCheckAgrees` or `regardless`): the wake completing makes the run due, past its check if `regardless` |
 | `messages` | Messages the run has sent that the person has not marked done: `{id, kind, title, file, sentAt}`, `file` the message's `messages/NNN-<slug>.json` |
+
+### `notes`: `from` and `about`
+
+Both optional, and absent on a plain `otto note` — a note with neither is a person's own (as is every
+note written before they existed). The note's text, and its opening line ("About change 3@v2, …",
+"About output key@n, …", "In reply to message 005, …"), are the same with or without them.
+
+| Field | Meaning |
+|---|---|
+| `from` | Whose words it carries: `person`, `otto` (what the lander or babysitter did, reported by otto), `reviewer` or `ci` (relayed from a change's pull request) |
+| `about` | `{kind, ref, version, event}`: `kind` is `change`, `output` or `message`; `ref` the change's number, the output's key or the message's id; `version` the change's or output's version (absent for a message); `event` what happened, for a change only |
+
+`about.event` for a change, and the `from` each is written with:
+
+| Event | From | When |
+|---|---|---|
+| `asked-changes` | person | The person asked for changes (`revise`) |
+| `dropped` | person | The person dropped it |
+| `answered` | person | The person answered what its author asked (also the copy handed to the babysitter) |
+| `landed` | otto | The lander landed it |
+| `bounced` | otto | The lander sent it back (`bounce`) |
+| `rebased` | otto | The lander rebased it as a new version |
+| `pr-opened` | otto | The lander opened its pull request |
+| `fixed` | otto | The babysitter changed it on its pull request itself (`fix`) |
+| `merged` | otto | Its pull request was merged |
+| `closed` | otto | Its pull request was closed without merging |
+| `reviewer-said` | reviewer | Relayed from its pull request: a reviewer, or someone else who pushed to its branch |
+| `ci-said` | ci | Relayed from its pull request, `--who CI` |
+
+`relay` is told who said it only as free text (`--who`), so a source whose first word is `CI` is `ci`,
+and anything else is `reviewer`.
+
+A note about an output (`otto note --about key`) is `from: person`, `about: {kind: output, ref: key,
+version: n}`; a reply to a message is `from: person`, `about: {kind: message, ref: id}`.
 
 ### `check`
 

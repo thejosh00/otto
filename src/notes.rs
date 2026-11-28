@@ -287,6 +287,44 @@ mod tests {
         assert_eq!(journal("n-add").matches("\"event\":\"note-added\"").count(), 2);
     }
 
+    /// Plan v3, 2.2: a plain `otto note` says neither who it is from nor what it is about — run.json
+    /// is written exactly as before.
+    #[test]
+    fn a_plain_note_has_no_from_and_no_about() {
+        let _h = TempHome::new();
+        test_init("n-plain", "a goal").unwrap();
+        let (text, origin) = crate::core::note_about_origin("n-plain", None, "Skip the e2e suite.").unwrap();
+        crate::core::add_note("n-plain", &text, false, origin).unwrap();
+        let state = read_run("n-plain").unwrap();
+        let note = &state.notes[0];
+        assert_eq!((note.from, note.about.as_ref()), (None, None));
+        let json = serde_json::to_value(note).unwrap();
+        let keys: Vec<&str> = json.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["id", "file", "standing", "addedAt"], "{json}");
+        let raw = std::fs::read_to_string(crate::paths::run_dir("n-plain").unwrap().join("run.json")).unwrap();
+        assert!(!raw.contains("\"from\""), "{raw}");
+        assert_eq!(read_text(&crate::paths::run_dir("n-plain").unwrap(), note), "Skip the e2e suite.\n");
+    }
+
+    /// Plan v3, 2.2: `otto note --about <output>` is the person's, about that output's version.
+    #[test]
+    fn a_note_about_an_output_names_it() {
+        let _h = TempHome::new();
+        test_init("n-out", "a goal").unwrap();
+        let p = crate::outputs::Publish { key: "PROJ-4412", title: "Add rate_tier", link: Some("https://jira.example/browse/PROJ-4412"), ..Default::default() };
+        crate::outputs::publish("n-out", &p).unwrap();
+        let (text, origin) = crate::core::note_about_origin("n-out", Some("proj-4412"), "  wrong component  ").unwrap();
+        assert_eq!(text, "About output proj-4412@1, \"Add rate_tier\":\n\nwrong component");
+        crate::core::add_note("n-out", &text, false, origin).unwrap();
+        let note = read_run("n-out").unwrap().notes[0].clone();
+        assert_eq!(read_text(&crate::paths::run_dir("n-out").unwrap(), &note).trim_end(), text);
+        let json = serde_json::to_value(&note).unwrap();
+        assert_eq!(
+            (&json["from"], &json["about"]),
+            (&serde_json::json!("person"), &serde_json::json!({ "kind": "output", "ref": "proj-4412", "version": 1 }))
+        );
+    }
+
     #[test]
     fn a_number_is_never_reused_after_delivery() {
         let _h = TempHome::new();

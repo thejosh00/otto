@@ -526,6 +526,10 @@ mod tests {
         let text = crate::notes::read_text(&dir, &state.notes[0]);
         assert!(text.contains("In reply to message 002, \"Second\"") && text.contains("dig into the grader next"), "got: {text}");
         assert_eq!(note.id, state.notes[0].id);
+        // Plan v3, 2.2: the person's reply, about that message; the text as before.
+        assert_eq!(text, "In reply to message 002, \"Second\":\n\ndig into the grader next\n");
+        let json = serde_json::to_value(&state.notes[0]).unwrap();
+        assert_eq!((&json["from"], &json["about"]), (&serde_json::json!("person"), &serde_json::json!({ "kind": "message", "ref": "002" })));
         let view = read("m-done", Some("2")).unwrap();
         assert!(!view.open);
         assert_eq!(view.meta.reply.as_deref(), Some("dig into the grader next"));
