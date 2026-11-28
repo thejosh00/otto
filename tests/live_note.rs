@@ -56,10 +56,15 @@ fn live_note() {
         checks.bail(&run, "no palette within 3min");
     }
     if run.events("gate-opened") > 0 {
-        checks.bail(&run, "it asked before the note could be left — the test lost its race, not the run");
+        checks.bail(&run, "it asked before artifacts/proceed existed — the fixture says to wait for it");
     }
     let noted = otto(&["note", &run_id, "Make it blue."]);
     checks.check(noted.status.success(), "left a note: \"Make it blue.\"", String::from_utf8_lossy(&noted.stderr));
+    // The fixture waits for this file before it asks, so the note is always left first: without
+    // it, a quick model wrote the palette and asked before the note could land, and the test
+    // failed before testing anything.
+    std::fs::write(run.artifact("proceed"), "").expect("write artifacts/proceed");
+    checks.ok("let it go on (artifacts/proceed)");
 
     checks.step(&format!("3 - it finishes without asking (up to {}s)", timeout.as_secs()));
     let deadline = Instant::now() + timeout;

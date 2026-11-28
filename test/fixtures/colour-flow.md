@@ -14,7 +14,11 @@ otto run --instructions test/fixtures/colour-flow.md \
 
 1. Write `artifacts/palette.md`: ten colours, one per line, each with a sentence on where it is
    seen.
-2. The person picks the colour, red or blue. Unless they have already said which, open a gate
+2. Wait for `artifacts/proceed` to exist before going on: whoever is driving this fixture writes it
+   once the palette is there, usually within seconds. Check for it with one shell loop that looks
+   every second, for up to three minutes. If it never appears, open no question: set the status
+   to `failed` with the reason "no proceed".
+3. The person picks the colour, red or blue. Unless they have already said which, open a gate
    with exactly `--slug colour` and stop:
 
    > Run `<id>` (colour-flow, a test fixture) needs a colour for `artifacts/colour.md`.
@@ -23,4 +27,4 @@ otto run --instructions test/fixtures/colour-flow.md \
    > - **Red**
    > - **Blue**
 
-3. Write `artifacts/colour.md`: the colour they picked, one word. Then set the status to `done`.
+4. Write `artifacts/colour.md`: the colour they picked, one word. Then set the status to `done`.
