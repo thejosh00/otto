@@ -1595,9 +1595,9 @@ pub fn note_delivery_plain(state: &RunState, running: bool, standing: bool) -> S
 
 /// Record a note, and say when it will be read. Waking for it is the caller's business, because
 /// a terminal and the web page start wakes differently.
-pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, OttoError> {
+pub fn add_note(id: &str, text: &str, standing: bool, origin: crate::notes::Origin) -> Result<NoteOutcome, OttoError> {
     let id = crate::paths::resolve_run_id(id)?;
-    let note = crate::notes::add(&id, text, standing)?;
+    let note = crate::notes::add_from(&id, text, standing, origin)?;
     let state = read_run(&id)?;
     let dir = crate::paths::run_dir(&id)?;
     let running = LockLiveness.probe(&id).is_busy();
@@ -1619,19 +1619,27 @@ pub fn add_note(id: &str, text: &str, standing: bool) -> Result<NoteOutcome, Ott
 }
 
 /// A note's text, opening with the output it is about when it is about one (`outputs::note_text`).
+#[cfg(test)]
 pub fn note_about(id: &str, about: Option<&str>, text: &str) -> Result<String, OttoError> {
+    note_about_origin(id, about, text).map(|(text, _)| text)
+}
+
+/// `note_about`, and who it is from and what it is about: a note about an output is the person's,
+/// about that output's version; a plain note sets neither, and writes what it always did.
+pub fn note_about_origin(id: &str, about: Option<&str>, text: &str) -> Result<(String, crate::notes::Origin), OttoError> {
     match about.map(str::trim).filter(|a| !a.is_empty()) {
         Some(about) => {
             let id = crate::paths::resolve_run_id(id)?;
-            crate::outputs::note_text(&crate::paths::run_dir(&id)?, about, text)
+            let (text, about) = crate::outputs::note_text_about(&crate::paths::run_dir(&id)?, about, text)?;
+            Ok((text, crate::notes::Origin { from: Some(crate::state::NoteFrom::Person), about: Some(about) }))
         }
-        None => Ok(text.to_string()),
+        None => Ok((text.to_string(), crate::notes::Origin::default())),
     }
 }
 
 /// `add_note`, then — when `now` — a backgrounded wake to read it.
-pub fn note_in_background(id: &str, text: &str, standing: bool, now: bool) -> Result<NoteOutcome, OttoError> {
-    let mut outcome = add_note(id, text, standing)?;
+pub fn note_in_background(id: &str, text: &str, standing: bool, now: bool, origin: crate::notes::Origin) -> Result<NoteOutcome, OttoError> {
+    let mut outcome = add_note(id, text, standing, origin)?;
     if !now {
         return Ok(outcome);
     }

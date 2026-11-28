@@ -581,11 +581,18 @@ pub fn record_review(run_dir: &Path, about: &str, gate: &str, answer: &str, at: 
 pub const NOTE_ABOUT_PREFIX: &str = "About output ";
 
 /// A note's text when it is about `key@n`: the line naming the output, then the person's words.
+#[cfg(test)]
 pub fn note_text(run_dir: &Path, about: &str, text: &str) -> Result<String, OttoError> {
+    note_text_about(run_dir, about, text).map(|(text, _)| text)
+}
+
+/// `note_text`, and the `about` for the note's `run.json` entry: `{kind: output, ref: key, version: n}`.
+pub fn note_text_about(run_dir: &Path, about: &str, text: &str) -> Result<(String, crate::state::NoteAbout), OttoError> {
     let about = resolve_about(run_dir, about)?;
-    let (key, _) = split_about(&about).expect("resolve_about returns key@n");
+    let (key, n) = split_about(&about).expect("resolve_about returns key@n");
     let title = read_index(run_dir)?.outputs.into_iter().find(|o| o.key == key).map(|o| o.title).unwrap_or_default();
-    Ok(format!("{NOTE_ABOUT_PREFIX}{about}, \"{title}\":\n\n{}", text.trim()))
+    let what = crate::state::NoteAbout { kind: crate::state::NoteAboutKind::Output, reference: key.to_string(), version: Some(n), event: None };
+    Ok((format!("{NOTE_ABOUT_PREFIX}{about}, \"{title}\":\n\n{}", text.trim()), what))
 }
 
 // ---------------------------------------------------------------------------

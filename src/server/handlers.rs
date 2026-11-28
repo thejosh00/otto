@@ -121,8 +121,8 @@ pub struct NoteBody {
 
 pub async fn add_note(Path(id): Path<String>, Json(body): Json<NoteBody>) -> Response {
     blocking(move || {
-        let text = crate::core::note_about(&id, body.about.as_deref(), &body.text)?;
-        crate::core::note_in_background(&id, &text, body.standing, body.now)
+        let (text, origin) = crate::core::note_about_origin(&id, body.about.as_deref(), &body.text)?;
+        crate::core::note_in_background(&id, &text, body.standing, body.now, origin)
     })
     .await
 }

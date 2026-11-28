@@ -351,10 +351,53 @@ pub struct Note {
     /// one-off note — one added while a wake runs was never in its prompt, and must not be.
     #[serde(rename = "givenToWake", default, skip_serializing_if = "Option::is_none")]
     pub given_to_wake: Option<u32>,
+    /// Who the note came from. Absent: a person's own note (every note written before 2.2, too).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<NoteFrom>,
+    /// What the note is about — a change, an output or a message. Absent: nothing in particular.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<NoteAbout>,
     /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
     /// added survives a rewrite by this one (an empty map writes nothing).
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Whose words a note carries (plan v3, Phase 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteFrom {
+    /// The person: their own note, a decision on a change, an answer, a reply to a message.
+    Person,
+    /// otto itself, reporting what the lander or babysitter did.
+    Otto,
+    /// A reviewer on a change's pull request, relayed.
+    Reviewer,
+    /// CI on a change's pull request, relayed.
+    Ci,
+}
+
+/// What a note is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteAboutKind {
+    Change,
+    Output,
+    Message,
+}
+
+/// The thing a note is about: which change (and version, and what happened to it), which output
+/// (and version), or which message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteAbout {
+    pub kind: NoteAboutKind,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// For a change: what happened, from a small fixed vocabulary (docs/reference/run-json.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<String>,
 }
 
 /// A person's answer to a gate that no wake has yet been given — and completed with.
@@ -1399,6 +1442,8 @@ mod tests {
             standing: true,
             added_at: crate::clock::Timestamp::now(),
             given_to_wake: Some(3),
+            from: None,
+            about: None,
             extra: Map::new(),
         });
         // Nothing unknown: reading and writing again gives the same bytes, with no `extra` in them.

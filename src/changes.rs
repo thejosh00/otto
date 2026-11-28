@@ -28,7 +28,7 @@
 use crate::clock::Timestamp;
 use crate::error::OttoError;
 use crate::event::{Event, WakeCause};
-use crate::state::RunState;
+use crate::state::{NoteAbout, NoteAboutKind, NoteFrom, RunState};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -1401,14 +1401,36 @@ fn note_text(c: &Change, body: &str) -> String {
     format!("{NOTE_ABOUT_PREFIX}{}@v{}, \"{}\":\n\n{}", c.n, c.latest().k, c.title, body.trim())
 }
 
+/// Who a note about this change is from, and what it says happened to it.
+fn note_origin(c: &Change, from: NoteFrom, event: &str) -> crate::notes::Origin {
+    crate::notes::Origin {
+        from: Some(from),
+        about: Some(NoteAbout { kind: NoteAboutKind::Change, reference: c.n.to_string(), version: Some(c.latest().k), event: Some(event.to_string()) }),
+    }
+}
+
+/// Who `relay` is passing on. The babysitter names the source in free text — `--who CI`, or
+/// `--who "a reviewer (<login>)"` (workflows/babysit-flow.md) — and the lander's "someone else
+/// pushed" is a person on the pull request too. So: CI when `who` says CI, a reviewer otherwise —
+/// a person's words on the pull request are the safer reading of anything not plainly CI.
+fn relay_source(who: &str) -> (NoteFrom, &'static str) {
+    let first = who.trim().split(|ch: char| !ch.is_ascii_alphanumeric()).next().unwrap_or("");
+    if first.eq_ignore_ascii_case("ci") { (NoteFrom::Ci, "ci-said") } else { (NoteFrom::Reviewer, "reviewer-said") }
+}
+
 /// Tell the author, when its run can still hear it. A finished run can't, and that's said on the
 /// change instead of failing what the person or the lander did.
-fn tell_author(path: &Path, state: &mut RunState, c: &mut Change, body: &str) -> Result<Option<String>, OttoError> {
+///
+/// `from` and `event` go on the note in `run.json` (`about: {kind: change, ref: n, version: k,
+/// event}`); the text is the same either way. The events are a small fixed vocabulary, documented
+/// in docs/reference/run-json.md.
+fn tell_author(path: &Path, state: &mut RunState, c: &mut Change, from: NoteFrom, event: &str, body: &str) -> Result<Option<String>, OttoError> {
     if state.status.is_terminal() {
         c.moment("otto", format!("its run is {}, so nobody was told", crate::state::commands::status_str(state.status)));
         return Ok(None);
     }
-    let note = crate::notes::add_in(path, state, &note_text(c, body), false)?;
+    let origin = note_origin(c, from, event);
+    let note = crate::notes::add_in(path, state, &note_text(c, body), false, origin)?;
     Ok(Some(note.id))
 }
 
@@ -1646,7 +1668,7 @@ pub fn revise(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
         }
         c.enter(ChangeState::Revising);
         c.moment("you", format!("asked for changes: {text}"));
-        let note = tell_author(path, state, c, &format!(
+        let note = tell_author(path, state, c, NoteFrom::Person, "asked-changes", &format!(
             "The person asked for changes:\n\n{text}\n\nWork in the same worktree, commit, and submit it again with the same key — \
              `otto state change submit` — so it comes back to them as the next version."
         ))?;
@@ -1673,7 +1695,7 @@ pub fn drop_change(r: &ChangeRef, text: Option<&str>) -> Result<Decided, OttoErr
             Some(t) => format!("The person dropped it, saying:\n\n{t}\n\nIt won't land. The lander removes its worktree and branch{}.", if c.pr.is_some() { ", and closes its pull request" } else { "" }),
             None => format!("The person dropped it. It won't land. The lander removes its worktree and branch{}.", if c.pr.is_some() { ", and closes its pull request" } else { "" }),
         };
-        let note = tell_author(path, state, c, &body)?;
+        let note = tell_author(path, state, c, NoteFrom::Person, "dropped", &body)?;
         moved(path, c, "person", &what)?;
         Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None })
     })
@@ -2247,7 +2269,7 @@ fn mark_landed(path: &Path, state: &mut RunState, c: &mut Change, lander: &str, 
         short_sha(&sha),
         note.as_ref().map(|n| format!(" The lander says: {n}")).unwrap_or_default()
     );
-    tell_author(path, state, c, &body)?;
+    tell_author(path, state, c, NoteFrom::Otto, "landed", &body)?;
     wake_soon(path, state, WakeCause::ChangeLanded)?;
     moved(path, c, &lander, &what)?;
     Ok(())
@@ -2305,7 +2327,7 @@ pub fn bounce(lander: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoE
              submit it again with the same key. It goes back to the person as the next version.",
             c.base
         );
-        tell_author(path, state, c, &body)?;
+        tell_author(path, state, c, NoteFrom::Otto, "bounced", &body)?;
         wake_soon(path, state, WakeCause::Note)?;
         moved(path, c, &lander, &format!("couldn't land it: {reason}"))?;
         Ok(c.clone())
@@ -2369,7 +2391,7 @@ pub fn rebased(lander: &str, r: &ChangeRef, head: &str) -> Result<Change, OttoEr
             short_sha(&sha),
             short_sha(&sha)
         );
-        tell_author(path, state, c, &body)?;
+        tell_author(path, state, c, NoteFrom::Otto, "rebased", &body)?;
         moved(path, c, &lander, &what)?;
         Ok(c.clone())
     })
@@ -2469,7 +2491,7 @@ pub fn pr_pushed(lander: &str, r: &ChangeRef, head: &str, url: Option<&str>, aut
                  the pull request. A reply to a reviewer is `otto state change reply`; the person posts it.",
                 c.pr.as_ref().map(|p| p.url.as_str()).unwrap_or("")
             );
-            tell_author(path, state, c, &body)?;
+            tell_author(path, state, c, NoteFrom::Otto, "pr-opened", &body)?;
         }
         moved(path, c, &lander, &what)?;
         Ok(c.clone())
@@ -2656,7 +2678,7 @@ pub fn fix(babysitter: &str, r: &ChangeRef, f: &Fix) -> Result<Change, OttoError
             short_sha(&sha),
             first_line(summary)
         );
-        tell_author(path, state, c, &body)?;
+        tell_author(path, state, c, NoteFrom::Otto, "fixed", &body)?;
         moved(path, c, &babysitter, &what)?;
         Ok(c.clone())
     })
@@ -2676,13 +2698,14 @@ pub fn relay(by: &str, r: &ChangeRef, who: &str, text: &str) -> Result<Change, O
         }
         c.enter(ChangeState::Revising);
         c.moment("reviewer", format!("{who}: {}", first_line(&text)));
+        let (from, event) = relay_source(who);
         let url = c.pr.as_ref().map(|p| p.url.clone()).unwrap_or_default();
         let body = format!(
             "On its pull request ({url}), {who} said:\n\n{text}\n\nIf it asks for a change, make it in the same worktree, commit, and \
              submit again with the same key — the lander pushes it to the pull request. If it asks a question, draft the answer \
              with `otto state change reply`. If it needs the person's judgement, `otto state change ask`."
         );
-        tell_author(path, state, c, &body)?;
+        tell_author(path, state, c, from, event, &body)?;
         wake_soon(path, state, WakeCause::Note)?;
         moved(path, c, &babysitter, &format!("{who}: {}", first_line(&text)))?;
         Ok(c.clone())
@@ -2719,7 +2742,7 @@ pub fn merged(by: &str, r: &ChangeRef, sha: &str) -> Result<Change, OttoError> {
         c.moment(role, &what);
         let checkout = if local_base { String::new() } else { format!(" The main checkout's own {} doesn't have it yet.", c.base) };
         let body = format!("{what}.{checkout}\n\nDo whatever comes after it landing — what your instructions say follows — and nothing more to the change itself.");
-        tell_author(path, state, c, &body)?;
+        tell_author(path, state, c, NoteFrom::Otto, "merged", &body)?;
         wake_soon(path, state, WakeCause::ChangeLanded)?;
         moved(path, c, &by, &what)?;
         Ok(c.clone())
@@ -2743,7 +2766,7 @@ pub fn closed(by: &str, r: &ChangeRef, reason: &str) -> Result<Change, OttoError
         let what = format!("its pull request was closed: {reason}");
         c.moment(role, &what);
         if !was_dropped {
-            tell_author(path, state, c, &format!("{what}\n\nIt won't land. The lander removes its worktree and branch."))?;
+            tell_author(path, state, c, NoteFrom::Otto, "closed", &format!("{what}\n\nIt won't land. The lander removes its worktree and branch."))?;
         }
         moved(path, c, &by, &what)?;
         Ok(c.clone())
@@ -2805,6 +2828,7 @@ pub fn post(r: &ChangeRef, comment: Option<&str>) -> Result<Decided, OttoError> 
 /// The person answers what its author asked about it. The author hears it in their words.
 pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
     let text = check_say(Some(text), "the answer")?.ok_or_else(|| OttoError::usage("say the answer"))?;
+    let mut origin: Option<crate::notes::Origin> = None;
     with_change(r, |path, state, c| {
         refuse_unless(&r.run, c, &[ChangeState::NeedsYou], "answered")?;
         let ask = c.ask.as_mut().expect("needs-you has its question");
@@ -2844,18 +2868,20 @@ pub fn answer(r: &ChangeRef, text: &str) -> Result<Decided, OttoError> {
                  it again with the same key, and it goes back to them as the next version."
             };
             let said = format!("{said}\n\n{next}");
-            let note = tell_author(path, state, c, &said)?;
+            let note = tell_author(path, state, c, NoteFrom::Person, "answered", &said)?;
             return Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note, how: None, wake: None });
         };
         // Back on its pull request, the babysitter's to act on.
         c.enter(ChangeState::PrOpen);
+        origin = Some(note_origin(c, NoteFrom::Person, "answered"));
         Ok(Decided { reference: r.display(), title: c.title.clone(), state: c.state, note: Some(note_text(c, &said)), how: None, wake: Some(babysitter) })
     })
     .and_then(|mut d| {
         // Its note is left once the change is written, outside its run's lock.
         if let Some(babysitter) = &d.wake {
             let text = d.note.take().unwrap_or_default();
-            d.note = Some(crate::notes::add(babysitter, &format!("{text}\n\nThe change is {}.", d.reference), false)?.id);
+            // The person's answer, passed to the babysitter: their words, so `from` is the person.
+            d.note = Some(crate::notes::add_from(babysitter, &format!("{text}\n\nThe change is {}.", d.reference), false, origin.take().unwrap_or_default())?.id);
         }
         Ok(d)
     })

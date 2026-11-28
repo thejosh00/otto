@@ -359,7 +359,15 @@ pub fn done(run_id: &str, which: Option<&str>, reply: Option<&str>) -> Result<Do
     // The note first: it takes the run's lock itself, and a refusal (a finished run reads no notes)
     // should leave the message as it was.
     let note = match reply {
-        Some(reply) => Some(crate::notes::add(&run_id, &format!("In reply to message {id}, \"{title}\":\n\n{reply}"), false)?),
+        Some(reply) => Some(crate::notes::add_from(
+            &run_id,
+            &format!("In reply to message {id}, \"{title}\":\n\n{reply}"),
+            false,
+            crate::notes::Origin {
+                from: Some(crate::state::NoteFrom::Person),
+                about: Some(crate::state::NoteAbout { kind: crate::state::NoteAboutKind::Message, reference: id.clone(), version: None, event: None }),
+            },
+        )?),
         None => None,
     };
     let note_id = note.as_ref().map(|n| n.id.clone());

@@ -22,7 +22,7 @@
 use crate::clock::Timestamp;
 use crate::error::OttoError;
 use crate::event::Event;
-use crate::state::{Note, RunState};
+use crate::state::{Note, NoteAbout, NoteFrom, RunState};
 use std::path::Path;
 
 pub const NOTES_DIR: &str = "notes";
@@ -38,8 +38,22 @@ pub fn read_text(run_dir: &Path, note: &Note) -> String {
         .unwrap_or_else(|_| format!("(note file {} is missing)", note.file))
 }
 
+/// Who a note is from and what it is about, as written to `run.json`. The default — neither — is a
+/// person's own plain note.
+#[derive(Debug, Clone, Default)]
+pub struct Origin {
+    pub from: Option<NoteFrom>,
+    pub about: Option<NoteAbout>,
+}
+
 /// Record a note verbatim and add it to the run.
+#[cfg(test)]
 pub fn add(run_id: &str, text: &str, standing: bool) -> Result<Note, OttoError> {
+    add_from(run_id, text, standing, Origin::default())
+}
+
+/// `add`, saying who the note is from and what it is about.
+pub fn add_from(run_id: &str, text: &str, standing: bool, origin: Origin) -> Result<Note, OttoError> {
     let text = text.trim_end();
     if text.trim().is_empty() {
         return Err(OttoError::usage("a note needs some text"));
@@ -50,12 +64,12 @@ pub fn add(run_id: &str, text: &str, standing: bool) -> Result<Note, OttoError> 
             text.len()
         )));
     }
-    crate::state::transaction(run_id, |path, state| add_in(path, state, text, standing))
+    crate::state::transaction(run_id, |path, state| add_in(path, state, text, standing, origin.clone()))
 }
 
 /// `add`, for a caller that already holds the run's lock — a change moving on, which tells its
 /// author in the same write.
-pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bool) -> Result<Note, OttoError> {
+pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bool, origin: Origin) -> Result<Note, OttoError> {
     let text = text.trim_end();
     if text.len() > NOTE_MAX_BYTES {
         return Err(OttoError::usage(format!("a note is at most {NOTE_MAX_BYTES} bytes (this one is {})", text.len())));
@@ -74,7 +88,11 @@ pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bo
     let id = next_id(path, state);
     let file = format!("{NOTES_DIR}/{id}.md");
     crate::state::write_atomic(&path.join(&file), &format!("{text}\n"))?;
-    let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None, extra: Default::default() };
+    let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None,
+        from: origin.from,
+        about: origin.about,
+        extra: Default::default(),
+    };
     state.notes.push(note.clone());
     crate::event::record(path, &Event::NoteAdded { note: id, file, standing })?;
     Ok(note)

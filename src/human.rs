@@ -1939,8 +1939,8 @@ pub fn note(args: NoteArgs) -> Result<(), OttoError> {
         (_, Some(path)) => std::fs::read_to_string(path).map_err(|e| OttoError::usage(format!("cannot read {path}: {e}")))?,
         (None, None) => return Err(OttoError::usage("give the note: `otto note <run> \"…\"`, or --file <path>")),
     };
-    let text = crate::core::note_about(&args.id, args.about.as_deref(), &text)?;
-    let outcome = crate::core::add_note(&args.id, &text, args.standing)?;
+    let (text, origin) = crate::core::note_about_origin(&args.id, args.about.as_deref(), &text)?;
+    let outcome = crate::core::add_note(&args.id, &text, args.standing, origin)?;
     println!("note {} recorded — {}", outcome.note.id, outcome.delivery);
     if !args.now {
         return Ok(());
