@@ -226,7 +226,7 @@ It is editing the procedure its own next wake follows, so:
 ## Development
 
 ```bash
-cargo test                    # the whole engine: no tmux, no model, no money
+cargo nextest run             # the whole engine: no tmux, no model, no money (~95s; `cargo test` works too, ~5 min)
 test/live.sh                  # live tests against a real claude, side by side: ~5 min, real tokens
 test/live.sh live_devflow     # dev-flow from ticket to landed through the lander, and dropped at review: ~10 min
 test/live.sh live_changes_pr  # a change as a pull request a reviewer asks about, against a stand-in gh: ~30 min
