@@ -9,7 +9,10 @@
 //! std has no pty API and this is a handful of calls, so they are made through `libc`, as
 //! `live_tests` and `landing::install` already make `setsid`, rather than through a crate.
 //!
-//! **Hanging up** signals two process groups: the child's own, and whichever is in front on the
+//! **Hanging up** is first what closing a terminal window is: the far end is revoked
+//! (`revoke(2)`), so everything holding it finds its terminal gone. That is what ends claude: in
+//! the middle of a conversation it ignores SIGHUP and SIGTERM while its terminal stays open, and
+//! exits once the terminal goes. Then it signals two process groups: the child's own, and whichever is in front on the
 //! terminal. The child is `otto chat`, which ignores SIGHUP so that it can journal the chat's end;
 //! what has to go is claude, and a program that manages the terminal can move itself into a group
 //! of its own and take the front — an interactive shell does, which is how the panel's first
@@ -48,8 +51,12 @@ impl Size {
 /// takes `&self`.
 pub struct Pty {
     master: AsyncFd<OwnedFd>,
+    /// The far end's device, for revoking it.
+    terminal: std::ffi::CString,
     /// The child's process group, which is its pid: it is the leader of a session of its own.
     group: libc::pid_t,
+    /// What was in front on the terminal when it was hung up: once revoked, it can't say.
+    front_at_hang_up: std::sync::Mutex<Option<libc::pid_t>>,
 }
 
 /// What a pty's command runs as. `TERM` is set to what the page's terminal (xterm.js) emulates
@@ -69,7 +76,7 @@ impl Pty {
     /// `tokio::process::Child` returned beside the pty; dropping that child doesn't stop it.
     pub fn spawn(command: &Command) -> io::Result<(Pty, tokio::process::Child)> {
         let (program, args) = command.argv.split_first().ok_or_else(|| io::Error::other("no command to run"))?;
-        let (master, slave) = open(command.size)?;
+        let (master, slave, terminal) = open(command.size)?;
 
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
@@ -104,7 +111,7 @@ impl Pty {
         // everything it starts have exited, reads see the end rather than waiting for ever.
         drop(cmd);
         let group = child.id().ok_or_else(|| io::Error::other("the command exited before it could be watched"))? as libc::pid_t;
-        Ok((Pty { master: AsyncFd::new(master)?, group }, child))
+        Ok((Pty { master: AsyncFd::new(master)?, terminal, group, front_at_hang_up: std::sync::Mutex::new(None) }, child))
     }
 
     /// The next bytes the command drew, or `Ok(0)` once nothing is left on the far end.
@@ -144,28 +151,41 @@ impl Pty {
         cvt(unsafe { libc::ioctl(self.master.as_raw_fd(), TIOCSWINSZ, &ws) }).map(drop)
     }
 
-    /// SIGHUP to whatever is in front on the terminal and to the child's own group — see the
-    /// module doc for why both.
+    /// Close the terminal under everything on it, as closing its window would, then SIGHUP to
+    /// whatever is in front on it and to the child's own group — see the module doc for why all
+    /// three.
     pub fn hang_up(&self) -> io::Result<()> {
-        if let Some(front) = self.foreground().filter(|&front| front != self.group) {
+        // What was in front, asked before the terminal goes and can no longer say.
+        let front = self.foreground();
+        if front.is_some() {
+            *self.front_at_hang_up.lock().unwrap() = front;
+        }
+        let revoked = cvt(unsafe { revoke(self.terminal.as_ptr()) });
+        if let Some(front) = front.filter(|&front| front != self.group) {
             signal(front, libc::SIGHUP)?;
         }
-        signal(self.group, libc::SIGHUP)
+        signal(self.group, libc::SIGHUP)?;
+        revoked.map(drop)
     }
 
     /// SIGKILL to whatever is in front on the terminal, for a hang-up that wasn't heeded: claude,
     /// in a group of its own or in the child's. The child's group is spared when they differ, so
     /// `otto chat` can still journal the end.
     pub fn kill_foreground(&self) -> io::Result<()> {
-        signal(self.foreground().unwrap_or(self.group), libc::SIGKILL)
+        signal(self.front().unwrap_or(self.group), libc::SIGKILL)
     }
 
     /// SIGKILL to both groups: for a chat whose own `otto chat` won't go either.
     pub fn kill_all(&self) -> io::Result<()> {
-        if let Some(front) = self.foreground().filter(|&front| front != self.group) {
+        if let Some(front) = self.front().filter(|&front| front != self.group) {
             signal(front, libc::SIGKILL)?;
         }
         signal(self.group, libc::SIGKILL)
+    }
+
+    /// What is in front on the terminal now, or — once it has been hung up and can't say — what was.
+    fn front(&self) -> Option<libc::pid_t> {
+        self.foreground().or(*self.front_at_hang_up.lock().unwrap())
     }
 
     /// The process group in front on the terminal, while there is one.
@@ -185,10 +205,13 @@ fn signal(group: libc::pid_t, signal: libc::c_int) -> io::Result<()> {
 
 /// A new pty: the near end non-blocking for the reactor, both ends closed on exec so neither leaks
 /// into the child as anything but the stdio it is given.
-fn open(size: Size) -> io::Result<(OwnedFd, OwnedFd)> {
+fn open(size: Size) -> io::Result<(OwnedFd, OwnedFd, std::ffi::CString)> {
     let (mut master, mut slave): (RawFd, RawFd) = (-1, -1);
     let mut ws = size.winsize();
-    cvt(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) })?;
+    // openpty writes the far end's name here; a device path is far shorter than this.
+    let mut name = [0 as libc::c_char; 128];
+    cvt(unsafe { libc::openpty(&mut master, &mut slave, name.as_mut_ptr(), std::ptr::null_mut(), &mut ws) })?;
+    let terminal = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }.to_owned();
     // SAFETY: openpty succeeded, so both are open descriptors nothing else owns.
     let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
     for fd in [&master, &slave] {
@@ -196,7 +219,13 @@ fn open(size: Size) -> io::Result<(OwnedFd, OwnedFd)> {
     }
     let flags = cvt(unsafe { libc::fcntl(master.as_raw_fd(), libc::F_GETFL) })?;
     cvt(unsafe { libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags as libc::c_int | libc::O_NONBLOCK) })?;
-    Ok((master, slave))
+    Ok((master, slave, terminal))
+}
+
+extern "C" {
+    /// `revoke(2)`: every open descriptor on the device stops working, as on a hang-up. Not in
+    /// `libc` for Apple, and the one call otto needs of it, so declared here.
+    fn revoke(path: *const libc::c_char) -> libc::c_int;
 }
 
 /// A libc return value as a `Result`: -1 is the error in errno.
@@ -215,6 +244,13 @@ mod tests {
     use std::time::Duration;
 
     const SIZE: Size = Size { cols: 80, rows: 24 };
+
+    /// Where a leader says it finished up: once the terminal is revoked it can't say so there.
+    fn finished_up() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("finished-up").display().to_string();
+        (dir, file)
+    }
 
     fn sh(script: &str) -> (Pty, tokio::process::Child) {
         let argv = ["/bin/sh".to_string(), "-c".to_string(), script.to_string()];
@@ -305,12 +341,27 @@ mod tests {
     /// before it did. A hang-up ends the child, and the leader outlives it to finish up.
     #[tokio::test]
     async fn a_hang_up_ends_the_group_and_a_leader_ignoring_it_finishes_up() {
-        let (pty, mut child) = sh("sleep 60 & trap '' HUP; echo ready; wait; echo finished-up");
+        let (_dir, done) = finished_up();
+        let (pty, mut child) = sh(&format!("sleep 60 & trap '' HUP; echo ready; wait; touch '{done}'"));
         until(&pty, "ready").await;
         pty.hang_up().unwrap();
-        assert!(drain(&pty).await.contains("finished-up"));
+        drain(&pty).await;
         let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("the leader exits").unwrap();
         assert!(status.success(), "{status:?}");
+        assert!(Path::new(&done).exists(), "the leader finished up");
+    }
+
+    /// What ends claude mid-conversation, which ignores SIGHUP and SIGTERM while its terminal stays
+    /// open: the terminal going. A reader that ignores SIGHUP ends, unkilled, on a hang-up.
+    #[tokio::test]
+    async fn a_hang_up_closes_the_terminal_under_what_ignores_sighup() {
+        let (_dir, done) = finished_up();
+        let (pty, mut child) = sh(&format!("trap '' HUP; echo ready; cat; touch '{done}'"));
+        until(&pty, "ready").await;
+        pty.hang_up().unwrap();
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("ended without a kill").unwrap();
+        assert!(status.success(), "{status:?}");
+        assert!(Path::new(&done).exists(), "cat ended on the closed terminal, and the shell went on");
     }
 
     /// What the panel's first hand test found: an interactive shell — as claude might — takes a
@@ -318,26 +369,30 @@ mod tests {
     /// leader still finishes up.
     #[tokio::test]
     async fn a_hang_up_reaches_a_program_that_took_the_front_of_the_terminal() {
-        let (pty, mut child) = sh("PS1='ready$ ' /bin/bash --noprofile --norc -i </dev/tty & trap '' HUP; wait; echo finished-up");
+        let (_dir, done) = finished_up();
+        let (pty, mut child) = sh(&format!("PS1='ready$ ' /bin/bash --noprofile --norc -i </dev/tty & trap '' HUP; wait; touch '{done}'"));
         until(&pty, "ready$ ").await;
         let front = pty.foreground().expect("something is in front");
         assert_ne!(front, pty.group, "bash took a group of its own");
         pty.hang_up().unwrap();
-        assert!(drain(&pty).await.contains("finished-up"));
+        drain(&pty).await;
         let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("the leader exits").unwrap();
         assert!(status.success(), "{status:?}");
+        assert!(Path::new(&done).exists());
     }
 
     /// Killing what is in front spares a leader in a group of its own, so it can finish up.
     #[tokio::test]
     async fn killing_the_front_spares_the_leader_behind_it() {
-        let (pty, mut child) = sh("trap '' HUP; /bin/bash --noprofile --norc -i -c 'trap \"\" HUP; set -m; echo ready; sleep 60' </dev/tty & wait; echo finished-up");
+        let (_dir, done) = finished_up();
+        let (pty, mut child) = sh(&format!("trap '' HUP; /bin/bash --noprofile --norc -i -c 'trap \"\" HUP; set -m; echo ready; sleep 60' </dev/tty & wait; touch '{done}'"));
         until(&pty, "ready").await;
         pty.hang_up().unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(500), child.wait()).await.is_err(), "nothing heeds SIGHUP");
         pty.kill_foreground().unwrap();
-        assert!(drain(&pty).await.contains("finished-up"));
+        drain(&pty).await;
         assert!(tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("the leader exits").unwrap().success());
+        assert!(Path::new(&done).exists());
     }
 
     #[tokio::test]

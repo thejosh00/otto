@@ -406,8 +406,16 @@ pub async fn list(State(state): State<Arc<AppState>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     const SIZE: Size = Size { cols: 80, rows: 24 };
+    /// Where a chat's leader says it finished up: its terminal is gone by then.
+    fn finished_up() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("finished-up").display().to_string();
+        (dir, file)
+    }
+
     const QUICK: Timing = Timing { idle: Duration::from_millis(300), grace: Duration::from_millis(300) };
 
     /// Chats that run `script` in place of `otto chat`, with the run and `about` as `$1` and `$2`.
@@ -471,12 +479,13 @@ mod tests {
     /// leader finish up — where `otto chat` journals `chat-ended` — and exit on its own.
     #[tokio::test]
     async fn ending_a_chat_lets_its_leader_finish_up() {
-        let chats = chats("sleep 60 & trap '' HUP; echo ready; wait; echo finished-up; exit 0", QUICK);
+        let (_dir, done) = finished_up();
+        let chats = chats(Box::leak(format!("sleep 60 & trap '' HUP; echo ready; wait; touch '{done}'; exit 0").into_boxed_str()), QUICK);
         let chat = chats.attach_or_start("r1", "1", None, SIZE).unwrap();
         drawn_until(&chat, "ready").await;
         assert!(chats.end("r1"));
         assert_eq!(ended(&chat).await, Ended { code: Some(0) }, "not killed");
-        assert!(String::from_utf8_lossy(&chat.subscribe().0).contains("finished-up"));
+        assert!(Path::new(&done).exists(), "the leader finished up");
     }
 
     #[tokio::test]
@@ -507,15 +516,18 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_ending_waits_for_every_chat() {
-        let chats = chats("sleep 60 & trap '' HUP; echo ready; wait; echo finished-up", QUICK);
+        let (_dir, done) = finished_up();
+        // Two at once: a grace no leader misses, as this is about waiting for each, not speed.
+        let generous = Timing { grace: Duration::from_secs(5), ..QUICK };
+        let chats = chats(Box::leak(format!("sleep 60 & trap '' HUP; echo ready; wait; touch '{done}'-\"$1\"").into_boxed_str()), generous);
         let a = chats.attach_or_start("r1", "1", None, SIZE).unwrap();
         let b = chats.attach_or_start("r2", "2", None, SIZE).unwrap();
         drawn_until(&a, "ready").await;
         drawn_until(&b, "ready").await;
         chats.hang_up_all().await;
-        for chat in [a, b] {
+        for (chat, run) in [(a, "r1"), (b, "r2")] {
             assert!(chat.ended.borrow().is_some(), "ended before hang_up_all returned");
-            assert!(String::from_utf8_lossy(&chat.subscribe().0).contains("finished-up"));
+            assert!(Path::new(&format!("{done}-{run}")).exists(), "{run} finished up");
         }
     }
 
