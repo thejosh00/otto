@@ -180,21 +180,12 @@ impl Chats {
         }
     }
 
-    /// End every chat, and wait for them to go — killing what outstays `grace`. For the server's
-    /// own end, so each chat has journaled its end before the server exits.
+    /// End every chat, and wait for them to go. For the server's own end, so each chat has
+    /// journaled its end before the server exits.
     pub async fn hang_up_all(&self) {
         let all: Vec<Arc<Live>> = self.live.lock().unwrap().values().cloned().collect();
-        for chat in &all {
-            let _ = chat.pty.hang_up();
-        }
         let grace = self.timing.grace;
-        for chat in all {
-            let mut ended = chat.ended.clone();
-            if tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await.is_err() {
-                let _ = chat.pty.kill();
-                let _ = tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await;
-            }
-        }
+        futures_util::future::join_all(all.into_iter().map(|chat| ending(chat, grace))).await;
     }
 
     /// Reap every minute, for as long as the server runs.
@@ -215,13 +206,22 @@ impl Chats {
 }
 
 fn end_chat(chat: Arc<Live>, grace: Duration) {
+    tokio::spawn(ending(chat, grace));
+}
+
+/// Ask a chat to end, then make it: a hang-up; then, after `grace`, a kill of what is in front on
+/// its terminal, which spares `otto chat` behind it to journal the end; then, after `grace` again,
+/// a kill of everything (`Pty::kill_foreground`, `Pty::kill_all`).
+async fn ending(chat: Arc<Live>, grace: Duration) {
+    let mut ended = chat.ended.clone();
     let _ = chat.pty.hang_up();
-    tokio::spawn(async move {
-        let mut ended = chat.ended.clone();
-        if tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await.is_err() {
-            let _ = chat.pty.kill();
+    for next in [Pty::kill_foreground, Pty::kill_all] {
+        if tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await.is_ok() {
+            return;
         }
-    });
+        let _ = next(&chat.pty);
+    }
+    let _ = tokio::time::timeout(grace, ended.wait_for(Option::is_some)).await;
 }
 
 /// Read everything the chat draws for as long as it runs — whether or not anyone is attached; see
@@ -239,7 +239,7 @@ async fn pump(chat: Arc<Live>, mut child: tokio::process::Child, ended: watch::S
     let status = match tokio::time::timeout(grace, child.wait()).await {
         Ok(status) => status.ok(),
         Err(_) => {
-            let _ = chat.pty.kill();
+            let _ = chat.pty.kill_all();
             child.wait().await.ok()
         }
     };

@@ -9,9 +9,12 @@
 //! std has no pty API and this is a handful of calls, so they are made through `libc`, as
 //! `live_tests` and `landing::install` already make `setsid`, rather than through a crate.
 //!
-//! **Hanging up** sends SIGHUP to the child's whole process group, not only to the session leader
-//! a closing terminal would signal. The leader is `otto chat`, which ignores SIGHUP so that it can
-//! journal the chat's end; claude, in the same group, is the one that has to go.
+//! **Hanging up** signals two process groups: the child's own, and whichever is in front on the
+//! terminal. The child is `otto chat`, which ignores SIGHUP so that it can journal the chat's end;
+//! what has to go is claude, and a program that manages the terminal can move itself into a group
+//! of its own and take the front — an interactive shell does, which is how the panel's first
+//! hand test found this. So [`Pty::kill_foreground`] comes before [`Pty::kill_all`]: the one that
+//! lets `otto chat` finish up, then the one that doesn't wait for it.
 
 // Nothing outside the tests starts one until the server's live chats do (plans/web-chat.md, step 3).
 #![cfg_attr(not(test), allow(dead_code))]
@@ -141,22 +144,42 @@ impl Pty {
         cvt(unsafe { libc::ioctl(self.master.as_raw_fd(), TIOCSWINSZ, &ws) }).map(drop)
     }
 
-    /// SIGHUP to the whole process group — see the module doc for why not only the leader.
+    /// SIGHUP to whatever is in front on the terminal and to the child's own group — see the
+    /// module doc for why both.
     pub fn hang_up(&self) -> io::Result<()> {
-        self.signal(libc::SIGHUP)
-    }
-
-    /// SIGKILL to the whole process group: for a hang-up that wasn't heeded.
-    pub fn kill(&self) -> io::Result<()> {
-        self.signal(libc::SIGKILL)
-    }
-
-    fn signal(&self, signal: libc::c_int) -> io::Result<()> {
-        match cvt(unsafe { libc::killpg(self.group, signal) }) {
-            // Nothing left in the group: what the signal was for has already happened.
-            Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
-            other => other.map(drop),
+        if let Some(front) = self.foreground().filter(|&front| front != self.group) {
+            signal(front, libc::SIGHUP)?;
         }
+        signal(self.group, libc::SIGHUP)
+    }
+
+    /// SIGKILL to whatever is in front on the terminal, for a hang-up that wasn't heeded: claude,
+    /// in a group of its own or in the child's. The child's group is spared when they differ, so
+    /// `otto chat` can still journal the end.
+    pub fn kill_foreground(&self) -> io::Result<()> {
+        signal(self.foreground().unwrap_or(self.group), libc::SIGKILL)
+    }
+
+    /// SIGKILL to both groups: for a chat whose own `otto chat` won't go either.
+    pub fn kill_all(&self) -> io::Result<()> {
+        if let Some(front) = self.foreground().filter(|&front| front != self.group) {
+            signal(front, libc::SIGKILL)?;
+        }
+        signal(self.group, libc::SIGKILL)
+    }
+
+    /// The process group in front on the terminal, while there is one.
+    fn foreground(&self) -> Option<libc::pid_t> {
+        Some(unsafe { libc::tcgetpgrp(self.master.as_raw_fd()) }).filter(|&group| group > 0)
+    }
+}
+
+/// `signal` to a process group: nothing left in it is no error, as what the signal was for has
+/// already happened.
+fn signal(group: libc::pid_t, signal: libc::c_int) -> io::Result<()> {
+    match cvt(unsafe { libc::killpg(group, signal) }) {
+        Err(e) if e.raw_os_error() == Some(libc::ESRCH) => Ok(()),
+        other => other.map(drop),
     }
 }
 
@@ -290,13 +313,40 @@ mod tests {
         assert!(status.success(), "{status:?}");
     }
 
+    /// What the panel's first hand test found: an interactive shell — as claude might — takes a
+    /// process group of its own and the front of the terminal. The hang-up reaches it there, and the
+    /// leader still finishes up.
+    #[tokio::test]
+    async fn a_hang_up_reaches_a_program_that_took_the_front_of_the_terminal() {
+        let (pty, mut child) = sh("PS1='ready$ ' /bin/bash --noprofile --norc -i </dev/tty & trap '' HUP; wait; echo finished-up");
+        until(&pty, "ready$ ").await;
+        let front = pty.foreground().expect("something is in front");
+        assert_ne!(front, pty.group, "bash took a group of its own");
+        pty.hang_up().unwrap();
+        assert!(drain(&pty).await.contains("finished-up"));
+        let status = tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("the leader exits").unwrap();
+        assert!(status.success(), "{status:?}");
+    }
+
+    /// Killing what is in front spares a leader in a group of its own, so it can finish up.
+    #[tokio::test]
+    async fn killing_the_front_spares_the_leader_behind_it() {
+        let (pty, mut child) = sh("trap '' HUP; /bin/bash --noprofile --norc -i -c 'trap \"\" HUP; set -m; echo ready; sleep 60' </dev/tty & wait; echo finished-up");
+        until(&pty, "ready").await;
+        pty.hang_up().unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(500), child.wait()).await.is_err(), "nothing heeds SIGHUP");
+        pty.kill_foreground().unwrap();
+        assert!(drain(&pty).await.contains("finished-up"));
+        assert!(tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("the leader exits").unwrap().success());
+    }
+
     #[tokio::test]
     async fn a_kill_ends_what_a_hang_up_did_not() {
         let (pty, mut child) = sh("trap '' HUP; echo ready; sleep 60");
         until(&pty, "ready").await;
         pty.hang_up().unwrap();
         assert!(tokio::time::timeout(Duration::from_millis(500), child.wait()).await.is_err(), "it ignores SIGHUP");
-        pty.kill().unwrap();
+        pty.kill_all().unwrap();
         tokio::time::timeout(Duration::from_secs(10), child.wait()).await.expect("killed").unwrap();
         pty.hang_up().expect("signalling an empty group is not an error");
     }

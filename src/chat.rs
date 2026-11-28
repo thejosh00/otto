@@ -185,8 +185,16 @@ fn run_chat(argv: &[String], workdir: Option<&Path>, attended: bool) -> Result<(
         std::io::copy(&mut said, &mut std::io::stdout())?;
     }
     let status = child.wait()?;
-    match status.code() {
-        Some(0) | None => Ok(()),
+    outcome(status.code())
+}
+
+/// How the chat's own exit reads. A hang-up — 128 + SIGHUP — is a chat that ended because its
+/// terminal went: a window closed, or End chat in the web page. That is how a chat is meant to
+/// end there, not a failure to report.
+fn outcome(code: Option<i32>) -> Result<(), OttoError> {
+    const HUNG_UP: i32 = 128 + SIGHUP;
+    match code {
+        Some(0) | Some(HUNG_UP) | None => Ok(()),
         Some(code) => Err(OttoError::new(format!("the chat exited with code {code}"), code)),
     }
 }
@@ -514,6 +522,14 @@ mod tests {
         let text = about.text();
         let looking = text.find("The person is looking at change 7/2").expect(&text);
         assert!(looking < text.find("The person asks:").unwrap(), "{text}");
+    }
+
+    #[test]
+    fn a_chat_hung_up_ended_as_meant_and_any_other_failure_is_said() {
+        assert!(outcome(Some(0)).is_ok());
+        assert!(outcome(None).is_ok(), "ended by a signal claude didn't catch");
+        assert!(outcome(Some(129)).is_ok(), "hung up: End chat, or a closed window");
+        assert_eq!(outcome(Some(2)).unwrap_err().code, 2);
     }
 
     #[test]

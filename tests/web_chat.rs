@@ -14,6 +14,38 @@ use tokio_tungstenite::tungstenite::Message;
 
 const OTTO: &str = support::OTTO;
 
+/// `otto serve`, stopped as the service is — SIGTERM, so it ends its chats — when the test is done
+/// with it, however the test ends. A failed assertion that left it running would leave its chats
+/// running too.
+struct Server(Child);
+
+impl Server {
+    fn stop(&mut self) -> std::process::ExitStatus {
+        unsafe {
+            libc::kill(self.0.id() as libc::pid_t, libc::SIGTERM);
+        }
+        let until = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+            if std::time::Instant::now() > until {
+                let _ = self.0.kill();
+                return self.0.wait().unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            self.stop();
+        }
+    }
+}
+
 type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 struct Scratch {
@@ -79,8 +111,8 @@ impl Scratch {
     }
 
     /// `otto serve` on a port of its own, and that port once it is listening.
-    #[allow(clippy::zombie_processes)] // handed back, and every test waits on it
-    fn serve(&self) -> (Child, u16) {
+    #[allow(clippy::zombie_processes)] // handed back in a `Server`, which waits on it
+    fn serve(&self) -> (Server, u16) {
         let mut server = self.command(&["serve", "--port", "0"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
         let mut said = BufReader::new(server.stdout.take().unwrap());
         let mut line = String::new();
@@ -94,7 +126,7 @@ impl Scratch {
                 let port: String = line[at + 17..].chars().take_while(char::is_ascii_digit).collect();
                 // Read on, so the server never blocks writing to a full pipe.
                 std::thread::spawn(move || std::io::copy(&mut said, &mut std::io::sink()));
-                return (server, port.parse().unwrap());
+                return (Server(server), port.parse().unwrap());
             }
         }
     }
@@ -210,9 +242,7 @@ async fn a_chat_in_the_page_is_otto_chat_on_a_terminal_and_ends_in_the_journal()
     let journal = s.journal(&id);
     assert!(journal.contains("\"chat-ended\""), "a hung-up chat still journals its end: {journal}");
     assert_eq!(get(port, "/api/chats"), serde_json::json!([]));
-
-    server.kill().unwrap();
-    server.wait().unwrap();
+    assert!(server.stop().success());
 }
 
 /// The server stopping — Ctrl-C, or launchd stopping the service — ends each chat properly first.
@@ -226,10 +256,7 @@ async fn a_server_that_stops_ends_its_chats_in_the_journal() {
     drop(page); // detached: a closed tab doesn't end it
     assert_eq!(get(port, "/api/chats")[0]["attached"], 0);
 
-    unsafe {
-        libc::kill(server.id() as libc::pid_t, libc::SIGTERM);
-    }
-    let status = server.wait().unwrap();
+    let status = server.stop();
     assert!(status.success(), "{status:?}");
     let journal = s.journal(&id);
     assert!(journal.contains("\"chat-ended\""), "{journal}");
@@ -244,6 +271,5 @@ async fn a_chat_about_no_run_says_why() {
     let said = tokio::time::timeout(Duration::from_secs(10), page.next()).await.unwrap().unwrap().unwrap();
     let said: serde_json::Value = serde_json::from_str(said.to_text().unwrap()).unwrap();
     assert!(said["error"].as_str().is_some_and(|e| !e.is_empty()), "{said}");
-    server.kill().unwrap();
-    server.wait().unwrap();
+    assert!(server.stop().success());
 }
