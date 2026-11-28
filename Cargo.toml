@@ -18,7 +18,7 @@ libc = "0.2"
 tempfile = "3"
 futures-util = { version = "0.3", default-features = false }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process"] }
 
 [dev-dependencies]
 tempfile = "3"

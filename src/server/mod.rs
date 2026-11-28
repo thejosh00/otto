@@ -13,6 +13,7 @@
 mod assets;
 mod handlers;
 mod live;
+mod pty;
 
 use crate::error::OttoError;
 use axum::extract::{Request, State};
