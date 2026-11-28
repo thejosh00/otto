@@ -267,7 +267,7 @@ mod tests {
     use super::*;
     use crate::paths::test_support::TempHome;
     use crate::state::commands::test_init;
-    use crate::state::{read_run, Status};
+    use crate::state::{read_run, NoteAboutKind, Status};
 
     fn journal(id: &str) -> String {
         std::fs::read_to_string(crate::paths::run_dir(id).unwrap().join("journal.jsonl")).unwrap()
@@ -285,6 +285,44 @@ mod tests {
         assert_eq!(read_text(&dir, &one).trim_end(), text);
         assert_eq!(read_run("n-add").unwrap().notes.len(), 2);
         assert_eq!(journal("n-add").matches("\"event\":\"note-added\"").count(), 2);
+    }
+
+    fn note_added_lines(id: &str) -> Vec<serde_json::Value> {
+        journal(id)
+            .lines()
+            .filter_map(crate::core::parse_line)
+            .map(|l| l.value)
+            .filter(|v| v["event"] == "note-added")
+            .collect()
+    }
+
+    /// Plan v3, 2.3: a plain note's journal line is what it always was — the same keys, in order.
+    #[test]
+    fn a_plain_notes_journal_line_has_no_from_and_no_about() {
+        let _h = TempHome::new();
+        test_init("n-line", "a goal").unwrap();
+        add("n-line", "Skip the e2e suite.", false).unwrap();
+        let lines = note_added_lines("n-line");
+        let keys: Vec<&str> = lines[0].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["event", "note", "file", "standing", "ts"]);
+    }
+
+    /// A note with an origin writes it to the journal too, where it outlives the note's delivery,
+    /// and the line still reads as a typed event.
+    #[test]
+    fn a_notes_origin_is_journaled() {
+        let _h = TempHome::new();
+        test_init("n-origin", "a goal").unwrap();
+        let about = NoteAbout { kind: NoteAboutKind::Change, reference: "3".into(), version: Some(2), event: Some("landed".into()) };
+        add_from("n-origin", "About change 3@v2, \"x\":\n\nLanded.", false, Origin { from: Some(NoteFrom::Otto), about: Some(about.clone()) })
+            .unwrap();
+        let line = &note_added_lines("n-origin")[0];
+        let keys: Vec<&str> = line.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["event", "note", "file", "standing", "from", "about", "ts"]);
+        assert_eq!(line["from"], "otto");
+        assert_eq!(line["about"], serde_json::json!({"kind": "change", "ref": "3", "version": 2, "event": "landed"}));
+        let Event::NoteAdded { from, about: read, .. } = serde_json::from_value(line.clone()).unwrap() else { panic!("not note-added") };
+        assert_eq!((from, read), (Some(NoteFrom::Otto), Some(about)));
     }
 
     /// Plan v3, 2.2: a plain `otto note` says neither who it is from nor what it is about — run.json

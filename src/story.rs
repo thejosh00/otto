@@ -712,6 +712,60 @@ mod tests {
         );
     }
 
+    /// Plan v3, 2.3: what a note-added line says it is from and about decides how it is told; a
+    /// line from before it said (the text's opening line only) is told the same.
+    #[test]
+    fn a_note_is_told_by_its_about_and_an_old_one_by_its_prefix() {
+        let _h = TempHome::new();
+        test_init("t-about", "a goal").unwrap();
+        let dir = crate::paths::run_dir("t-about").unwrap();
+        let doc = crate::outputs::Publish { key: "design", title: "Design: tiers", text: Some(("v1", "md")), ..Default::default() };
+        crate::outputs::publish("t-about", &doc).unwrap();
+        std::fs::create_dir_all(dir.join("notes")).unwrap();
+        let told = |text: &str, fields: Value| {
+            std::fs::write(dir.join("notes/001.md"), format!("{text}\n")).unwrap();
+            let mut line = serde_json::json!({"ts": ago(1), "event": "note-added", "note": "001", "file": "notes/001.md", "standing": false});
+            line.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+            journal(&dir, &[line]);
+            lately(&dir, 10).into_iter().map(|h| (h.kind, h.text, h.output)).collect::<Vec<_>>()
+        };
+        let none = serde_json::json!({});
+        let person = |about: Value| serde_json::json!({"from": "person", "about": about});
+        let design = Some("design".to_string());
+
+        let output = "About output design@1, \"Design: tiers\":\n\nshorter, please";
+        let said = vec![("you", "You said about “Design: tiers”: shorter, please".to_string(), design.clone())];
+        assert_eq!(told(output, person(serde_json::json!({"kind": "output", "ref": "design", "version": 1}))), said);
+        assert_eq!(told(output, none.clone()), said, "an old line, by its prefix");
+        let message = "In reply to message 004, \"Why\":\n\ndig in";
+        assert_eq!(told(message, person(serde_json::json!({"kind": "message", "ref": "004"}))), vec![]);
+        assert_eq!(told(message, none.clone()), vec![]);
+        let change = format!("{}3@v2, \"Tiers\":\n\nLanded.", crate::changes::NOTE_ABOUT_PREFIX);
+        let landed = serde_json::json!({"from": "otto", "about": {"kind": "change", "ref": "3", "version": 2, "event": "landed"}});
+        assert_eq!(told(&change, landed), vec![]);
+        assert_eq!(told(&change, none.clone()), vec![]);
+
+        // The field is read, not the text: no prefix, yet about an output — and its key, not a guess.
+        assert_eq!(
+            told("Front-load the summary.\n\nshorter, please", person(serde_json::json!({"kind": "output", "ref": "design", "version": 1}))),
+            said
+        );
+        assert_eq!(
+            told("x\n\nwords", person(serde_json::json!({"kind": "output", "ref": "gone"}))),
+            vec![("you", "You said about “gone”: words".to_string(), Some("gone".to_string()))],
+            "an output it no longer knows is named by its key"
+        );
+        // A value this otto can't read falls back to the text.
+        assert_eq!(told(output, serde_json::json!({"from": 7, "about": {"kind": "song"}})), said);
+        // Not the person's words, so not theirs.
+        let relayed = |from: &str| serde_json::json!({"from": from});
+        assert_eq!(told("Rebased onto main.", relayed("otto")), vec![("status", "otto said: Rebased onto main.".to_string(), None)]);
+        assert_eq!(told("Rename it.", relayed("reviewer")), vec![("status", "A reviewer said: Rename it.".to_string(), None)]);
+        assert_eq!(told("lint failed", relayed("ci")), vec![("status", "CI said: lint failed".to_string(), None)]);
+        assert_eq!(told("Skip e2e.", relayed("person")), vec![("you", "You said: Skip e2e.".to_string(), None)]);
+        assert_eq!(told("Skip e2e.", none), vec![("you", "You said: Skip e2e.".to_string(), None)]);
+    }
+
     /// What it made reads as made, updated or linked, a person's mark on one as theirs, and a note
     /// about one says which.
     #[test]
