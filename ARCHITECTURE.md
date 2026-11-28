@@ -26,6 +26,8 @@ flowchart LR
   wake -->|otto state| state[(~/.otto/runs/id)]
   cli --> state
   serve --> state
+  serve -->|the chat panel, on a pty| chat[otto chat -> claude]
+  chat -->|reads, and otto note| state
   lander[lander wake, land-flow] -->|request-land| req[(land request in its run)]
   req -->|after the wake, or from poke| step[landing step: otto, no model]
   appr[(~/.otto/approvals)] --> step
@@ -46,6 +48,7 @@ flowchart LR
 | Authorization and repo locks | `src/state/authorize.rs`, `src/state/locks.rs` | gates that authorize outward actions; one owner per repo |
 | System agents | `src/agents.rs`, `workflows/land-flow.md` | the lander (asks for landings; opens, updates and merges pull requests) and babysitter |
 | Web UI | `src/server/mod.rs`, `src/server/handlers.rs` | review/approve page; Host and Origin checks |
+| Chat panel | `src/server/chats.rs`, `src/server/pty.rs`, `web/vendor/` | one live `otto chat` per run on a pseudo-terminal, over a websocket to xterm.js in the page |
 | Paths and config | `src/paths.rs`, `src/config.rs` | `$OTTO_HOME` layout, run ids, `config.json` |
 | Wake instructions | `harness/wake.md`, `skills/` | what a wake is told |
 
@@ -77,7 +80,8 @@ wake can't write `approvals/`, `landings/` or `sandbox/` beyond its own caches a
 | The landing step | otto itself, after the lander's wake and from poke; not sandboxed | push the approved commit, or a clean rebase of it, to the base the approval names; start `install.sh` after a landing on the otto repository | follow the request's or the index's repository, base or remote; run the repository's hooks, ssh command or credential helper |
 | `install.sh` | started by the landing step from a clone of the landed commit | run as you, unsandboxed, detached in its own session (`start` in `src/landing/install.rs` spawns `/bin/sh`, not `sandbox-exec`) | run after a merged pull request, or for a repository that isn't the linked otto checkout |
 | Check scripts | run by poke before a wake, under the run's sandbox profile when the run has a sandbox record; as you when it has none | read, report change/no change, write inside their own run | run at all when the run disagrees with its sandbox record; use `otto state` (documented only, I16) |
-| The network | `otto serve` binds 127.0.0.1 only, no login | requests whose Host is 127.0.0.1/localhost and same Origin | DNS-rebinding or cross-origin writes |
+| A web chat | started by `otto serve` on a pseudo-terminal when the page opens the chat panel: `otto chat`, as you | what a terminal `otto chat` can: read, and leave a note once you approve it | write run state (`OTTO_CHAT`), Edit or Write; outlive the server, which hangs every chat up before it exits |
+| The network | `otto serve` binds 127.0.0.1 only, no login | requests whose Host is 127.0.0.1/localhost and same Origin; a websocket only with this page's Origin | DNS-rebinding, cross-origin writes, or another site's websocket into a chat |
 
 Secrets: the wake's state token arrives on a file descriptor, not argv/env (`tests/sandbox.rs`);
 credentials read as nothing inside the sandbox (`docs/guides/sandboxing.md`). A sandboxed wake
@@ -111,6 +115,7 @@ can't renew `claude`'s sign-in, so otto first checks it will last the wake (`src
 | I19 | A push happens once | `tests/landing.rs`: `an_approved_change_is_pushed_by_the_step_after_the_wake_and_only_once`, `a_push_that_was_never_recorded_is_recorded_and_not_pushed_again`, `a_parent_killed_after_the_request_leaves_it_for_poke_to_land_once` |
 | I20 | A sandboxed wake can't write an approval | `tests/sandbox.rs`: `no_record_opens_the_persons_approvals` †, `a_wake_can_not_approve_its_own_change` †. **Unenforced** for a wake that isn't sandboxed |
 | I21 | `otto sandbox observe/enforce/off` are the person's alone (`report`, which only reads, isn't refused) | `tests/sandbox_commands.rs`: `none_of_them_runs_from_a_wake_or_a_chat`; `tests/sandbox.rs`: `the_sandbox_commands_can_not_be_run_from_inside` † |
+| I23 | A chat's websocket opens only from this page | `src/server/mod.rs`: `a_websocket_opens_only_from_this_page`; `tests/web_chat.rs`: `a_chat_in_the_page_is_otto_chat_on_a_terminal_and_ends_in_the_journal` |
 | I22 | Only a landing on the otto repository installs | `tests/landing.rs`: `a_landing_on_another_repository_installs_nothing_and_wakes_the_lander_to_clean_up`, `a_repository_that_only_looks_like_ottos_installs_nothing` |
 
 ## Decisions
@@ -122,6 +127,7 @@ Full history in `DESIGN.md` §20.
 - 2026-11-07 · `--evidence` / `--no-evidence` named where a change is submitted · every version carries proof or a reason (4363745)
 - 2026-11-07 · Seatbelt wrapper plus generated profile (sandbox 1.2) · a wake can't take its sandbox off (d7f5083)
 - 2026-11-08 · terminals and clipboard closed to wakes · report 44 (ced9a1a)
+- 2026-11-28 · the web page's chat is a terminal: `otto chat` on a pty, over a websocket · keeps the subscription meter and the person's approvals (plans/web-chat.md)
 - by 2026-11-19 · otto pushes, not the lander; approval is a record outside the run · a wake's word proves nothing (`src/landing.rs`, `src/approvals.rs`; commits not traced)
 
 ## Family

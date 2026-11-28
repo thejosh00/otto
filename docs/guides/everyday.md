@@ -125,6 +125,9 @@ questions and your answers, what it sent and made, and each wake's own transcrip
 none of it. When you settle on something, it drafts a note and leaves it once you say so; nothing
 else said in a chat reaches the run. It's fine to chat while a wake is working.
 
+In the web page it's the **Chat** button in the top bar, or **Open chat** on an agent's page: the
+same chat, in a panel down the right, about whatever the page is showing.
+
 ## Changing how often it wakes
 
 ```bash
@@ -243,12 +246,15 @@ it, and a gate is a *question*:
   and the babysitter otto makes for you, with a button to start each.
 - **The inbox**, with a count in the top bar: questions to answer and messages to read, from every
   agent. Answer with a click, copy a draft, reply, mark done.
+- **Chat**, beside the inbox (or Ctrl-\`): a [chat](../concepts.md#chats) in a panel down the right,
+  about whatever the page shows. Drag its edge to resize it; close it and the chat keeps going until
+  you end it, with a dot on the button while one is open.
 - **An agent's page**: its question if it has one, what it would like from you, **its work** —
   shaped by what it makes: a dated list of reports, a document's versions and what changed between
   them, its stages as a track, or one card per question with the reply to copy — a strip of its last
   week (each run, what it made, when it waited on you), its checklist when it keeps one, what
-  happened lately in words, one box to tell it something (pin it to keep it), and the `otto chat`
-  command to copy, for asking it something in a terminal. Pause, run now and stop are at the top, rename and delete beside its name; the handoff, the log, a live view, cost and
+  happened lately in words, one box to tell it something (pin it to keep it), and **Open chat**, for
+  asking it something (or the `otto chat` command, to copy into a terminal). Pause, run now and stop are at the top, rename and delete beside its name; the handoff, the log, a live view, cost and
   settings are under the hood.
 - **New agent**: describe the job; everything `otto run` can set is folded under more options.
 - **Settings**, in three tabs. **otto itself**: what the health line in the top bar is about — the
@@ -258,5 +264,7 @@ it, and a gate is a *question*:
 
 The server is a view over the run directory, not an owner of it — every button calls the same
 code as the matching command, and runs carry on waking under poke whether it is running or not.
+The one thing it holds is the chats open in the page; stopping it ends them, each recorded in its
+run's journal as a chat in a terminal would be.
 It listens on 127.0.0.1 only, with no login, and refuses requests from any other website. To
 reach it from another machine, tunnel: `ssh -L 7878:127.0.0.1:7878 <mac>`.

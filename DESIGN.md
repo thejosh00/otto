@@ -488,10 +488,29 @@ records each wake's session so they can still be found after `run.json` has move
   from its transcript and the notes left while it was open. `otto usage` and the run's total count
   them beside its wakes; no budget does, because a budget bounds what a run spends unattended, and a
   chat is the person spending.
-- **A terminal, not the web.** A page can't hold an interactive session without `-p` (the wrong
-  meter, §5.1) or a terminal emulator, so the web page shows the command to copy. With no terminal
-  — a script, output into a file — `otto chat <run> "…"` runs the way a wake does, stdin at
-  `/dev/null` and stdout on a pipe, and answers once.
+- **A terminal, in the web.** A page can't drive claude through pipes without `-p` (the wrong
+  meter, §5.1), and a chat's approvals need a person at a prompt. So the web page's chat panel is a
+  terminal: xterm.js in the page, a websocket to `otto serve`, and on the server a pseudo-terminal
+  running the same `otto chat <run>` a person would type (`server::pty`, `server::chats`). claude
+  sees a real terminal, so the meter, the approvals, the three guards above and the journal are
+  exactly a terminal chat's. With no terminal at all — a script, output into a file — `otto chat
+  <run> "…"` runs the way a wake does, stdin at `/dev/null` and stdout on a pipe, and answers once.
+  - **One chat per run, held by the server.** The panel attaches to the run's live chat or starts
+    one; closing the panel or reloading detaches, and attaching again replays the last 256 KB.
+    A chat ends on `/exit`, the panel's End chat, 30 minutes with nobody attached, or the server
+    stopping (SIGINT or SIGTERM ends every chat before it exits). This is the one thing the server
+    holds rather than reads; a chat journals itself and changes no run, so losing one loses a
+    conversation and nothing else.
+  - **About what the page shows.** A run's page, its work items, its inbox items and its changes
+    each name a run; the panel starts a chat about that run, and `--about` puts the part of it on
+    screen into the opening, so "this" has an answer. A chat stays about the run it started on; on
+    another run's page the panel offers a new one rather than switching.
+  - **Ending reaches claude wherever it is.** `otto chat` ignores SIGHUP so it can journal the end,
+    and a program that manages the terminal can take a process group of its own. So End chat hangs
+    up both the chat's group and whatever is in front on the terminal, then kills what is in front,
+    and only then everything — found when the panel's first hand test lost a `chat-ended`.
+  - **Only from this page.** A websocket opens with a GET, which no browser puts behind CORS, so
+    the server asks an upgrade for this page's Origin where it lets any other GET through (I23).
 
 ## 8. Waiting
 

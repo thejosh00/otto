@@ -295,7 +295,14 @@ With nobody there to approve a command, it reads files rather than running them,
 only when the question asks for one.
 The journal has `chat-started` and `chat-ended`, with what it used and the notes left while it was
 open; what was said stays in its transcript. A chat's tokens count toward the run's total in `otto
-usage` and `otto show`, beside its wakes. The web page has the command to copy, for a terminal.
+usage` and `otto show`, beside its wakes.
+
+In the web page, **Chat** in the top bar (or Ctrl-\`) opens the same chat in a terminal down the
+right, about whatever the page is showing — an agent, one of its work items, an inbox item, a
+change — so "what is this?" means that. It is `otto chat` itself, run by the server, so it asks for
+your approval in the panel the way it would in a terminal. Closing the panel doesn't end the chat:
+open it again and it is where you left it. **End chat** ends it, as does half an hour with the
+panel closed.
 
 ## Messages and the inbox
 

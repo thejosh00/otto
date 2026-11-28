@@ -1,6 +1,13 @@
 # Plan: chat in the web page
 
-**Status:** not started. Built interactively, outside `otto-driver`; `plans/v3.md` carries on beside it.
+**Status:** steps 1–5 done (`6c8588a`, `d93e4b2`, `6c29da7`, `827b8d1`, `d837b20`, and the docs
+after them); step 6, the live test, not started. Built interactively, outside `otto-driver`;
+`plans/v3.md` carries on beside it.
+
+Found on the way, beyond the plan: an interactive program can take the terminal's foreground
+group, so hanging up only `otto chat`'s group misses claude (`Pty::kill_foreground`); and on macOS
+a process can't finish exiting while output it left on its terminal is unread, so every live chat
+is read whether or not anyone is attached.
 **Written:** 2026-11-28, against `61313af`. Line references go stale, so check them against the code.
 
 ## What and why
