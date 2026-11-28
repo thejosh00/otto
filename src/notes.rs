@@ -74,7 +74,7 @@ pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bo
     let id = next_id(path, state);
     let file = format!("{NOTES_DIR}/{id}.md");
     crate::state::write_atomic(&path.join(&file), &format!("{text}\n"))?;
-    let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None };
+    let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None, extra: Default::default() };
     state.notes.push(note.clone());
     crate::event::record(path, &Event::NoteAdded { note: id, file, standing })?;
     Ok(note)

@@ -7,6 +7,10 @@ race a wake. Read it with `otto state get <id>`, or one field with `--field fact
 This page describes each field for someone reading the file; [concepts](../concepts.md) explains
 what the ideas mean.
 
+**Keys otto doesn't know survive a rewrite**, from the build that added this line on: one a newer
+otto wrote, at the top level or in a note, `wraps`, `launcher`, `permission`, `budget` or `policy`, is
+written back unchanged, so rolling back doesn't erase it. Older binaries still drop them.
+
 ## Identity and purpose
 
 | Field | Meaning |

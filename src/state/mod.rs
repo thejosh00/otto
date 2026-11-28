@@ -145,6 +145,10 @@ pub struct Wraps {
     /// `ref` in JSON; `ref` is a Rust keyword.
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +222,10 @@ pub struct Permission {
     pub allowed_tools: Vec<String>,
     #[serde(rename = "disallowedTools", default, skip_serializing_if = "Vec::is_empty")]
     pub disallowed_tools: Vec<String>,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 fn default_detach() -> Detach {
@@ -244,6 +252,10 @@ pub struct Launcher {
     /// existed, which follows today's default (`config::workdir_for`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workdir: Option<String>,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// `wakes` and `hours` are the enforced dimensions. `usd`/`spent_usd` are vestigial — pricing a
@@ -269,6 +281,10 @@ pub struct Budget {
     /// Never incremented — nothing can price a wake on a subscription.
     #[serde(rename = "spentUsd", default)]
     pub spent_usd: f64,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl Budget {
@@ -335,6 +351,10 @@ pub struct Note {
     /// one-off note — one added while a wake runs was never in its prompt, and must not be.
     #[serde(rename = "givenToWake", default, skip_serializing_if = "Option::is_none")]
     pub given_to_wake: Option<u32>,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 /// A person's answer to a gate that no wake has yet been given — and completed with.
@@ -864,6 +884,10 @@ pub struct RunState {
     /// `babysitter`. otto made it, and it is listed apart from the person's own runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Keys this binary doesn't name, read in and written back unchanged, so a field a newer otto
+    /// added survives a rewrite by this one (an empty map writes nothing).
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -1288,7 +1312,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         id: id.to_string(),
         name: id.to_string(),
         former_id: None,
-        wraps: Wraps { kind: WrapKind::GoalOnly, reference: None },
+        wraps: Wraps { kind: WrapKind::GoalOnly, reference: None, extra: Map::new() },
         goal: "a goal".to_string(),
         done_condition: None,
         status: Status::Running,
@@ -1312,9 +1336,9 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         ticks_without_progress: 0,
         progress_mark: None,
         said_progress: None,
-        launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![], workdir: None },
-        permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![] },
-        budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, tokens: 0, spent_tokens: 0, spent_usd: 0.0 },
+        launcher: Launcher { kind: "claude".into(), detach: Detach::Tmux, repos: vec![], workdir: None, extra: Map::new() },
+        permission: Permission { mode: PermissionMode::AcceptEdits, allowed_tools: vec![], disallowed_tools: vec![], extra: Map::new() },
+        budget: Budget { wakes: 0, hours: 0, usd: 0.0, spent_wakes: 0, tokens: 0, spent_tokens: 0, spent_usd: 0.0, extra: Map::new() },
         policy: Policy::default(),
         facts: Map::new(),
         created_at: now,
@@ -1328,6 +1352,7 @@ pub(crate) fn test_run_state(id: &str) -> RunState {
         paused: None,
         wait: None,
         role: None,
+        extra: Map::new(),
     }
 }
 
@@ -1361,6 +1386,40 @@ mod tests {
         assert_eq!(policy.period_days, None);
         policy.set("periodDays".into(), Value::String("someday".into()));
         assert_eq!(policy.extra["periodDays"], Value::String("someday".into()));
+    }
+
+    /// Plan v3, 2.1: a key this otto doesn't name is kept, not dropped, and an empty catch-all
+    /// changes nothing about what is written.
+    #[test]
+    fn unknown_keys_round_trip_and_known_ones_are_never_held_twice() {
+        let mut state = test_run_state("keys");
+        state.notes.push(Note {
+            id: "001".into(),
+            file: "notes/001.md".into(),
+            standing: true,
+            added_at: crate::clock::Timestamp::now(),
+            given_to_wake: Some(3),
+            extra: Map::new(),
+        });
+        // Nothing unknown: reading and writing again gives the same bytes, with no `extra` in them.
+        let text = serde_json::to_string_pretty(&state).unwrap();
+        let back: RunState = serde_json::from_str(&text).unwrap();
+        assert_eq!(serde_json::to_string_pretty(&back).unwrap(), text);
+        assert!(!text.contains("\"extra\""), "{text}");
+        // Every key read is a named field: none lands in a catch-all as well.
+        assert!(back.extra.is_empty() && back.notes[0].extra.is_empty());
+        assert!(back.wraps.extra.is_empty() && back.launcher.extra.is_empty());
+        assert!(back.permission.extra.is_empty() && back.budget.extra.is_empty() && back.policy.extra.is_empty());
+
+        // Unknown keys at the top and in a note come back out as they went in.
+        let mut value: Value = serde_json::from_str(&text).unwrap();
+        value["future"] = serde_json::json!({"a": 1});
+        value["notes"][0]["from"] = Value::String("person".into());
+        let read: RunState = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(read.extra.keys().collect::<Vec<_>>(), vec!["future"]);
+        assert_eq!(read.notes[0].extra.keys().collect::<Vec<_>>(), vec!["from"]);
+        let written: Value = serde_json::from_str(&serde_json::to_string_pretty(&read).unwrap()).unwrap();
+        assert_eq!(written, value);
     }
 
     #[test]

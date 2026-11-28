@@ -48,7 +48,8 @@ When an install replaces the binary with a different build, it keeps the old one
 `otto.previous` beside it and the otto home's `config.json` as it stood then as
 `otto.previous.config.json`. Installing the same build again replaces neither. `./install.sh --rollback`
 puts both back: an older binary refuses a `config.json` with keys it doesn't know, so the binary alone
-might not start.
+might not start. A rolled-back binary keeps the keys a newer one added to a `run.json` (see
+[run.json](../reference/run-json.md)), if it is itself from after they began to be kept.
 
 The config it restores is that snapshot, with one exception: **a launcher the current config has
 and the snapshot doesn't is carried over unchanged** — a run moved into a `sandbox-*` launcher since,

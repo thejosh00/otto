@@ -299,7 +299,7 @@ mod tests {
     fn a_wrapped_skill_is_named_with_its_file() {
         let home = crate::paths::test_support::TempHome::new();
         let mut state = crate::state::test_run_state("r1");
-        state.wraps = crate::state::Wraps { kind: crate::state::WrapKind::Skill, reference: Some("curate".into()) };
+        state.wraps = crate::state::Wraps { kind: crate::state::WrapKind::Skill, reference: Some("curate".into()), extra: Default::default() };
         state.launcher.workdir = Some(home.path().display().to_string());
         let skill = home.path().join(".claude/skills/curate/SKILL.md");
 

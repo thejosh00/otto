@@ -262,6 +262,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         (Some(skill), None) => Wraps {
             kind: WrapKind::Skill,
             reference: Some(skill.clone()),
+            extra: Map::new(),
         },
         (None, Some(file)) => {
             // Fail now, not on the first wake: a wrapped instructions file that isn't
@@ -278,11 +279,13 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|_| file.clone()),
                 ),
+                extra: Map::new(),
             }
         }
         (None, None) => Wraps {
             kind: WrapKind::GoalOnly,
             reference: None,
+            extra: Map::new(),
         },
         // clap's conflicts_with already rejects this; belt and braces.
         (Some(_), Some(_)) => return Err(OttoError::usage("pass --skill or --instructions, not both")),
@@ -416,11 +419,13 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
                 None => crate::config::default_workdir()?,
             }
             .map(|p| p.display().to_string()),
+            extra: Map::new(),
         },
         permission: Permission {
             mode: args.permission_mode,
             allowed_tools: args.allowed_tools.clone(),
             disallowed_tools: args.disallowed_tools.clone(),
+            extra: Map::new(),
         },
         budget: Budget {
             wakes: args.budget_wakes,
@@ -430,6 +435,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
             tokens: args.budget_tokens,
             spent_tokens: 0,
             spent_usd: 0.0,
+            extra: Map::new(),
         },
         policy,
         facts,
@@ -444,6 +450,7 @@ pub fn plan_run(args: &InitArgs) -> Result<PlannedRun, OttoError> {
         paused: None,
         wait: None,
         role: None,
+        extra: Map::new(),
     };
     // Fail now, as for --instructions: a wrapped skill claude can't find by name makes every wake
     // start by failing to load it, and then hunt for its SKILL.md on its own. Checked here, once
