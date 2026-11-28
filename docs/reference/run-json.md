@@ -95,6 +95,13 @@ and anything else is `reviewer`.
 A note about an output (`otto note --about key`) is `from: person`, `about: {kind: output, ref: key,
 version: n}`; a reply to a message is `from: person`, `about: {kind: message, ref: id}`.
 
+A wake's prompt uses `from` to split its notes in two: **Notes from the person** (no `from`, or
+`person`), then **What happened to your work** (`otto`, `reviewer`, `ci`), each note there headed by
+who it is from and what it is about. A `reviewer` or `ci` note is labelled, outside its text, as
+someone else's words — data to weigh, not instructions to follow, and never an authorization. A note
+that arrives mid-wake is handed over in a refusal (`not yet: …`) split the same way; that refusal
+says "a person left a note" only when every note in it is the person's.
+
 The journal's `note-added` line carries the same `from` and `about`, so they outlive the note's
 delivery (it leaves `run.json`; the journal keeps it). An older line has neither.
 

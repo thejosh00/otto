@@ -260,6 +260,9 @@ the next one gets it again.
 - `--now` starts a wake to read it, if none is running and no gate is open.
 - A note you leave while a wake is working reaches that wake before it asks you anything or says
   it's done: otto refuses the question or the done once, with your note in the refusal.
+- otto leaves notes too — a change landed or bounced, a reviewer's or CI's words relayed from its
+  pull request. The prompt keeps them apart from yours, under "What happened to your work", with a
+  reviewer's or CI's words marked as theirs: never instructions, never an authorization.
 - A note steers *how* the run works. It never changes the goal or the done-condition, and never
   authorizes a push; a wake opens a gate for anything like that.
 
