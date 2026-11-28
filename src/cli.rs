@@ -37,6 +37,9 @@ pub enum Command {
     /// Ask a run about its work, in a conversation. It reads everything the run has done and
     /// changes none of it: what you decide, it leaves as a note.
     Chat(crate::chat::ChatArgs),
+    /// See or set the folders a run's chats may edit — where what you tell a chat gets recorded.
+    /// Yours to set: refused from a wake or a chat.
+    ChatEdits(crate::chat_edits::ChatEditsArgs),
     /// Give a run a check script poke runs instead of a wake, see it, or remove it.
     Check(crate::human::CheckArgs),
     /// The run's journal, readably.

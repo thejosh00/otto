@@ -1608,6 +1608,9 @@ pub fn show(args: ShowArgs) -> Result<(), OttoError> {
         None => println!("  done when (not yet decided — the next wake proposes one and asks)"),
     }
     println!("  wraps     {} {}", detail.wraps_kind, state.wraps.reference.as_deref().unwrap_or(""));
+    if !detail.chat_edits.is_empty() {
+        println!("  chats edit {}", detail.chat_edits.join(", "));
+    }
     println!("  phase     {}", state.phase);
     if let Some(todo) = &detail.todo {
         let c = &todo.counts;

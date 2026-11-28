@@ -2,6 +2,7 @@ mod agents;
 mod approvals;
 mod changes;
 mod chat;
+mod chat_edits;
 mod check_history;
 mod cleanup;
 mod cli;
@@ -107,6 +108,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Usage(args) => human::usage(args),
         Command::Feedback(args) => human::feedback(args),
         Command::Attach(args) => human::attach(args),
+        Command::ChatEdits(args) => chat_edits::chat_edits(args),
         Command::Period(args) => human::period(args),
         Command::Policy(args) => human::policy(args),
         Command::Rename(args) => human::rename(args),

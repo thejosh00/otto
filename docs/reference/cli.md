@@ -556,6 +556,28 @@ Options:
           Print help
 ```
 
+## `otto chat-edits`
+
+```text
+See or set the folders a run's chats may edit — where what you tell a chat gets recorded. Yours to set: refused from a wake or a chat
+
+Usage: otto chat-edits [OPTIONS] <ID> [DIRS]...
+
+Arguments:
+  <ID>
+          The run: its number or name (a unique prefix of the name will do)
+
+  [DIRS]...
+          The folders its chats may edit, replacing any it had. Omit them, and --clear, to see what it has
+
+Options:
+      --clear
+          Take them all away: its chats edit nothing again
+
+  -h, --help
+          Print help
+```
+
 ## `otto check`
 
 ```text

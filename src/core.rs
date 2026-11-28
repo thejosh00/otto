@@ -633,6 +633,9 @@ pub struct RunDetail {
     /// Where this run's wakes start — only when it's worth saying: a directory other than the
     /// configured default, or no directory at all. `None` means "the default", which goes unsaid.
     pub workdir: Option<WorkdirView>,
+    /// The folders a chat about this run may edit (`otto chat-edits`), home-relative; empty when
+    /// its chats edit nothing.
+    pub chat_edits: Vec<String>,
     /// Everything this run's wakes have used.
     pub usage: TokenTotals,
     /// The run in one line, as the list shows it (`story::glance`).
@@ -758,6 +761,7 @@ pub fn run_detail(id: Option<&str>) -> Result<RunDetail, OttoError> {
         last_run: last_run(&dir, &state),
         blocking: blocking(&state, running),
         workdir: workdir_view(&state),
+        chat_edits: crate::chat_edits::read(&state.id).iter().map(|d| crate::changes::home_relative(&d.to_string_lossy())).collect(),
         usage: run_usage(&dir),
         short,
         name: state.display_name(),
@@ -1454,6 +1458,7 @@ pub fn renumber_runs() -> Result<RenumberReport, OttoError> {
         crate::state::locks::repoint(&from, &id);
         // Its approvals on record follow it. One left behind counts for nothing: the person approves again.
         crate::approvals::moved(&from, &id);
+        crate::chat_edits::moved(&from, &id);
         report.renumbered.push(Renumbered { from, id, name });
     }
     Ok(report)
