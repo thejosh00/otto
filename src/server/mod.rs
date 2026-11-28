@@ -1,8 +1,9 @@
 //! `otto serve` — the web UI.
 //!
-//! A view over the run directory, and nothing more: every handler calls the same `core` function
-//! the matching CLI command does, and the server holds no state of its own. Stop it and nothing
-//! about any run changes; runs keep waking under poke, and `otto ls` still answers. So keeping it
+//! A view over the run directory: every handler calls the same `core` function the matching CLI
+//! command does. The one thing it holds rather than reads is the chats open in the page (`chats`),
+//! each an `otto chat` that journals itself and changes no run. Stop it and nothing about any run
+//! changes; runs keep waking under poke, and `otto ls` still answers. So keeping it
 //! running is a convenience, not a correctness matter: `otto service start` has launchd do it (see
 //! `launchd`), and nothing breaks when it is down.
 //!
@@ -11,6 +12,7 @@
 //! network: see [`guard`] for how another website is kept from driving it.
 
 mod assets;
+mod chats;
 mod handlers;
 mod live;
 mod pty;
@@ -38,11 +40,12 @@ pub struct ServeArgs {
 }
 
 /// What every handler can see. `offset` is read before the runtime starts any thread — see
-/// `clock::local_offset`.
+/// `clock::local_offset`. `chats` is the one thing the server holds rather than reads (`chats`).
 #[derive(Clone)]
 pub struct AppState {
     pub port: u16,
     pub offset: time::UtcOffset,
+    pub chats: Arc<chats::Chats>,
 }
 
 pub fn serve(args: ServeArgs) -> Result<(), OttoError> {
@@ -66,10 +69,29 @@ pub fn serve(args: ServeArgs) -> Result<(), OttoError> {
         if args.open {
             let _ = std::process::Command::new("open").arg(&url).spawn();
         }
-        axum::serve(listener, router(AppState { port, offset }))
+        let chats = chats::Chats::new(chats::otto_chat(), chats::Timing::default());
+        chats.keep_reaping();
+        tokio::spawn(end_chats_on_the_way_out(chats.clone()));
+        axum::serve(listener, router(AppState { port, offset, chats }))
             .await
             .map_err(|e| OttoError::usage(format!("the server stopped: {e}")))
     })
+}
+
+/// Ctrl-C, or launchd stopping the service: hang up every live chat and give each the moment it
+/// needs to journal its end, then go. Without this the chats' terminals close under them with the
+/// process, and only `otto chat` itself is told.
+async fn end_chats_on_the_way_out(chats: Arc<chats::Chats>) {
+    use tokio::signal::unix::{signal, SignalKind};
+    let (Ok(mut interrupt), Ok(mut terminate)) = (signal(SignalKind::interrupt()), signal(SignalKind::terminate())) else {
+        return;
+    };
+    tokio::select! {
+        _ = interrupt.recv() => {}
+        _ = terminate.recv() => {}
+    }
+    chats.hang_up_all().await;
+    std::process::exit(0);
 }
 
 pub fn router(state: AppState) -> Router {
@@ -118,6 +140,9 @@ pub fn router(state: AppState) -> Router {
         .route("/runs/{id}/logs", get(handlers::logs))
         .route("/runs/{id}/logs/stream", get(live::logs_stream))
         .route("/runs/{id}/live", get(live::live_stream))
+        .route("/runs/{id}/chat", get(chats::socket))
+        .route("/runs/{id}/chat/end", post(chats::end))
+        .route("/chats", get(chats::list))
         .route("/agent", get(handlers::agent_status))
         .route("/agent/start", post(handlers::agent_start))
         .route("/agent/stop", post(handlers::agent_stop))
@@ -141,6 +166,9 @@ pub fn router(state: AppState) -> Router {
 /// - **Origin**, when a browser sends one on a request that changes anything, must be this page.
 /// - **Content-Type** on a POST must be JSON. A plain HTML form cannot send that, and a script
 ///   on another origin can only send it after a CORS preflight this server never approves.
+/// - **A websocket** is opened with a GET, and no browser applies CORS to one: any page could open
+///   a chat's socket here and type into it. So an upgrade must carry an Origin, and it must be
+///   this page.
 async fn guard(State(state): State<Arc<AppState>>, request: Request, next: Next) -> Response {
     if let Err(why) = check_request(state.port, request.method(), request.headers()) {
         return (StatusCode::FORBIDDEN, Json(ErrorBody { error: why.to_string(), code: 403 })).into_response();
@@ -154,14 +182,20 @@ fn check_request(port: u16, method: &Method, headers: &HeaderMap) -> Result<(), 
     if !ours.iter().any(|o| o == host) {
         return Err("this server only answers to 127.0.0.1 and localhost");
     }
+    let origin = headers.get(header::ORIGIN).map(|o| o.to_str().unwrap_or(""));
+    let from_here = |origin: &str| ours.iter().any(|o| origin == format!("http://{o}"));
+    let upgrade = headers.get(header::UPGRADE).and_then(|u| u.to_str().ok()).is_some_and(|u| u.eq_ignore_ascii_case("websocket"));
+    if upgrade {
+        return match origin {
+            Some(origin) if from_here(origin) => Ok(()),
+            _ => Err("a websocket is opened only from this page"),
+        };
+    }
     if method == Method::GET || method == Method::HEAD {
         return Ok(());
     }
-    if let Some(origin) = headers.get(header::ORIGIN) {
-        let origin = origin.to_str().unwrap_or("");
-        if !ours.iter().any(|o| origin == format!("http://{o}")) {
-            return Err("cross-origin requests are refused");
-        }
+    if origin.is_some_and(|origin| !from_here(origin)) {
+        return Err("cross-origin requests are refused");
     }
     let json = headers
         .get(header::CONTENT_TYPE)
@@ -215,7 +249,7 @@ mod tests {
     const PORT: u16 = 7878;
 
     fn app() -> Router {
-        router(AppState { port: PORT, offset: time::UtcOffset::UTC })
+        router(AppState { port: PORT, offset: time::UtcOffset::UTC, chats: chats::Chats::new(chats::otto_chat(), chats::Timing::default()) })
     }
 
     fn get_req(path: &str) -> axum::http::Request<Body> {
@@ -749,5 +783,27 @@ mod tests {
         // Stopping probes tmux for a session; with none running that is a harmless miss.
         let (status, body) = rt().block_on(send(ours));
         assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// A websocket is a GET no browser applies CORS to, so the guard asks it for this page's Origin
+    /// where it lets any other GET through. `tests/web_chat.rs` opens real ones.
+    #[test]
+    fn a_websocket_opens_only_from_this_page() {
+        let headers = |pairs: &[(&'static str, String)]| {
+            let mut h = HeaderMap::new();
+            h.insert(header::HOST, format!("127.0.0.1:{PORT}").parse().unwrap());
+            for (k, v) in pairs {
+                h.insert(*k, v.parse().unwrap());
+            }
+            h
+        };
+        let upgrade = ("upgrade", "websocket".to_string());
+        let ours = ("origin", format!("http://127.0.0.1:{PORT}"));
+        assert_eq!(check_request(PORT, &Method::GET, &headers(&[upgrade.clone(), ours.clone()])), Ok(()));
+        assert_eq!(check_request(PORT, &Method::GET, &headers(&[("upgrade", "WebSocket".into()), ours.clone()])), Ok(()));
+        assert!(check_request(PORT, &Method::GET, &headers(std::slice::from_ref(&upgrade))).is_err(), "no Origin: not a page of ours");
+        assert!(check_request(PORT, &Method::GET, &headers(&[upgrade.clone(), ("origin", "http://evil.test".into())])).is_err());
+        assert!(check_request(PORT, &Method::GET, &headers(&[upgrade, ("origin", "null".into())])).is_err(), "a sandboxed frame");
+        assert_eq!(check_request(PORT, &Method::GET, &headers(&[])), Ok(()), "any other GET is as it was");
     }
 }
