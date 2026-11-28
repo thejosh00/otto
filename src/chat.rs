@@ -75,6 +75,10 @@ pub struct ChatArgs {
     /// What to ask first. Without one, the chat opens by saying where the run stands. With no
     /// terminal — from a script, or into a file — it is answered once, and the chat ends
     pub question: Option<String>,
+    /// What the person is looking at as they ask — a work item, a change, an inbox item — so that
+    /// "this" in a question has an answer. The web page's chat panel passes the page it opened on
+    #[arg(long, value_name = "WHAT")]
+    pub about: Option<String>,
     /// Print the command the chat would run, and start nothing
     #[arg(long)]
     pub dry_run: bool,
@@ -106,6 +110,7 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
         working: LockLiveness.probe(&id).is_busy(),
         transcripts: wake_transcripts(&dir, &state),
         question: args.question.as_deref(),
+        about: args.about.as_deref().map(str::trim).filter(|a| !a.is_empty()),
         attended,
     };
     let argv = launcher::chat_argv(&state, &launcher_def, &opening.text(), &session, attended);
@@ -162,7 +167,9 @@ fn ended_line(short: &str, notes: &[String], state: &RunState) -> String {
 ///
 /// Ctrl-C is the chat's: the terminal sends SIGINT to its whole foreground group, otto included,
 /// and otto dying there would leave a chat with no end in the journal. So otto ignores it until the
-/// chat exits — from after the spawn, so the chat itself does not inherit the ignore.
+/// chat exits — from after the spawn, so the chat itself does not inherit the ignore. A hang-up is
+/// the same: when the terminal goes — a window closed, or the web page's pty hung up by `otto serve`
+/// — SIGHUP reaches otto too, and otto outlives it to journal the end once the chat has gone.
 fn run_chat(argv: &[String], workdir: Option<&Path>, attended: bool) -> Result<(), OttoError> {
     let mut command = std::process::Command::new(&argv[0]);
     command.args(&argv[1..]);
@@ -173,7 +180,7 @@ fn run_chat(argv: &[String], workdir: Option<&Path>, attended: bool) -> Result<(
         command.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped());
     }
     let mut child = command.spawn().map_err(|e| OttoError::usage(format!("could not start {}: {e}", argv[0])))?;
-    let _quiet = IgnoreInterrupt::new();
+    let _quiet = IgnoreSignals::new();
     if let Some(mut said) = child.stdout.take() {
         std::io::copy(&mut said, &mut std::io::stdout())?;
     }
@@ -184,29 +191,33 @@ fn run_chat(argv: &[String], workdir: Option<&Path>, attended: bool) -> Result<(
     }
 }
 
-/// SIGINT ignored for as long as this lives; whatever it was before, restored after. std has no
-/// signal API, and this is the one call otto needs from one, so it is declared rather than a crate.
-struct IgnoreInterrupt(usize);
+/// SIGINT and SIGHUP ignored for as long as this lives; whatever they were before, restored after.
+/// std has no signal API, and this is the one call otto needs from one, so it is declared rather
+/// than a crate.
+struct IgnoreSignals([(i32, usize); 2]);
 
 extern "C" {
     fn signal(signum: i32, handler: usize) -> usize;
 }
 
+const SIGHUP: i32 = 1;
 const SIGINT: i32 = 2;
 const SIG_IGN: usize = 1;
 
-impl IgnoreInterrupt {
+impl IgnoreSignals {
     fn new() -> Self {
         // SAFETY: `signal` with SIG_IGN installs no handler code; it only sets a disposition.
-        IgnoreInterrupt(unsafe { signal(SIGINT, SIG_IGN) })
+        IgnoreSignals([SIGINT, SIGHUP].map(|sig| (sig, unsafe { signal(sig, SIG_IGN) })))
     }
 }
 
-impl Drop for IgnoreInterrupt {
+impl Drop for IgnoreSignals {
     fn drop(&mut self) {
-        // SAFETY: puts back exactly the disposition `new` replaced.
-        unsafe {
-            signal(SIGINT, self.0);
+        for (sig, was) in self.0 {
+            // SAFETY: puts back exactly the disposition `new` replaced.
+            unsafe {
+                signal(sig, was);
+            }
         }
     }
 }
@@ -295,6 +306,8 @@ struct Opening<'a> {
     working: bool,
     transcripts: Transcripts,
     question: Option<&'a str>,
+    /// What the person is looking at, when the web page said (`--about`).
+    about: Option<&'a str>,
     attended: bool,
 }
 
@@ -337,6 +350,12 @@ impl Opening<'_> {
             }
         }
         out.push('\n');
+        if let Some(about) = self.about {
+            out.push_str(&format!(
+                "The person is looking at {about} in otto's web page as they talk to you: when they say \"this\" \
+                 without saying what, that is what they mean.\n\n"
+            ));
+        }
         match (self.question, self.attended) {
             (Some(q), true) => out.push_str(&format!("The person asks:\n\n{}\n", q.trim())),
             (Some(q), false) => out.push_str(&format!(
@@ -479,8 +498,31 @@ mod tests {
             working: false,
             transcripts: Transcripts::default(),
             question: None,
+            about: None,
             attended: true,
         }
+    }
+
+    /// What the web page was showing comes before the question, so "this" in it is that.
+    #[test]
+    fn the_opening_says_what_the_person_is_looking_at() {
+        let state = crate::state::test_run_state("7");
+        let dir = Path::new("/r");
+        let plain = opening(&state, dir).text();
+        assert!(!plain.contains("is looking at"), "{plain}");
+        let about = Opening { about: Some("change 7/2"), question: Some("Why is this so big?"), ..opening(&state, dir) };
+        let text = about.text();
+        let looking = text.find("The person is looking at change 7/2").expect(&text);
+        assert!(looking < text.find("The person asks:").unwrap(), "{text}");
+    }
+
+    #[test]
+    fn about_is_an_option_of_chat() {
+        let crate::cli::Command::Chat(args) = Cli::parse_from(["otto", "chat", "7", "--about", "work item build"]).command else {
+            panic!("not a chat");
+        };
+        assert_eq!(args.about.as_deref(), Some("work item build"));
+        assert_eq!(args.question, None, "--about is not the question");
     }
 
     /// The opening names the run and its directory, and with no question asks for where it stands.

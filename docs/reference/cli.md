@@ -546,6 +546,9 @@ Arguments:
           What to ask first. Without one, the chat opens by saying where the run stands. With no terminal — from a script, or into a file — it is answered once, and the chat ends
 
 Options:
+      --about <WHAT>
+          What the person is looking at as they ask — a work item, a change, an inbox item — so that "this" in a question has an answer. The web page's chat panel passes the page it opened on
+
       --dry-run
           Print the command the chat would run, and start nothing
 
