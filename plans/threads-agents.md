@@ -1,6 +1,6 @@
 # Plan: threads as otto agents, and chats that can record
 
-**Status:** not started. Built interactively, outside `otto-driver`; `plans/v3.md` carries on beside it.
+**Status:** steps 8 and 9 checked (2026-11-28); nothing built yet. Built interactively, outside `otto-driver`; `plans/v3.md` carries on beside it.
 **Written:** 2026-11-28, against `bfb3a32`. Line references go stale, so check them against the code.
 
 ## What and why
@@ -109,16 +109,22 @@ at least once, so the next wake can't miss it.
 period: `otto period <run> 1h --on mon-fri --hours 9-18`. A wake due outside them waits for the
 next opening.
 
-### 8. Reading Slack, never posting — none, verify
+### 8. Reading Slack, never posting — none, checked
 
-Already configuration: `--deny-tool` with the Slack server's posting tools (`mcp__slack__…`), and
-`otto state publish --draft-file` for a reply the person sends themselves. Verify deny rules match
-MCP tool names in a real wake.
+Already configuration: `--deny-tool` with the Slack server's posting tools, and `otto state publish
+--draft-file` for a reply the person sends themselves. **Checked:** `--deny-tool
+mcp__blender__execute_blender_code` left exactly that tool out of a real wake's tool list (its
+transcript, not its word). The names to deny depend on how Slack is connected at work: a local
+server's tools are `mcp__<server>__<tool>`, a claude.ai connector's `mcp__claude_ai_<Name>__<tool>`
+— list them from a wake there before writing the deny list.
 
-### 9. MCP in a non-print wake — verify
+### 9. MCP in a non-print wake — checked
 
-DESIGN.md §19 question 5 is still open: whether a wake started without `-p` sees the person's MCP
-servers. Check it with the Slack server on a real thread run before relying on it. (Sandboxed runs
+**Checked (DESIGN.md §19, question 5):** an unsandboxed wake started without `-p` had the person's
+user-scope MCP server (Blender) and their claude.ai connectors, and its one call went through. So
+Slack reaches a thread run if it is configured at user scope, or as a claude.ai connector — not if
+it is configured for one project directory other than the thread's. Confirm on the work machine
+with the first thread run. (Sandboxed runs
 get none today, `docs/guides/sandboxing.md`; sandboxing threads later needs a per-run MCP
 allowlist passed with `--mcp-config`, and network for it.)
 

@@ -1164,6 +1164,11 @@ for a session that outlived a wake:
    step 1, before building on it. Dropping `-p` reopens this rather than closing it: the flags
    above are not print-only, but nothing has yet confirmed the whole set behaves identically
    without `-p`.
+   **MCP, answered for an unsandboxed wake (2026-11-28):** a real wake in a scratch home had the
+   person's user-scope MCP server (Blender) and their claude.ai connectors, and called one; a
+   `--deny-tool mcp__blender__execute_blender_code` left that one tool out of the list it was given,
+   checked in its transcript rather than taken from its report. A sandboxed wake still has none
+   (`docs/guides/sandboxing.md`). Skill and Agent remain unchecked here.
    Also worth watching on the first real wakes: sessions now persist (`--no-session-persistence`
    was print-only too). otto never resumes one, so this is disk rather than correctness — but the
    harness prefix is meant to be byte-stable for cache reuse, and `cacheRead` in the journal is the
