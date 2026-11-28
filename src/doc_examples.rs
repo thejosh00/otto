@@ -255,7 +255,7 @@ fn one_of_each_event() -> Vec<crate::event::Event> {
         },
         SpawnAbandoned { reason: s() },
         CheckRan { result: CheckResult::Changed, consecutive_no_change: 0, note: some() },
-        NoteAdded { note: s(), file: s(), standing: false },
+        NoteAdded { note: s(), file: s(), standing: false, from: None, about: None },
         NotesDelivered { notes: vec![], wake: 1 },
         NotesGivenLate { notes: vec![], wake: 1, before: String::new() },
         FeedbackSent { report: 1, wake: Some(1) },

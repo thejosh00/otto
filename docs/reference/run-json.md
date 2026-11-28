@@ -95,6 +95,9 @@ and anything else is `reviewer`.
 A note about an output (`otto note --about key`) is `from: person`, `about: {kind: output, ref: key,
 version: n}`; a reply to a message is `from: person`, `about: {kind: message, ref: id}`.
 
+The journal's `note-added` line carries the same `from` and `about`, so they outlive the note's
+delivery (it leaves `run.json`; the journal keeps it). An older line has neither.
+
 ### `check`
 
 | Field | Meaning |

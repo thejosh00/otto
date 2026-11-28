@@ -416,6 +416,13 @@ pub enum Event {
         note: String,
         file: String,
         standing: bool,
+        /// Who it is from, as on the note in `run.json`. Absent on a person's own note, and on
+        /// every line written before this was (plan v3 2.3).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<crate::state::NoteFrom>,
+        /// What it is about, as on the note in `run.json`. Absent likewise.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        about: Option<crate::state::NoteAbout>,
     },
     /// A completed wake carried these one-off notes, so they are delivered and leave `run.json`.
     NotesDelivered {

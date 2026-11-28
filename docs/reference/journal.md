@@ -74,7 +74,7 @@ the budget events, the wake failures, and `usage-limited`.
 | `gate-opened` | `gate`, `slug`, `phase`, `expiresAt`, `about` | A wake asked a question; `about` is the output version it asks about (`design@1`), whose review the answer becomes |
 | `gate-closed` | `gate`, `slug`, `askedAt`, `answeredAt`, `answer` | It was answered; `answer` is verbatim |
 | `gate-expired` | same | Its expiry passed with no answer |
-| `note-added` | `note`, `file`, `standing` | A person left a note |
+| `note-added` | `note`, `file`, `standing`, `from`, `about` | A note was left for the run. `from` and `about` are as on the note in [`run.json`](run-json.md#notes-from-and-about) — who it is from (`otto`, `reviewer`, `ci`, `person`) and the change, output or message it is about. Both are absent on a person's own plain note, and on every line written before otto recorded them |
 | `notes-delivered` | `notes`, `wake` | A completed wake carried these one-off notes |
 | `feedback-sent` | `report`, `wake` | The wake told otto's maker what got in its way; the report is number `report` in `$OTTO_HOME/feedback.jsonl` (`otto feedback`) |
 | `feedback-assigned` | `report`, `wake` | The driver run filed work in the queue (`otto state assign`); the item is number `report` in `$OTTO_HOME/feedback.jsonl` |

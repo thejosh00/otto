@@ -10,7 +10,7 @@
 //! views that come first.
 
 use crate::clock::Timestamp;
-use crate::state::{RunState, Status};
+use crate::state::{NoteAbout, NoteAboutKind, NoteFrom, RunState, Status};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
@@ -427,16 +427,39 @@ pub fn lately(dir: &Path, limit: usize) -> Vec<Happening> {
             "note-added" => {
                 let text = str_of(v, "file").and_then(|f| crate::state::links::read_to_string(dir.join(f)).ok()).unwrap_or_default();
                 let standing = v.get("standing").and_then(Value::as_bool).unwrap_or(false);
+                // Who it is from and what it is about, when the line says (plan v3 2.3). A value this
+                // otto can't read is as good as absent: the text's opening line decides, as it
+                // always has for lines written before these were.
+                let from = v.get("from").and_then(|f| serde_json::from_value::<NoteFrom>(f.clone()).ok());
+                let about = v.get("about").and_then(|a| serde_json::from_value::<NoteAbout>(a.clone()).ok());
+                let words = || text.split_once("\n\n").map(|(_, w)| w).unwrap_or("");
+                if let Some(about) = about {
+                    match about.kind {
+                        // Told elsewhere: a reply by `message-done`, a change's note by `change-moved`.
+                        NoteAboutKind::Message | NoteAboutKind::Change => None,
+                        NoteAboutKind::Output => {
+                            let key = about.reference.as_str();
+                            let title = made.get(key).cloned().unwrap_or_else(|| key.to_string());
+                            about_output("you", format!("You said about “{title}”: {}", first_line(words(), 200)), key)
+                        }
+                    }
                 // A reply to a message is told as the reply, by `message-done`.
                 // Likewise what was said about a change is told by `change-moved`.
-                if text.starts_with("In reply to message ") || text.starts_with(crate::changes::NOTE_ABOUT_PREFIX) {
+                } else if text.starts_with("In reply to message ") || text.starts_with(crate::changes::NOTE_ABOUT_PREFIX) {
                     None
                 } else if let Some(rest) = text.strip_prefix(crate::outputs::NOTE_ABOUT_PREFIX) {
                     // "About output design@2, \"Design\":\n\n<words>"
                     let key = rest.split('@').next().unwrap_or("");
-                    let words = rest.split_once("\n\n").map(|(_, w)| w).unwrap_or("");
                     let title = made.get(key).cloned().unwrap_or_else(|| key.to_string());
-                    about_output("you", format!("You said about “{title}”: {}", first_line(words, 200)), key)
+                    about_output("you", format!("You said about “{title}”: {}", first_line(words(), 200)), key)
+                } else if let Some(who @ (NoteFrom::Otto | NoteFrom::Reviewer | NoteFrom::Ci)) = from {
+                    // Not the person's words, so not "You said": whose they are, as news.
+                    let who = match who {
+                        NoteFrom::Otto => "otto",
+                        NoteFrom::Reviewer => "A reviewer",
+                        _ => "CI",
+                    };
+                    happening("status", format!("{who} said: {}", first_line(&text, 200)))
                 } else {
                     happening("you", format!("{}: {}", if standing { "You pinned" } else { "You said" }, first_line(&text, 200)))
                 }

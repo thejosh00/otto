@@ -90,11 +90,11 @@ pub(crate) fn add_in(path: &Path, state: &mut RunState, text: &str, standing: bo
     crate::state::write_atomic(&path.join(&file), &format!("{text}\n"))?;
     let note = Note { id: id.clone(), file: file.clone(), standing, added_at: Timestamp::now(), given_to_wake: None,
         from: origin.from,
-        about: origin.about,
+        about: origin.about.clone(),
         extra: Default::default(),
     };
     state.notes.push(note.clone());
-    crate::event::record(path, &Event::NoteAdded { note: id, file, standing })?;
+    crate::event::record(path, &Event::NoteAdded { note: id, file, standing, from: origin.from, about: origin.about })?;
     Ok(note)
 }
 
