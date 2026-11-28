@@ -31,7 +31,7 @@ use crate::event::Event;
 use crate::liveness::{Liveness, LockLiveness};
 use crate::state::RunState;
 use crate::wake::{launcher, transcript};
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 /// What a chat session is told it is. Embedded, like the wake's harness (`wake::prompt`).
@@ -102,6 +102,8 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
     }
     let launcher_def = resolved?;
     let started = Timestamp::now();
+    let edits = crate::chat_edits::read(&id);
+    let edits_shown: Vec<String> = edits.iter().map(|d| crate::changes::home_relative(&d.to_string_lossy())).collect();
     let session = transcript::chat_session_id(&id, &started.to_string());
     let opening = Opening {
         state: &state,
@@ -111,9 +113,10 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
         transcripts: wake_transcripts(&dir, &state),
         question: args.question.as_deref(),
         about: args.about.as_deref().map(str::trim).filter(|a| !a.is_empty()),
+        edits: &edits_shown,
         attended,
     };
-    let argv = launcher::chat_argv(&state, &launcher_def, &opening.text(), &session, attended);
+    let argv = launcher::chat_argv(&state, &launcher_def, &opening.text(), &session, attended, &edits);
     if args.dry_run {
         println!("{}", crate::wake::dry_run_line(&argv));
         return Ok(());
@@ -144,7 +147,9 @@ pub fn chat(args: ChatArgs) -> Result<(), OttoError> {
     )?;
     ran?;
     if attended {
-        eprintln!("\n{}", ended_line(&crate::paths::short_id(&id), &notes, &state));
+        // The terminal may be gone — a window closed, End chat in the page — and that is no
+        // failure: the end is already journaled.
+        let _ = writeln!(std::io::stderr(), "\n{}", ended_line(&crate::paths::short_id(&id), &notes, &state));
     }
     Ok(())
 }
@@ -316,6 +321,8 @@ struct Opening<'a> {
     question: Option<&'a str>,
     /// What the person is looking at, when the web page said (`--about`).
     about: Option<&'a str>,
+    /// The folders this chat may edit (`otto chat-edits`), as the person would write them.
+    edits: &'a [String],
     attended: bool,
 }
 
@@ -358,6 +365,14 @@ impl Opening<'_> {
             }
         }
         out.push('\n');
+        if !self.edits.is_empty() {
+            out.push_str(&format!(
+                "This chat may edit {}: the person has named {} for what they tell you to be recorded in. \
+                 Follow your instructions for a chat that may edit. Edits anywhere else are refused.\n\n",
+                self.edits.iter().map(|e| format!("`{e}`")).collect::<Vec<_>>().join(", "),
+                if self.edits.len() == 1 { "it" } else { "them" }
+            ));
+        }
         if let Some(about) = self.about {
             out.push_str(&format!(
                 "The person is looking at {about} in otto's web page as they talk to you: when they say \"this\" \
@@ -507,8 +522,21 @@ mod tests {
             transcripts: Transcripts::default(),
             question: None,
             about: None,
+            edits: &[],
             attended: true,
         }
+    }
+
+    /// A chat that may edit is told where, and to follow its instructions for that.
+    #[test]
+    fn the_opening_names_the_folders_a_chat_may_edit() {
+        let state = crate::state::test_run_state("7");
+        let plain = opening(&state, Path::new("/r")).text();
+        assert!(!plain.contains("may edit"), "{plain}");
+        let folders = vec!["~/workspace/threads/srx".to_string()];
+        let text = Opening { edits: &folders, ..opening(&state, Path::new("/r")) }.text();
+        assert!(text.contains("This chat may edit `~/workspace/threads/srx`"), "{text}");
+        assert!(text.contains("Edits anywhere else are refused"), "{text}");
     }
 
     /// What the web page was showing comes before the question, so "this" in it is that.

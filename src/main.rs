@@ -109,6 +109,7 @@ fn run(command: Command) -> Result<(), OttoError> {
         Command::Feedback(args) => human::feedback(args),
         Command::Attach(args) => human::attach(args),
         Command::ChatEdits(args) => chat_edits::chat_edits(args),
+        Command::ChatGuard => chat_edits::guard(),
         Command::Period(args) => human::period(args),
         Command::Policy(args) => human::policy(args),
         Command::Rename(args) => human::rename(args),

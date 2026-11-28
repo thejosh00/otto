@@ -1,6 +1,6 @@
 # Plan: threads as otto agents, and chats that can record
 
-**Status:** steps 8 and 9 checked (2026-11-28); nothing built yet. Built interactively, outside `otto-driver`; `plans/v3.md` carries on beside it.
+**Status:** steps 1 and 2 built, 8 and 9 checked (2026-11-28). Built interactively, outside `otto-driver`; `plans/v3.md` carries on beside it.
 **Written:** 2026-11-28, against `bfb3a32`. Line references go stale, so check them against the code.
 
 ## What and why
@@ -55,6 +55,15 @@ Each step is one or more commits to `main`, tests passing, pushed after rebasing
 - Paths stored canonical. `otto show` and the agent page say what a chat may edit.
 
 ### 2. The chat may edit there and nowhere else — M
+
+**Built differently, and checked against real claude (2026-11-28):** no allow rules. The hook
+alone answers: `allow` (JSON) inside the folder, so an edit there doesn't ask, in a chat with a
+terminal or without; a deny on stderr with exit 2 outside, which claude passes to the model word
+for word. If the hook can't answer, claude's own check stands, which in `manual` mode asks the
+person. `.git` anywhere is refused too. And End chat had to change: mid-conversation, claude
+ignores SIGHUP and SIGTERM while its terminal stays open, so a hang-up now revokes the terminal
+first (`revoke(2)`), as closing a window does — the page's End chat ended a real chat in 3s with
+`chat-ended` journaled.
 
 - `launcher::chat_argv`, for a run with a folder:
   - Edit, Write and NotebookEdit come off `REFUSED_TOOLS` for it; `Edit(//<dir>/**)` and

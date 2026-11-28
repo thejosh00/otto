@@ -182,13 +182,26 @@ fn session_env(session_id: &str) -> String {
 /// `otto note`; Edit and Write are refused outright, because the work is the wakes' to do; and
 /// `CHAT_ENV` is set, so the `otto state` writes a wake makes are refused too. A wake's own
 /// pre-approvals are not passed: they were decided for nobody being there.
-pub fn chat_argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str, attended: bool) -> Vec<String> {
+///
+/// `edits` are the folders the person has let this run's chats edit (`chat_edits`). With any,
+/// Edit and Write aren't refused: each passes `otto chat-guard` first, a PreToolUse hook that
+/// allows an edit inside them without asking and refuses the rest. Should the hook fail to answer,
+/// claude's own check stands, and in `manual` mode that asks the person — or, with nobody there,
+/// refuses.
+pub fn chat_argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session_id: &str, attended: bool, edits: &[std::path::PathBuf]) -> Vec<String> {
     let mut argv = launch(state, launcher, &[format!("{}={}", crate::chat::CHAT_ENV, state.id), session_env(session_id)], prompt);
+    for dir in edits {
+        let dir = dir.display().to_string();
+        // Often the run's working directory already, which `launch` has told claude about.
+        if !argv.windows(2).any(|w| w[0] == "--add-dir" && w[1] == dir) {
+            argv.extend(["--add-dir".to_string(), dir]);
+        }
+    }
     let mut allowed: Vec<&str> = crate::chat::READS.to_vec();
     if !attended {
         allowed.push(crate::chat::UNATTENDED_NOTE);
     }
-    let mut refused: Vec<String> = crate::chat::REFUSED_TOOLS.iter().map(|t| t.to_string()).collect();
+    let mut refused: Vec<String> = if edits.is_empty() { crate::chat::REFUSED_TOOLS.iter().map(|t| t.to_string()).collect() } else { vec![] };
     for tool in &state.permission.disallowed_tools {
         if !refused.contains(tool) {
             refused.push(tool.clone());
@@ -203,9 +216,14 @@ pub fn chat_argv(state: &RunState, launcher: &LauncherDef, prompt: &str, session
         crate::chat::HARNESS.to_string(),
         "--allowed-tools".to_string(),
         allowed.join(","),
-        "--disallowed-tools".to_string(),
-        refused.join(","),
     ]);
+    if !refused.is_empty() {
+        argv.extend(["--disallowed-tools".to_string(), refused.join(",")]);
+    }
+    if !edits.is_empty() {
+        let otto = std::env::current_exe().unwrap_or_else(|_| "otto".into());
+        argv.extend(["--settings".to_string(), crate::chat_edits::guard_settings(&otto)]);
+    }
     argv
 }
 
@@ -489,7 +507,7 @@ mod tests {
         assert!(argv.contains(&"OTTO_RUN_ID=r1".to_string()), "{argv:?}");
         // The tail only: other tests move OTTO_HOME while this one runs.
         assert!(argv.iter().any(|w| w.starts_with("OTTO_RUN_DIR=") && w.ends_with("/runs/r1")), "{argv:?}");
-        let chat = chat_argv(&state(), &claude(), "about r1", SID, true);
+        let chat = chat_argv(&state(), &claude(), "about r1", SID, true, &[]);
         assert!(!chat.iter().any(|w| w.starts_with("OTTO_RUN_ID=")), "a chat is not a wake: {chat:?}");
     }
 
@@ -498,7 +516,7 @@ mod tests {
     /// the same id claude is given.
     #[test]
     fn a_wake_and_a_chat_tell_the_launcher_their_session() {
-        for line in [argv(&state(), &nono(), "wake r1", SID), chat_argv(&state(), &nono(), "about r1", SID, true)] {
+        for line in [argv(&state(), &nono(), "wake r1", SID), chat_argv(&state(), &nono(), "about r1", SID, true, &[])] {
             let set = line.iter().position(|w| *w == format!("OTTO_SESSION_ID={SID}")).unwrap_or_else(|| panic!("{}", joined(&line)));
             let cleared = line.iter().rposition(|a| a == "-u").unwrap();
             let launcher = line.iter().position(|a| a == "nono").unwrap();
@@ -527,7 +545,7 @@ mod tests {
         for launcher in all() {
             let mut s = state();
             s.launcher.repos = vec!["/w/a".into()];
-            let argv = chat_argv(&s, &launcher, "about r1", SID, true);
+            let argv = chat_argv(&s, &launcher, "about r1", SID, true, &[]);
             let name = &launcher.name;
             let prompt = argv.iter().position(|a| a == "about r1").expect("the prompt must be there");
             for variadic in ["--add-dir", "--allowed-tools", "--disallowed-tools"] {
@@ -552,7 +570,7 @@ mod tests {
         let mut s = state();
         s.permission.allowed_tools = vec!["Bash".into()];
         s.permission.disallowed_tools = vec!["WebFetch".into(), "Write".into()];
-        let argv = chat_argv(&s, &claude(), "about r1", SID, true);
+        let argv = chat_argv(&s, &claude(), "about r1", SID, true, &[]);
         assert_ne!(argv[0], "caffeinate", "a person is there; nothing needs keeping awake");
         let line = joined(&argv);
         assert!(line.contains("--permission-mode manual"), "{line}");
@@ -565,11 +583,37 @@ mod tests {
         assert_eq!(argv[idx + 1], crate::chat::HARNESS, "a chat is told it is a chat, not a wake");
     }
 
+    /// A run whose chats may edit a folder: Edit and Write aren't refused, each passes the guard
+    /// hook first, the folder is one claude is told about, and the rest stays as it was — manual
+    /// mode, otto's reads only, and whatever the run itself refuses.
+    #[test]
+    fn a_chat_with_folders_edits_through_the_guard() {
+        let mut s = state();
+        s.permission.disallowed_tools = vec!["WebFetch".into()];
+        let folder = std::path::PathBuf::from("/work/threads/srx");
+        let argv = chat_argv(&s, &claude(), "about r1", SID, true, std::slice::from_ref(&folder));
+        let line = joined(&argv);
+        assert!(line.contains("--disallowed-tools WebFetch"), "the run's own refusals stand: {line}");
+        assert!(!line.contains("Edit,Write"), "{line}");
+        assert!(line.contains("--add-dir /work/threads/srx"), "{line}");
+        assert!(line.contains("--permission-mode manual"), "{line}");
+        let idx = argv.iter().position(|a| a == "--settings").expect("the guard is passed");
+        let settings: serde_json::Value = serde_json::from_str(&argv[idx + 1]).unwrap();
+        assert!(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap().ends_with("' chat-guard"));
+        let prompt = argv.iter().position(|a| a == "about r1").unwrap();
+        let add_dir = argv.iter().rposition(|a| a == "--add-dir").unwrap();
+        assert!(prompt < add_dir, "the prompt stays before every --add-dir");
+        // Without folders, nothing of it.
+        let plain = chat_argv(&s, &claude(), "about r1", SID, true, &[]);
+        assert!(!plain.iter().any(|a| a == "--settings"));
+        assert!(joined(&plain).contains("--disallowed-tools Edit,Write,NotebookEdit,WebFetch"));
+    }
+
     /// With no terminal nobody can approve a note, so the chat may leave one — the harness says only
     /// when the question asks.
     #[test]
     fn a_chat_with_no_terminal_may_leave_a_note_unasked() {
-        let argv = chat_argv(&state(), &claude(), "about r1", SID, false);
+        let argv = chat_argv(&state(), &claude(), "about r1", SID, false, &[]);
         let idx = argv.iter().position(|a| a == "--allowed-tools").unwrap();
         assert!(argv[idx + 1].ends_with(",Bash(otto note *)"), "{}", argv[idx + 1]);
     }
@@ -578,7 +622,7 @@ mod tests {
     /// and before the launcher, so it reaches claude and every `otto state` claude runs.
     #[test]
     fn a_chat_is_marked_after_the_guard_and_before_the_launcher() {
-        let chat = chat_argv(&state(), &nono(), "about r1", SID, true);
+        let chat = chat_argv(&state(), &nono(), "about r1", SID, true, &[]);
         let set = chat.iter().position(|a| a == "OTTO_CHAT=r1").expect("the chat is marked with its run");
         let cleared = chat.iter().rposition(|a| a == "-u").unwrap();
         let launcher = chat.iter().position(|a| a == "nono").unwrap();

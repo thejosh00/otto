@@ -205,6 +205,122 @@ pub fn chat_edits(args: ChatEditsArgs) -> Result<(), OttoError> {
     Ok(())
 }
 
+// ----- the guard: what claude runs before every edit in such a chat
+
+/// The tools that change a file, and so pass the guard first.
+pub const EDIT_TOOLS: &str = "Edit|Write|MultiEdit|NotebookEdit";
+
+/// The `--settings` a chat with folders is started with: the guard, as a PreToolUse hook on every
+/// tool in [`EDIT_TOOLS`]. claude merges it with the person's own settings, hooks included.
+pub fn guard_settings(otto: &Path) -> String {
+    let command = format!("{} chat-guard", shell_quote(&otto.to_string_lossy()));
+    serde_json::json!({
+        "hooks": { "PreToolUse": [ { "matcher": EDIT_TOOLS, "hooks": [ { "type": "command", "command": command } ] } ] }
+    })
+    .to_string()
+}
+
+/// One shell word: claude runs a hook's command through the shell.
+fn shell_quote(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Inside a folder the chat may edit.
+    Allow(String),
+    Deny(String),
+}
+
+/// Whether the edit claude is about to make — `input` is the PreToolUse hook's JSON — lands inside
+/// one of `folders`, the chat's. Anything unclear is a no: a path with `..` in it, one that is or
+/// passes through a link leading out, anything under a `.git`.
+pub fn judge(input: &str, folders: &[PathBuf]) -> Verdict {
+    let Ok(call) = serde_json::from_str::<serde_json::Value>(input) else {
+        return Verdict::Deny("the guard couldn't read the tool call".to_string());
+    };
+    let tool = call["tool_name"].as_str().unwrap_or("?");
+    let Some(file) = call["tool_input"]["file_path"].as_str().or_else(|| call["tool_input"]["notebook_path"].as_str()) else {
+        return Verdict::Deny(format!("{tool} names no file the guard can check"));
+    };
+    if folders.is_empty() {
+        return Verdict::Deny("this chat may edit nothing: the person hasn't named a folder for it (`otto chat-edits`)".to_string());
+    }
+    let named = Path::new(file);
+    let absolute = if named.is_absolute() {
+        named.to_path_buf()
+    } else {
+        match call["cwd"].as_str() {
+            Some(cwd) => Path::new(cwd).join(named),
+            None => return Verdict::Deny(format!("{file} is relative and the guard wasn't told where from")),
+        }
+    };
+    let allowed = folders.iter().map(|f| crate::changes::home_relative(&f.to_string_lossy())).collect::<Vec<_>>().join(", ");
+    let deny = |why: String| Verdict::Deny(format!("{why}. This chat may edit only inside {allowed}; anything else is a note for the run"));
+    if absolute.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return deny(format!("{file} has `..` in it"));
+    }
+    let resolved = match resolve(&absolute) {
+        Ok(path) => path,
+        Err(why) => return deny(format!("{file}: {why}")),
+    };
+    if resolved.components().any(|c| c.as_os_str() == ".git") {
+        return deny(format!("{file} is inside a `.git`, whose hooks and config would run later"));
+    }
+    match folders.iter().find(|f| resolved.starts_with(f)) {
+        Some(folder) => Verdict::Allow(format!("inside {}, which this chat may edit", crate::changes::home_relative(&folder.to_string_lossy()))),
+        None => deny(format!("{file} is elsewhere")),
+    }
+}
+
+/// Where `path` really is: its longest existing part canonical — every link on the way followed —
+/// and the rest, not yet made, after it. A file that is itself a link is refused: what it points
+/// at is the file that would change.
+fn resolve(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path;
+    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(existing) {
+            Ok(meta) => {
+                if rest.is_empty() && meta.file_type().is_symlink() {
+                    return Err("it is a link".to_string());
+                }
+                let mut real = existing.canonicalize().map_err(|e| e.to_string())?;
+                for part in rest.iter().rev() {
+                    real.push(part);
+                }
+                return Ok(real);
+            }
+            Err(_) => match (existing.parent(), existing.file_name()) {
+                (Some(parent), Some(name)) => {
+                    rest.push(name);
+                    existing = parent;
+                }
+                _ => return Err("no part of it exists".to_string()),
+            },
+        }
+    }
+}
+
+/// `otto chat-guard`: the PreToolUse hook. The tool call on stdin; `allow` on stdout, or the
+/// reason on stderr and exit 2, claude's way for a hook to block a call. The chat's run comes from
+/// `OTTO_CHAT`, so outside a chat there are no folders and every edit is refused.
+pub fn guard() -> Result<(), OttoError> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let folders = std::env::var(crate::chat::CHAT_ENV).ok().filter(|r| !r.is_empty()).map(|run| read(&run)).unwrap_or_default();
+    match judge(&input, &folders) {
+        Verdict::Allow(why) => {
+            println!(
+                "{}",
+                serde_json::json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": why } })
+            );
+            Ok(())
+        }
+        Verdict::Deny(why) => Err(OttoError::new(why, 2)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +433,72 @@ mod tests {
             assert!(path(bad).is_err(), "{bad:?}");
             assert!(read(bad).is_empty());
         }
+    }
+
+    fn call(tool: &str, file: &str, cwd: &str) -> String {
+        let key = if tool == "NotebookEdit" { "notebook_path" } else { "file_path" };
+        serde_json::json!({ "tool_name": tool, "tool_input": { key: file }, "cwd": cwd }).to_string()
+    }
+
+    fn allowed(v: &Verdict) -> bool {
+        matches!(v, Verdict::Allow(_))
+    }
+
+    #[test]
+    fn the_guard_allows_inside_the_folder_only() {
+        let work = Work::new();
+        let thread = work.folder("thread").canonicalize().unwrap();
+        let other = work.folder("other").canonicalize().unwrap();
+        let folders = vec![thread.clone()];
+        let at = |p: &Path| p.display().to_string();
+        assert!(allowed(&judge(&call("Edit", &at(&thread.join("SUMMARY.md")), "/"), &folders)));
+        assert!(allowed(&judge(&call("Write", &at(&thread.join("new/deeper/log.md")), "/"), &folders)), "a file not made yet, in folders not made yet");
+        assert!(allowed(&judge(&call("NotebookEdit", &at(&thread.join("n.ipynb")), "/"), &folders)));
+        assert!(allowed(&judge(&call("Write", "log.md", &at(&thread)), &folders)), "relative to where claude is");
+        let outside = judge(&call("Write", &at(&other.join("x.md")), "/"), &folders);
+        assert!(matches!(&outside, Verdict::Deny(why) if why.contains("is elsewhere. This chat may edit only inside") && why.contains("note")), "{outside:?}");
+        assert!(!allowed(&judge(&call("Write", "x.md", &at(&other)), &folders)));
+        assert!(!allowed(&judge(&call("Edit", &at(&thread.join("../other/x.md")), "/"), &folders)), "..");
+        assert!(!allowed(&judge(&call("Edit", &at(&thread.join(".git/hooks/pre-commit")), "/"), &folders)), ".git");
+        // A folder named like the thread but beside it is not inside it.
+        let sibling = work.folder("thread-b").canonicalize().unwrap();
+        assert!(!allowed(&judge(&call("Write", &at(&sibling.join("x")), "/"), &folders)));
+    }
+
+    #[test]
+    fn the_guard_does_not_follow_a_link_out() {
+        let work = Work::new();
+        let thread = work.folder("thread").canonicalize().unwrap();
+        let other = work.folder("other").canonicalize().unwrap();
+        std::fs::write(other.join("secret.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&other, thread.join("door")).unwrap();
+        std::os::unix::fs::symlink(other.join("secret.md"), thread.join("file-link.md")).unwrap();
+        let folders = vec![thread.clone()];
+        let at = |p: &Path| p.display().to_string();
+        assert!(!allowed(&judge(&call("Write", &at(&thread.join("door/secret.md")), "/"), &folders)), "through a linked folder");
+        assert!(!allowed(&judge(&call("Write", &at(&thread.join("door/new.md")), "/"), &folders)), "a new file through it");
+        let link = judge(&call("Edit", &at(&thread.join("file-link.md")), "/"), &folders);
+        assert!(matches!(&link, Verdict::Deny(why) if why.contains("link")), "{link:?}");
+    }
+
+    #[test]
+    fn the_guard_refuses_what_it_cannot_tell() {
+        let work = Work::new();
+        let thread = work.folder("thread").canonicalize().unwrap();
+        let file = thread.join("x.md").display().to_string();
+        let folders = std::slice::from_ref(&thread);
+        assert!(!allowed(&judge("not json", folders)));
+        assert!(!allowed(&judge(r#"{"tool_name":"Edit","tool_input":{}}"#, folders)), "no file named");
+        assert!(!allowed(&judge(&call("Write", "x.md", "/").replace(r#","cwd":"/""#, ""), folders)), "relative, nowhere to resolve it");
+        let none = judge(&call("Write", &file, "/"), &[]);
+        assert!(matches!(&none, Verdict::Deny(why) if why.contains("otto chat-edits")), "{none:?}");
+    }
+
+    #[test]
+    fn the_settings_hook_every_edit_tool_on_the_guard() {
+        let settings: serde_json::Value = serde_json::from_str(&guard_settings(Path::new("/opt/o tto/otto"))).unwrap();
+        let hook = &settings["hooks"]["PreToolUse"][0];
+        assert_eq!(hook["matcher"], EDIT_TOOLS);
+        assert_eq!(hook["hooks"][0]["command"], "'/opt/o tto/otto' chat-guard");
     }
 }

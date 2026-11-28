@@ -40,6 +40,9 @@ pub enum Command {
     /// See or set the folders a run's chats may edit — where what you tell a chat gets recorded.
     /// Yours to set: refused from a wake or a chat.
     ChatEdits(crate::chat_edits::ChatEditsArgs),
+    /// The hook a chat with folders checks every edit with: claude runs it, not you
+    #[command(hide = true)]
+    ChatGuard,
     /// Give a run a check script poke runs instead of a wake, see it, or remove it.
     Check(crate::human::CheckArgs),
     /// The run's journal, readably.
