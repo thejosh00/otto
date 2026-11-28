@@ -1459,10 +1459,13 @@ mod tests {
         // Unknown keys at the top and in a note come back out as they went in.
         let mut value: Value = serde_json::from_str(&text).unwrap();
         value["future"] = serde_json::json!({"a": 1});
-        value["notes"][0]["from"] = Value::String("person".into());
+        value["notes"][0]["seenBy"] = Value::String("person".into());
+        // `from` is named now (plan v3, 2.2): read into its field, not the catch-all.
+        value["notes"][0]["from"] = Value::String("otto".into());
         let read: RunState = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(read.extra.keys().collect::<Vec<_>>(), vec!["future"]);
-        assert_eq!(read.notes[0].extra.keys().collect::<Vec<_>>(), vec!["from"]);
+        assert_eq!(read.notes[0].extra.keys().collect::<Vec<_>>(), vec!["seenBy"]);
+        assert_eq!(read.notes[0].from, Some(NoteFrom::Otto));
         let written: Value = serde_json::from_str(&serde_json::to_string_pretty(&read).unwrap()).unwrap();
         assert_eq!(written, value);
     }
